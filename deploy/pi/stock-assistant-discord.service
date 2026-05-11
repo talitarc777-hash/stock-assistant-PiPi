@@ -1,0 +1,18 @@
+[Unit]
+Description=Stock Assistant Discord bot
+After=network-online.target stock-assistant-api.service
+Wants=network-online.target
+Requires=stock-assistant-api.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/stock-assistant-PiPi
+EnvironmentFile=/home/pi/stock-assistant-PiPi/.env
+ExecStart=/home/pi/stock-assistant-PiPi/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

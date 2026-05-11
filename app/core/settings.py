@@ -11,9 +11,14 @@ load_dotenv()
 
 
 def _parse_csv_env(value: str) -> list[str]:
-    """Parse comma/newline separated env values into a clean ticker list."""
+    """Parse comma/newline separated env values into clean tokens."""
     normalized = value.replace("\n", ",").replace(";", ",")
-    return [item.strip().upper() for item in normalized.split(",") if item.strip()]
+    return [item.strip() for item in normalized.split(",") if item.strip()]
+
+
+def _parse_ticker_csv_env(value: str) -> list[str]:
+    """Parse comma/newline separated env values into a clean ticker list."""
+    return [item.upper() for item in _parse_csv_env(value)]
 
 
 class Settings(BaseModel):
@@ -26,6 +31,8 @@ class Settings(BaseModel):
     profile_db_path: str = "data/user_profiles.db"
     research_data_dir: str = "data/research"
     research_models_dir: str = "data/models"
+    cors_allow_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
 
 
@@ -40,7 +47,11 @@ def get_settings() -> Settings:
         profile_db_path=os.getenv("PROFILE_DB_PATH", "data/user_profiles.db"),
         research_data_dir=os.getenv("RESEARCH_DATA_DIR", "data/research"),
         research_models_dir=os.getenv("RESEARCH_MODELS_DIR", "data/models"),
-        default_watchlist=_parse_csv_env(
+        cors_allow_origins=_parse_csv_env(
+            os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+        ),
+        cors_allow_origin_regex=os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None,
+        default_watchlist=_parse_ticker_csv_env(
             os.getenv("WATCHLIST_TICKERS", "VOO,SPY,QQQ,AAPL,MSFT,NVDA")
         ),
     )
