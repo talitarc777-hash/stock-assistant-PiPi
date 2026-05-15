@@ -1,0 +1,54 @@
+name: Deploy Backend To NanoPi
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "bot/**"
+      - "config/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - ".github/workflows/deploy-nanopi.yml"
+      - "deploy/pi/**"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.NANOPI_HOST }}
+          username: ${{ secrets.NANOPI_USER }}
+          key: ${{ secrets.NANOPI_SSH_KEY }}
+          port: ${{ secrets.NANOPI_PORT }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.NANOPI_APP_DIR }}"
+            BRANCH="main"
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              echo "ERROR: $APP_DIR is not a git repo"
+              exit 1
+            fi
+
+            cd "$APP_DIR"
+            git fetch origin "$BRANCH"
+            git checkout "$BRANCH"
+            git pull --ff-only origin "$BRANCH"
+
+            .venv/bin/python -m pip install -r requirements.txt
+
+            sudo -n systemctl restart stock-assistant-api
+            sudo -n systemctl restart stock-assistant-discord
+
+            systemctl is-active --quiet stock-assistant-api
+            systemctl is-active --quiet stock-assistant-discord
+
+            curl -fsS http://127.0.0.1:8000/health > /dev/null
+            echo "Deploy finished successfully."
