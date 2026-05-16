@@ -1,4 +1,4 @@
-﻿# stock-assistant (trial)
+﻿# stock-assistant (trial1)
 
 Beginner-friendly Python project for a **stock analysis assistant**.
 
