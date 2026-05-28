@@ -12,7 +12,37 @@ In GitHub repo -> `Settings` -> `Secrets and variables` -> `Actions`, add:
 - `NANOPI_SSH_KEY`: private key content (OpenSSH format)
 - `NANOPI_APP_DIR`: app directory on NanoPi (for example `/home/pi/stock-assistant-PiPi`)
 
-## 2. Allow Service Restart Without Password
+`NANOPI_SSH_KEY` must be the private key, not the `.pub` public key. It should look like:
+
+```text
+-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----
+```
+
+Keep the line breaks when pasting it into GitHub. If GitHub Actions logs
+`ssh.ParsePrivateKey: ssh: no key found`, the secret is empty, pasted as one
+broken line, or contains the public key instead of the private key.
+
+## 2. Make SSH Reachable From GitHub Actions
+
+This workflow uses SSH from a GitHub-hosted runner to the NanoPi. Your
+Cloudflare Tunnel for the backend API only exposes HTTP/HTTPS traffic to the
+FastAPI service; it does not make port `22` reachable for this deploy workflow.
+
+Use one of these SSH paths:
+
+- Direct public IP or dynamic DNS with router port forwarding to NanoPi SSH.
+- A VPN overlay such as Tailscale with a GitHub Action that joins the tailnet.
+- A self-hosted GitHub runner on the NanoPi, so no inbound SSH is needed.
+- A separate Cloudflare Access SSH setup, plus a workflow that installs and uses `cloudflared`.
+
+If GitHub Actions logs `dial tcp <host>:<port>: connect: connection refused`,
+the runner reached the host but no SSH service is accepting connections on that
+port. Check that `NANOPI_HOST` and `NANOPI_PORT` point to SSH, not the public
+HTTP API hostname.
+
+## 3. Allow Service Restart Without Password
 
 The workflow uses:
 
@@ -33,7 +63,7 @@ pi ALL=(ALL) NOPASSWD:/bin/systemctl restart stock-assistant-api,/bin/systemctl 
 
 If your Linux uses `/usr/bin/systemctl`, adjust the path accordingly.
 
-## 3. First Run
+## 4. First Run
 
 Push to `main` (backend-related paths) or run the workflow manually from GitHub Actions (`workflow_dispatch`).
 

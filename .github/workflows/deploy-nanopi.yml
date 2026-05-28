@@ -1,23 +1,54 @@
 name: Deploy Backend To NanoPi
 
+# Disabled for now because the NanoPi is already pulling changes on a timer.
+# Re-enable the push trigger below if you decide to use GitHub Actions SSH deploy.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "app/**"
-      - "bot/**"
-      - "config/**"
-      - "scripts/**"
-      - "requirements.txt"
-      - ".github/workflows/deploy-nanopi.yml"
-      - "deploy/pi/**"
   workflow_dispatch:
+
+# on:
+#   push:
+#     branches:
+#       - main
+#     paths:
+#       - "app/**"
+#       - "bot/**"
+#       - "config/**"
+#       - "scripts/**"
+#       - "requirements.txt"
+#       - ".github/workflows/deploy-nanopi.yml"
+#       - "deploy/pi/**"
+#   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate deploy secrets
+        env:
+          NANOPI_HOST: ${{ secrets.NANOPI_HOST }}
+          NANOPI_PORT: ${{ secrets.NANOPI_PORT }}
+          NANOPI_USER: ${{ secrets.NANOPI_USER }}
+          NANOPI_SSH_KEY: ${{ secrets.NANOPI_SSH_KEY }}
+          NANOPI_APP_DIR: ${{ secrets.NANOPI_APP_DIR }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in NANOPI_HOST NANOPI_PORT NANOPI_USER NANOPI_SSH_KEY NANOPI_APP_DIR; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is missing. Add it in GitHub repo Settings -> Secrets and variables -> Actions."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$NANOPI_SSH_KEY" | grep -Eq '^-+BEGIN (OPENSSH|RSA|EC) PRIVATE KEY-+$'; then
+            echo "::error::NANOPI_SSH_KEY does not look like a private key. Paste the full private key, including BEGIN/END lines, not the .pub public key."
+            exit 1
+          fi
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
