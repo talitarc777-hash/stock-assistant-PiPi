@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -143,6 +144,39 @@ class UserProfileStoreTests(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].user_id, "demo-user")
         self.assertEqual(summaries[0].alert_watchlist, ["AAPL", "MSFT"])
+
+    def test_legacy_user_profile_table_is_migrated(self) -> None:
+        legacy_db = self.test_dir / f"legacy_user_profiles_{uuid4().hex}.db"
+        with sqlite3.connect(legacy_db) as connection:
+            connection.execute(
+                """
+                CREATE TABLE user_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    default_watchlist TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO user_profiles (user_id, default_watchlist) VALUES (?, ?)",
+                ("legacy-user", '["VOO"]'),
+            )
+            connection.commit()
+
+        try:
+            legacy_store = UserProfileStore(db_path=str(legacy_db))
+            profile = legacy_store.get_or_create_profile("legacy-user")
+            watchlist, using_default, _ = legacy_store.get_effective_watchlist("legacy-user")
+        finally:
+            if legacy_db.exists():
+                try:
+                    legacy_db.unlink()
+                except PermissionError:
+                    pass
+
+        self.assertEqual(profile.selected_evaluation_model, "logistic_regression")
+        self.assertEqual(profile.preferred_language, "bilingual")
+        self.assertEqual(watchlist, ["VOO"])
+        self.assertFalse(using_default)
 
 
 if __name__ == "__main__":

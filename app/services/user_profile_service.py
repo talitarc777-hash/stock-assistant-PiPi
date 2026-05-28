@@ -108,6 +108,11 @@ def _json_load(value: str | None) -> list[str]:
     return _normalize_watchlist([str(item) for item in loaded])
 
 
+def _quote_sql_string(value: str) -> str:
+    """Quote a string literal for simple SQLite migration defaults."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 class UserProfileStore:
     """Small data-access layer around the local SQLite user profile store."""
 
@@ -161,13 +166,27 @@ class UserProfileStore:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(user_profiles)").fetchall()
             }
-            if "selected_evaluation_model" not in columns:
-                connection.execute(
-                    """
-                    ALTER TABLE user_profiles
-                    ADD COLUMN selected_evaluation_model TEXT NOT NULL DEFAULT 'logistic_regression'
-                    """
-                )
+            migration_columns: dict[str, str] = {
+                "display_name": "TEXT",
+                "preferred_language": "TEXT NOT NULL DEFAULT 'bilingual'",
+                "compact_mode": "INTEGER NOT NULL DEFAULT 0",
+                "selected_evaluation_model": "TEXT NOT NULL DEFAULT 'logistic_regression'",
+                "default_watchlist": f"TEXT NOT NULL DEFAULT {_quote_sql_string(_json_dump([]))}",
+                "alert_enabled": "INTEGER NOT NULL DEFAULT 1",
+                "alert_threshold_high": "INTEGER NOT NULL DEFAULT 80",
+                "alert_threshold_low": "INTEGER NOT NULL DEFAULT 45",
+                "alert_watchlist": f"TEXT NOT NULL DEFAULT {_quote_sql_string(_json_dump([]))}",
+                "preferred_delivery_source": "TEXT NOT NULL DEFAULT 'discord'",
+                "last_active_source": "TEXT",
+                "created_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'",
+                "updated_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'",
+            }
+            for column_name, column_definition in migration_columns.items():
+                if column_name not in columns:
+                    logger.info("Migrating user_profiles add column=%s", column_name)
+                    connection.execute(
+                        f"ALTER TABLE user_profiles ADD COLUMN {column_name} {column_definition}"
+                    )
             connection.commit()
 
     def _default_profile(self, user_id: str, display_name: str | None = None) -> dict:
