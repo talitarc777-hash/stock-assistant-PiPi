@@ -21,6 +21,16 @@ def _parse_ticker_csv_env(value: str) -> list[str]:
     return [item.upper() for item in _parse_csv_env(value)]
 
 
+def _combine_cors_regex(*patterns: str | None) -> str | None:
+    """Combine optional CORS regex patterns without losing deployment defaults."""
+    clean_patterns = [pattern.strip() for pattern in patterns if pattern and pattern.strip()]
+    if not clean_patterns:
+        return None
+    if len(clean_patterns) == 1:
+        return clean_patterns[0]
+    return "|".join(f"(?:{pattern})" for pattern in clean_patterns)
+
+
 class Settings(BaseModel):
     """Typed runtime settings for the API."""
 
@@ -34,6 +44,9 @@ class Settings(BaseModel):
     cors_allow_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
+
+
+_CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
 
 
 @lru_cache(maxsize=1)
@@ -50,7 +63,10 @@ def get_settings() -> Settings:
         cors_allow_origins=_parse_csv_env(
             os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
         ),
-        cors_allow_origin_regex=os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None,
+        cors_allow_origin_regex=_combine_cors_regex(
+            os.getenv("CORS_ALLOW_ORIGIN_REGEX"),
+            _CLOUDFLARE_PAGES_CORS_REGEX,
+        ),
         default_watchlist=_parse_ticker_csv_env(
             os.getenv("WATCHLIST_TICKERS", "VOO,SPY,QQQ,AAPL,MSFT,NVDA")
         ),

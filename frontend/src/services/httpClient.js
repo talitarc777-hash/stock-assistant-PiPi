@@ -19,6 +19,7 @@ function normalizeApiBaseUrl(value) {
 
 function inferApiBaseUrlFromLocation() {
   const localFallback = "http://127.0.0.1:8000";
+  const cloudflarePagesFallback = "https://cowbox.dpdns.org";
   if (typeof window === "undefined") return localFallback;
 
   const { hostname, protocol } = window.location;
@@ -27,8 +28,8 @@ function inferApiBaseUrlFromLocation() {
 
   if (hostname.endsWith(".pages.dev")) {
     // Cloudflare Pages preview domains cannot reveal the custom API domain.
-    // Set VITE_API_BASE_URL in Pages for preview builds.
-    return "";
+    // Use the known tunnel-backed API unless VITE_API_BASE_URL overrides it.
+    return cloudflarePagesFallback;
   }
 
   const withoutWww = hostname.startsWith("www.") ? hostname.slice(4) : hostname;

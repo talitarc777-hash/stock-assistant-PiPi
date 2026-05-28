@@ -42,8 +42,8 @@ PROFILE_DB_PATH=data/user_profiles.db
 RESEARCH_DATA_DIR=data/research
 RESEARCH_MODELS_DIR=data/models
 BACKEND_BASE_URL=http://127.0.0.1:8000
-CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://your-cloudflare-pages-site.pages.dev
-CORS_ALLOW_ORIGIN_REGEX=^https://stock-assistant-.*\.pages\.dev$
+CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://cowbox.dpdns.org
+CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$
 ```
 
 Add your real `DISCORD_BOT_TOKEN` and any `ALLOWED_CHANNEL_IDS` in `.env`. Do not commit `.env`.
@@ -139,9 +139,9 @@ Connect the GitHub repo to Cloudflare Pages:
 - Root directory: `frontend`
 - Build command: `npm run build`
 - Build output directory: `dist`
-- Production environment variable: `VITE_API_BASE_URL=https://api.your-domain.com`
+- Production environment variable: `VITE_API_BASE_URL=https://cowbox.dpdns.org`
 
-After deployment, add the Pages production domain to `CORS_ALLOW_ORIGINS` in the Pi `.env`, then restart the API:
+After deployment, add your custom frontend domain to `CORS_ALLOW_ORIGINS` in the Pi `.env`, then restart the API:
 
 ```bash
 sudo systemctl restart stock-assistant-api
@@ -214,6 +214,6 @@ curl https://api.your-domain.com/health
 If the frontend loads but API calls fail, check:
 
 - `VITE_API_BASE_URL` in Cloudflare Pages
-- `CORS_ALLOW_ORIGINS` in Pi `.env`
+- `CORS_ALLOW_ORIGINS` and `CORS_ALLOW_ORIGIN_REGEX` in Pi `.env`
 - Cloudflare Tunnel status
 - API logs with `journalctl -u stock-assistant-api -f`
