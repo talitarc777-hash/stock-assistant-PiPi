@@ -128,16 +128,34 @@ def _clean_ohlcv_dataframe(raw_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
             raw_df = raw_df.copy()
             raw_df.columns = [col[0] for col in raw_df.columns]
 
+    original_index = raw_df.index
+
     # yfinance index usually contains Date; we convert it to a normal column.
     clean_df: pd.DataFrame = raw_df.reset_index()
 
-    # yfinance may use either Date or Datetime depending on input.
+    # yfinance/pandas may use Date, Datetime, or a generic name like "index"
+    # when the DatetimeIndex is unnamed. Normalize all valid variants.
     if "Date" in clean_df.columns:
         clean_df = clean_df.rename(columns={"Date": "date"})
     elif "Datetime" in clean_df.columns:
         clean_df = clean_df.rename(columns={"Datetime": "date"})
+    elif "index" in clean_df.columns and pd.api.types.is_datetime64_any_dtype(original_index):
+        clean_df = clean_df.rename(columns={"index": "date"})
+    elif "level_0" in clean_df.columns and pd.api.types.is_datetime64_any_dtype(original_index):
+        clean_df = clean_df.rename(columns={"level_0": "date"})
     else:
-        raise MarketDataError("Unexpected response format: missing date column.")
+        date_like_columns = [
+            column
+            for column in clean_df.columns
+            if pd.api.types.is_datetime64_any_dtype(clean_df[column])
+        ]
+        if date_like_columns:
+            clean_df = clean_df.rename(columns={date_like_columns[0]: "date"})
+        else:
+            raise MarketDataError(
+                "Unexpected response format: missing date column. "
+                f"Received columns: {[str(column) for column in clean_df.columns]}."
+            )
 
     expected_columns: dict[str, str] = {
         "Open": "open",

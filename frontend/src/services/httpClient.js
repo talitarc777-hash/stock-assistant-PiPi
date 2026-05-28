@@ -1,7 +1,8 @@
 function normalizeApiBaseUrl(value) {
-  const fallback = "http://127.0.0.1:8000";
   const raw = (value || "").trim();
-  if (!raw) return fallback;
+  if (!raw) {
+    return inferApiBaseUrlFromLocation();
+  }
 
   const withoutTrailingSlash = raw.replace(/\/+$/, "");
   if (withoutTrailingSlash.startsWith("http://") || withoutTrailingSlash.startsWith("https://")) {
@@ -14,6 +15,24 @@ function normalizeApiBaseUrl(value) {
     return `http://${withoutTrailingSlash}`;
   }
   return `https://${withoutTrailingSlash}`;
+}
+
+function inferApiBaseUrlFromLocation() {
+  const localFallback = "http://127.0.0.1:8000";
+  if (typeof window === "undefined") return localFallback;
+
+  const { hostname, protocol } = window.location;
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+  if (isLocalhost) return localFallback;
+
+  if (hostname.endsWith(".pages.dev")) {
+    // Cloudflare Pages preview domains cannot reveal the custom API domain.
+    // Set VITE_API_BASE_URL in Pages for preview builds.
+    return "";
+  }
+
+  const withoutWww = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
+  return `${protocol === "http:" ? "http" : "https"}://api.${withoutWww}`;
 }
 
 const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
@@ -50,6 +69,11 @@ export async function requestJson(path, options = {}) {
     signal: externalSignal = null,
   } = options;
   const url = `${API_BASE_URL}${path}`;
+  if (!API_BASE_URL) {
+    throw new Error(
+      "Backend URL is not configured. Set VITE_API_BASE_URL to your API domain, for example https://api.your-domain.com."
+    );
+  }
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
