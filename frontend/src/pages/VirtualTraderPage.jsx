@@ -3,12 +3,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   fetchTraderSchedulerStatus,
   fetchLiveVirtualTraderStatus,
-  fetchLiveVirtualTraderTrades,
-  fetchVirtualAccountEquityCurve,
   fetchVirtualAccountHistory,
-  fetchVirtualAccountHoldings,
   fetchVirtualAccountRecentTrades,
-  fetchVirtualAccountSummary,
   fetchVirtualTraderTrades,
   fetchVirtualTraderSummary,
   postVirtualAccountDeposit,
@@ -113,6 +109,7 @@ function formatMoney(value) {
 export default function VirtualTraderPage({ languageMode, currentWatchlist, profileId }) {
   const [selectedTicker, setSelectedTicker] = useState(currentWatchlist[0] || "VOO");
   const [selectedModelName, setSelectedModelName] = useState(DEFAULT_MODEL);
+  const [modelSettingsLoaded, setModelSettingsLoaded] = useState(false);
   const [liveStatus, setLiveStatus] = useState(null);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
@@ -133,6 +130,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   const [historicalContributionData, setHistoricalContributionData] = useState(null);
   const [historicalLoading, setHistoricalLoading] = useState(false);
   const [historicalEnabled, setHistoricalEnabled] = useState(false);
+  const [newsEnabled, setNewsEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isRunningNow, setIsRunningNow] = useState(false);
   const [error, setError] = useState("");
@@ -146,6 +144,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
 
   useEffect(() => {
     let isActive = true;
+    setModelSettingsLoaded(false);
     async function loadModelSettings() {
       try {
         const settings = await fetchModelEvaluationSettings(profileId);
@@ -154,63 +153,78 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       } catch {
         if (!isActive) return;
         setSelectedModelName(DEFAULT_MODEL);
+      } finally {
+        if (isActive) setModelSettingsLoaded(true);
       }
     }
     if (profileId) {
       loadModelSettings();
+    } else {
+      setModelSettingsLoaded(true);
     }
     return () => {
       isActive = false;
     };
   }, [profileId]);
 
+  function applyLiveStatusPayload(payload) {
+    if (!payload) return;
+    const account = payload.account || {};
+    const holdings = (payload.holdings || []).map((holding) => {
+      const marketValue = Number(holding.market_value);
+      const unrealizedPnl = Number(holding.unrealized_pnl);
+      const costBasis = marketValue - unrealizedPnl;
+      const unrealizedPnlPct =
+        Number.isFinite(costBasis) && Math.abs(costBasis) > 0.000001
+          ? (unrealizedPnl / costBasis) * 100
+          : null;
+      return {
+        ...holding,
+        unrealized_pnl_pct: holding.unrealized_pnl_pct ?? unrealizedPnlPct,
+      };
+    });
+    const latestDecisions = payload.latest_decisions || [];
+
+    setLiveStatus(payload);
+    setAccountSummary({
+      user_id: payload.user_id,
+      as_of: payload.generated_at_utc,
+      last_updated: account.snapshot_timestamp || payload.generated_at_utc,
+      curve_last_point_timestamp: account.curve_last_point_timestamp,
+      cash: account.cash,
+      holdings_value: account.holdings_value,
+      total_account_value: account.total_equity,
+      realized_pnl: account.realized_pnl,
+      unrealized_pnl: account.unrealized_pnl,
+      net_deposits: account.net_deposits ?? account.total_contributions_applied,
+      holdings,
+      latest_prices: {},
+    });
+    setAccountHoldings(holdings);
+    setEquityCurve(payload.equity_curve || []);
+    setLiveDecisionLog(latestDecisions);
+    setSelectedLiveTrade(latestDecisions[0] || null);
+  }
+
   async function loadGlobalViews() {
-    if (!profileId) return;
+    if (!profileId || !modelSettingsLoaded) return;
     setIsLoading(true);
     setError("");
     try {
       // Keep initial render lightweight for low-resource deployments:
       // load core profile-level cards first; ticker-specific replay data is loaded separately.
-      const coreResults = await Promise.allSettled([
-        fetchTraderSchedulerStatus(24),
+      const [liveStatusResult, schedulerStatusResult, recentTradesResult] = await Promise.allSettled([
         fetchLiveVirtualTraderStatus(profileId, null, selectedModelName, false),
-        fetchVirtualAccountSummary(profileId),
-        fetchVirtualAccountHoldings(profileId),
+        fetchTraderSchedulerStatus(24),
         fetchVirtualAccountRecentTrades(profileId, 20),
-        fetchVirtualAccountEquityCurve(profileId, 160),
-        fetchLiveVirtualTraderTrades(profileId, null, 20),
       ]);
 
-      const [
-        schedulerStatusResult,
-        liveStatusResult,
-        accountSummaryResult,
-        holdingsResult,
-        recentTradesResult,
-        equityCurveResult,
-        decisionsResult,
-      ] = coreResults;
-
       if (schedulerStatusResult.status === "fulfilled") setSchedulerStatus(schedulerStatusResult.value);
-      if (liveStatusResult.status === "fulfilled") setLiveStatus(liveStatusResult.value);
-      if (accountSummaryResult.status === "fulfilled") setAccountSummary(accountSummaryResult.value);
-      if (holdingsResult.status === "fulfilled") setAccountHoldings(holdingsResult.value.holdings || []);
+      if (liveStatusResult.status === "fulfilled") applyLiveStatusPayload(liveStatusResult.value);
       if (recentTradesResult.status === "fulfilled") setRecentTrades(recentTradesResult.value.trades || []);
-      if (equityCurveResult.status === "fulfilled") setEquityCurve(equityCurveResult.value.points || []);
-      if (decisionsResult.status === "fulfilled") {
-        setLiveDecisionLog(decisionsResult.value.trades || []);
-        setSelectedLiveTrade((decisionsResult.value.trades || [])[0] || null);
-      }
 
-      const failedCore = coreResults
-        .filter((item) => item.status === "rejected")
-        .map((item) => item.reason?.message || "Unknown error");
-      if (failedCore.length > 0) {
-        setError(`Some sections could not be loaded (${failedCore.length}). You can retry below.`);
-      }
-
-      if (historyEnabled) {
-        await loadAccountHistoryPage({ reset: true });
+      if (liveStatusResult.status === "rejected") {
+        setError(liveStatusResult.reason?.message || "Failed to load live trader status. You can retry below.");
       }
     } catch (requestError) {
       setError(requestError.message || "Failed to load virtual trader views.");
@@ -269,14 +283,22 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   }
 
   useEffect(() => {
+    if (!modelSettingsLoaded) return;
     loadGlobalViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, selectedModelName, historyEnabled]);
+  }, [profileId, selectedModelName, modelSettingsLoaded]);
 
   useEffect(() => {
+    if (!historyEnabled || !modelSettingsLoaded) return;
+    loadAccountHistoryPage({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId, historyEnabled, modelSettingsLoaded]);
+
+  useEffect(() => {
+    if (!modelSettingsLoaded) return;
     loadTickerSpecificViews(selectedTicker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, selectedModelName, selectedTicker, historicalEnabled]);
+  }, [profileId, selectedModelName, selectedTicker, historicalEnabled, modelSettingsLoaded]);
 
   useEffect(() => {
     if (!profileId) return undefined;
@@ -335,12 +357,10 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     setHistoryEnabled(true);
     setHistoryOffset(0);
     setAccountHistory([]);
-    await loadAccountHistoryPage({ reset: true });
   }
 
   async function handleEnableHistoricalReplay() {
     setHistoricalEnabled(true);
-    await loadHistoricalReplayData(selectedTicker);
   }
 
   const liveEquityPoints = useMemo(() => {
@@ -641,7 +661,25 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         )}
       </section>
 
-      <NewsSentimentPanel ticker={selectedTicker} languageMode={languageMode} />
+      {!newsEnabled ? (
+        <section className="panel explanation-panel">
+          <h3>{labelByMode(languageMode, "News Sentiment", ZH.newsSentiment)}</h3>
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              "News sentiment is optional and can be slower on a small backend, so it loads only when requested.",
+              "新聞情緒屬於選用資料，在小型後端上可能較慢，因此改為需要時才載入。"
+            )}
+          </p>
+          <div className="settings-actions">
+            <button type="button" onClick={() => setNewsEnabled(true)}>
+              {labelByMode(languageMode, "Load news sentiment", "載入新聞情緒")}
+            </button>
+          </div>
+        </section>
+      ) : (
+        <NewsSentimentPanel ticker={selectedTicker} languageMode={languageMode} />
+      )}
       {!historyEnabled ? (
         <section className="panel">
           <h3>{getLabel(languageMode, "historyTitle")}</h3>
@@ -668,17 +706,6 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           errorMessage={historyError}
         />
       )}
-
-      <section className="panel">
-        <h3>{labelByMode(languageMode, "Historical Replay Mode", ZH.historicalMode)}</h3>
-        <p className="helper-text">
-          {labelByMode(
-            languageMode,
-            "Historical view is replay-style for evaluation. Live mode above is the current simulator.",
-            ZH.historicalIntro
-          )}
-        </p>
-      </section>
 
       {!historicalEnabled ? (
         <section className="panel">

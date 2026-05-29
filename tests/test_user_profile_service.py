@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 import sqlite3
+import tempfile
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,17 +21,15 @@ class UserProfileStoreTests(unittest.TestCase):
     """Verify shared profile/watchlist/alert persistence and defaults."""
 
     def setUp(self) -> None:
-        self.test_dir = Path("data") / "test_user_profiles"
-        self.test_dir.mkdir(parents=True, exist_ok=True)
+        temp_root = Path(os.getenv("TEST_TEMP_DIR", r"C:\tmp"))
+        temp_root.mkdir(parents=True, exist_ok=True)
+        self.temp_dir = tempfile.TemporaryDirectory(dir=temp_root)
+        self.test_dir = Path(self.temp_dir.name)
         self.db_path = self.test_dir / f"user_profiles_{uuid4().hex}.db"
         self.store = UserProfileStore(db_path=str(self.db_path))
 
     def tearDown(self) -> None:
-        if self.db_path.exists():
-            try:
-                self.db_path.unlink()
-            except PermissionError:
-                pass
+        self.temp_dir.cleanup()
 
     def test_get_or_create_profile_uses_defaults(self) -> None:
         profile = self.store.get_or_create_profile("demo-user")

@@ -878,9 +878,10 @@ def get_live_virtual_trader_status(
     ledger = get_account_ledger_service()
 
     store = get_live_virtual_trader_store()
-    latest_prices = _latest_prices_for_symbols(list(set(symbols)))
-    tickers_failed = len([symbol for symbol in symbols if symbol not in latest_prices])
-    account = ledger.build_account_summary(clean_user_id, latest_prices=latest_prices)
+    # Read-only status should be quick. A full live run evaluates the whole
+    # universe; a status refresh only needs current valuation for open holdings.
+    account = ledger.build_account_summary(clean_user_id)
+    latest_prices = dict(account.get("latest_prices") or {})
     live_curve = build_live_equity_curve(
         user_id=clean_user_id,
         latest_prices=latest_prices,
@@ -892,7 +893,7 @@ def get_live_virtual_trader_status(
     trade_filter = symbols[0] if tickers and len(symbols) == 1 else None
     latest_decisions = store.list_trades(
         clean_user_id,
-        limit=max(1, len(symbols)),
+        limit=20,
         ticker=trade_filter,
     )
     contribution_events = ledger.list_events(
@@ -930,7 +931,7 @@ def get_live_virtual_trader_status(
         contribution_events=contribution_events,
         universe_size=len(symbols),
         tickers_evaluated=len(symbols),
-        tickers_failed=tickers_failed,
+        tickers_failed=0,
         fallback_used_count=sum(
             1
             for item in latest_decisions
