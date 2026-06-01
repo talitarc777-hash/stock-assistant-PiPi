@@ -4,14 +4,23 @@ This note documents the latest behavior for model selection, fallback usage, and
 
 ## Model Selection Priority
 
-At startup and during live trading runs, the system prefers saved models first.
+At startup, the system prefers saved models first. During live trading runs, the Virtual Trader uses automatic trading-model selection instead of the user's model-evaluation selector.
 
 Priority order:
 
-1. Selected production model (lifecycle registry)
-2. Compatible existing saved model for ticker/target
-3. Compatible validated shared/existing model artifacts
-4. Rule-based fallback (last resort only)
+1. Production model from the lifecycle registry
+2. Latest validated candidate from the lifecycle registry
+3. Compatible existing saved model for ticker/target
+4. Compatible validated shared/existing model artifacts
+5. Rule-based fallback (last resort only)
+
+For live Virtual Trader decisions, the automatic trading model set is:
+
+- `linear_regression`
+- `random_forest`
+- `gradient_boosting`
+
+The user-selected model is still useful for Model Evaluation views, but it no longer controls live Virtual Trader decisions.
 
 Fallback is only used when no compatible saved model can be loaded (missing, corrupted, or unusable).
 

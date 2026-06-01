@@ -13,11 +13,11 @@ from app.models.live_virtual_trader import (
     LiveTraderTradesResponse,
 )
 from app.services.live_virtual_trader import (
+    AUTO_TRADING_MODEL_NAME,
     LiveVirtualTraderError,
     get_live_virtual_trader_status,
     list_live_virtual_trader_trades,
 )
-from app.services.model_selection_service import resolve_selected_model_name
 from app.services.trader_scheduler import (
     TraderSchedulerBusyError,
     get_trader_scheduler_service,
@@ -39,20 +39,19 @@ def get_virtual_trader_live_status(
     """Return current live virtual trader status, with optional immediate run."""
     started = perf_counter()
     try:
-        resolved_model_name = resolve_selected_model_name(user_id=user_id, requested_model_name=model_name)
         tickers = [ticker.strip().upper()] if ticker else None
         if auto_run:
             status = get_trader_scheduler_service().run_user_now(
                 user_id=user_id,
                 tickers=tickers,
-                model_name=resolved_model_name,
+                model_name=AUTO_TRADING_MODEL_NAME,
             )
             clear_user_virtual_account_cache(user_id)
         else:
             status = get_live_virtual_trader_status(
                 user_id=user_id,
                 tickers=tickers,
-                model_name=resolved_model_name,
+                model_name=AUTO_TRADING_MODEL_NAME,
                 auto_run=False,
             )
         elapsed_ms = (perf_counter() - started) * 1000.0
@@ -92,16 +91,12 @@ def get_virtual_trader_status_alias(
 
 @router.post("/virtual-trader/run-now", response_model=LiveTraderStatusResponse)
 def run_virtual_trader_now(request: LiveTraderRunRequest) -> LiveTraderStatusResponse:
-    """Run live virtual trader decisions now using latest data and selected model."""
+    """Run live virtual trader decisions using the best available trading model."""
     try:
-        resolved_model_name = resolve_selected_model_name(
-            user_id=request.user_id,
-            requested_model_name=request.model_name,
-        )
         status = get_trader_scheduler_service().run_user_now(
             user_id=request.user_id,
             tickers=request.tickers,
-            model_name=resolved_model_name,
+            model_name=AUTO_TRADING_MODEL_NAME,
         )
         clear_user_virtual_account_cache(request.user_id)
         return LiveTraderStatusResponse(**status.__dict__)

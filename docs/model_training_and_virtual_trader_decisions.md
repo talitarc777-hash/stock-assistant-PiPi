@@ -54,7 +54,13 @@ For each ticker, the system trains baseline model families:
   - `random_forest`
   - `gradient_boosting`
 
-Daily incremental workflows skip gradient boosting to reduce runtime on small deployments.
+The Virtual Trader trading model set is:
+
+- `linear_regression`
+- `random_forest`
+- `gradient_boosting`
+
+These are trained against `target_5d_return` for trading decisions. Classification models such as `logistic_regression` can still exist for model evaluation pages, but live Virtual Trader selection is not driven by the user's UI model choice.
 
 Validation uses expanding-window time-series splits:
 
@@ -103,7 +109,7 @@ Automatic lifecycle schedule:
   - workflow type: `daily_incremental`
   - period: `2y`
   - universe limit: `18`
-  - gradient boosting disabled for speed
+  - verifies all three trading models: `linear_regression`, `random_forest`, and `gradient_boosting`
 - Weekly full workflow:
   - runs Friday after 5:00 PM America/New_York
   - workflow type: `weekly_full`
@@ -126,7 +132,7 @@ Manual retraining is also available through model lifecycle endpoints and the re
 
 ## 5) Which Model Is Used By The Web App
 
-The selected model name is stored per profile in backend SQLite.
+The selected model name is stored per profile in backend SQLite for model-evaluation views.
 
 Selection service:
 
@@ -135,11 +141,9 @@ Selection service:
 The selected model affects:
 
 - Model Evaluation page
-- Virtual Trader page
-- live trader inference
 - historical replay endpoints when a profile/user id is provided
 
-If a selected model is missing for a ticker, the runtime does not stop immediately. It tries compatible model candidates and then falls back if needed.
+Live Virtual Trader decisions do not use the user-selected model. They use automatic runtime selection.
 
 ## 6) How The Virtual Trader Uses Model Results
 
@@ -159,17 +163,13 @@ For each live run, the trader:
 7. Applies confidence and risk rules.
 8. Writes simulated ledger/trade events.
 
-For classification models:
-
-- predicted `1` means bullish
-- predicted `0` means bearish
-- confidence may come from `predict_proba`
-
-For regression models:
+For the automatic trading model set:
 
 - predicted return above the configured minimum means bullish
 - predicted return at or below zero means bearish
 - confidence is normally unavailable unless the model supports it
+
+The selected runtime model can differ by ticker. The trade log stores the actual model used for each simulated decision.
 
 The model output alone does not directly execute a trade. It must pass the trader's risk and account rules.
 
@@ -211,14 +211,15 @@ If no compatible saved model can be loaded, live mode uses a rule-based fallback
 
 Fallback exists so the simulator can keep running instead of failing the whole run.
 
-Fallback is lower priority than saved models:
+Automatic selection priority is:
 
-1. production/validated lifecycle model candidates
-2. compatible ticker saved model
-3. compatible shared/global saved model
-4. rule-based fallback
+1. production lifecycle model for the ticker
+2. latest validated lifecycle candidate for the ticker
+3. shared/global production or validated candidate
+4. compatible saved ticker/global artifacts
+5. rule-based fallback
 
-The trade log metadata records whether a decision came from a saved model or fallback.
+Only `linear_regression`, `random_forest`, and `gradient_boosting` are considered for automatic live trading model selection. The trade log metadata records whether a decision came from a saved model or fallback.
 
 ## 9) Live Mode vs Historical Replay
 
@@ -256,6 +257,6 @@ market/news data
 So daily model updates can change future Virtual Trader decisions, but only after:
 
 - the scheduled or manual lifecycle workflow trains and saves a model
-- the model is selected/promoted/resolved at runtime
+- the model is validated and promoted/resolved at runtime as the best available trading candidate
 - the latest market/news features produce a different prediction
 - the trader's risk and account rules allow action

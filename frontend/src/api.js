@@ -87,30 +87,28 @@ export async function fetchModelAccuracy(
 export async function fetchVirtualTraderSummary(
   ticker,
   period = "5y",
-  modelName = "logistic_regression",
+  modelName = null,
   equityLimit = 300,
   userId = null
 ) {
   const userQuery = userId ? `&user_id=${encodeURIComponent(userId)}` : "";
+  const modelQuery = modelName ? `&model_name=${encodeURIComponent(modelName)}` : "";
   return fetchJson(
-    `/virtual-trader-summary?ticker=${encodeURIComponent(ticker)}&period=${period}&model_name=${encodeURIComponent(
-      modelName
-    )}&equity_limit=${equityLimit}${userQuery}`
+    `/virtual-trader-summary?ticker=${encodeURIComponent(ticker)}&period=${period}${modelQuery}&equity_limit=${equityLimit}${userQuery}`
   );
 }
 
 export async function fetchVirtualTraderTrades(
   ticker,
   period = "5y",
-  modelName = "logistic_regression",
+  modelName = null,
   limit = 120,
   userId = null
 ) {
   const userQuery = userId ? `&user_id=${encodeURIComponent(userId)}` : "";
+  const modelQuery = modelName ? `&model_name=${encodeURIComponent(modelName)}` : "";
   return fetchJson(
-    `/virtual-trader-trades?ticker=${encodeURIComponent(ticker)}&period=${period}&model_name=${encodeURIComponent(
-      modelName
-    )}&limit=${limit}${userQuery}`
+    `/virtual-trader-trades?ticker=${encodeURIComponent(ticker)}&period=${period}${modelQuery}&limit=${limit}${userQuery}`
   );
 }
 

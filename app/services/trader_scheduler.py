@@ -17,7 +17,6 @@ from typing import Any
 from app.services.account_ledger_service import get_account_ledger_service
 from app.services.live_virtual_trader import LiveStatus, run_live_virtual_trader_now
 from app.services.market_hours_service import get_market_hours_state
-from app.services.model_selection_service import resolve_selected_model_name
 from app.services.user_profile_service import get_user_profile_store
 from app.services.virtual_account_cache import clear_user_virtual_account_cache
 
@@ -247,7 +246,7 @@ class TraderSchedulerService:
     def _run_live_trader_with_retry(
         *,
         user_id: str,
-        model_name: str,
+        model_name: str | None,
         tickers: list[str] | None = None,
         max_attempts: int = 2,
     ) -> LiveStatus:
@@ -316,10 +315,9 @@ class TraderSchedulerService:
                     )
                     if contribution_event is not None:
                         clear_user_virtual_account_cache(clean_user_id)
-                    selected_model_name = resolve_selected_model_name(user_id=clean_user_id)
                     status = self._run_live_trader_with_retry(
                         user_id=clean_user_id,
-                        model_name=selected_model_name,
+                        model_name=None,
                         max_attempts=2,
                     )
                     # Live runs can mutate positions/cash; always clear read caches.
@@ -393,13 +391,9 @@ class TraderSchedulerService:
             )
             if contribution_event is not None:
                 clear_user_virtual_account_cache(clean_user_id)
-            selected_model_name = resolve_selected_model_name(
-                user_id=clean_user_id,
-                requested_model_name=model_name,
-            )
             status = self._run_live_trader_with_retry(
                 user_id=clean_user_id,
-                model_name=selected_model_name,
+                model_name=None,
                 tickers=tickers,
                 max_attempts=2,
             )

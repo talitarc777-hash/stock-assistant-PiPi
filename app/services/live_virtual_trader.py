@@ -80,6 +80,9 @@ class LiveStatus:
 _AUTO_TRAIN_ON_MODEL_MISS = False
 _TRAINING_QUEUE: set[tuple[str, str, str]] = set()
 _TRAINING_LOCK = Lock()
+TRADING_TARGET_NAME = "target_5d_return"
+AUTO_TRADING_MODEL_NAME = "auto_best"
+TRADING_MODEL_NAMES = ("linear_regression", "random_forest", "gradient_boosting")
 
 
 class LiveVirtualTraderStore:
@@ -371,7 +374,7 @@ def _schedule_background_training_if_enabled(
                 ticker=ticker,
                 period=period,
                 benchmark=benchmark,
-                include_gradient_boosting=False,
+                include_gradient_boosting=True,
             )
             logger.info("Background training completed ticker=%s period=%s", ticker, period)
         except Exception as exc:  # pragma: no cover - background defensive guard
@@ -449,10 +452,10 @@ def _is_trade_cooldown_active(
 def run_live_virtual_trader_now(
     user_id: str,
     tickers: list[str] | None = None,
-    model_name: str = "logistic_regression",
+    model_name: str | None = AUTO_TRADING_MODEL_NAME,
     period: str = "2y",
     benchmark: str = "VOO",
-    target_name: str = "target_5d_updown",
+    target_name: str = TRADING_TARGET_NAME,
     confidence_threshold: float = 0.55,
     max_position_size_pct: float = 0.25,
     stop_loss_pct: float = 0.10,
@@ -483,6 +486,8 @@ def run_live_virtual_trader_now(
     valuation_cache: dict[str, dict[str, Any]] = {}
     failed_symbols: list[str] = []
     fallback_used_count = 0
+    requested_model_name = str(model_name or "").strip().lower()
+    auto_model_selection = requested_model_name in {"", "auto", AUTO_TRADING_MODEL_NAME}
 
     for symbol in symbols:
         try:
@@ -528,7 +533,7 @@ def run_live_virtual_trader_now(
             task_type = "regression"
             prediction_value = 0.0
             confidence_score: float | None = None
-            decision_model_name = model_name
+            decision_model_name = AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name
             decision_source = "fallback_rule"
             model_fallback_reason = "fallback_rule_neutral_hold"
             model_loaded = False
@@ -538,13 +543,13 @@ def run_live_virtual_trader_now(
                 ticker=symbol,
                 period=period,
                 target_name=target_name,
-                requested_model_name=model_name,
+                requested_model_name=None if auto_model_selection else requested_model_name,
             )
             saved_candidates = list_compatible_saved_model_candidates(
                 ticker=symbol,
                 period=period,
                 target_name=target_name,
-                requested_model_name=model_name,
+                requested_model_name=None if auto_model_selection else requested_model_name,
                 limit=12,
             )
 
@@ -552,7 +557,9 @@ def run_live_virtual_trader_now(
             seen_runtime: set[tuple[str, str]] = set()
             for candidate in registry_candidates + saved_candidates:
                 tkr = str(candidate.get("ticker", symbol)).strip().upper()
-                mdl = str(candidate.get("model_name", model_name)).strip().lower()
+                mdl = str(candidate.get("model_name", "")).strip().lower()
+                if auto_model_selection and mdl not in TRADING_MODEL_NAMES:
+                    continue
                 key = (tkr, mdl)
                 if key in seen_runtime:
                     continue
@@ -566,9 +573,12 @@ def run_live_virtual_trader_now(
                 )
 
             if not runtime_candidates:
+                fallback_model_names = TRADING_MODEL_NAMES if auto_model_selection else (requested_model_name,)
                 runtime_candidates = [
-                    {"ticker": symbol, "model_name": model_name, "source": "trained_model"},
-                    {"ticker": "GLOBAL", "model_name": model_name, "source": "global_model"},
+                    {"ticker": candidate_ticker, "model_name": candidate_model_name, "source": source}
+                    for candidate_ticker, source in ((symbol, "trained_model"), ("GLOBAL", "global_model"))
+                    for candidate_model_name in fallback_model_names
+                    if candidate_model_name
                 ]
             logger.info(
                 "Live trader model candidate order ticker=%s candidates=%s",
@@ -578,7 +588,7 @@ def run_live_virtual_trader_now(
 
             for candidate in runtime_candidates:
                 candidate_ticker = str(candidate.get("ticker", symbol)).strip().upper()
-                candidate_model_name = str(candidate.get("model_name", model_name)).strip().lower()
+                candidate_model_name = str(candidate.get("model_name", "")).strip().lower()
                 source_name = str(candidate.get("source", "trained_model"))
                 try:
                     bundle = load_trained_model_bundle(
@@ -837,7 +847,7 @@ def run_live_virtual_trader_now(
 
     return LiveStatus(
         user_id=clean_user_id,
-        model_name=model_name,
+        model_name=AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
         generated_at_utc=_utc_now(),
         account={
             "snapshot_timestamp": account["as_of"],
@@ -864,7 +874,7 @@ def run_live_virtual_trader_now(
 def get_live_virtual_trader_status(
     user_id: str,
     tickers: list[str] | None = None,
-    model_name: str = "logistic_regression",
+    model_name: str | None = AUTO_TRADING_MODEL_NAME,
     auto_run: bool = False,
 ) -> LiveStatus:
     if auto_run:
@@ -913,7 +923,7 @@ def get_live_virtual_trader_status(
 
     return LiveStatus(
         user_id=clean_user_id,
-        model_name=model_name,
+        model_name=str(model_name or AUTO_TRADING_MODEL_NAME).strip().lower(),
         generated_at_utc=_utc_now(),
         account={
             "snapshot_timestamp": account["as_of"],

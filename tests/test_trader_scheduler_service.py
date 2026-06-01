@@ -44,7 +44,6 @@ class TraderSchedulerServiceTests(unittest.TestCase):
             fallback_used_count=0,
         )
 
-    @patch("app.services.trader_scheduler.resolve_selected_model_name")
     @patch("app.services.trader_scheduler.run_live_virtual_trader_now")
     @patch("app.services.trader_scheduler.get_user_profile_store")
     @patch("app.services.trader_scheduler.get_market_hours_state")
@@ -53,7 +52,6 @@ class TraderSchedulerServiceTests(unittest.TestCase):
         mock_market_state,
         mock_profile_store,
         mock_live_run,
-        mock_resolve_model,
     ) -> None:
         service = TraderSchedulerService()
         mock_market_state.return_value = self._market_state_open()
@@ -61,12 +59,13 @@ class TraderSchedulerServiceTests(unittest.TestCase):
             SimpleNamespace(user_id="u1"),
             SimpleNamespace(user_id="u2"),
         ]
-        mock_resolve_model.return_value = "logistic_regression"
         mock_live_run.side_effect = [self._live_status("u1"), self._live_status("u2")]
 
         service.run_cycle(source="test", raise_if_busy=True)
         status = service.get_status(recent_hours=24)
 
+        self.assertEqual(mock_live_run.call_args_list[0].kwargs["model_name"], None)
+        self.assertEqual(mock_live_run.call_args_list[1].kwargs["model_name"], None)
         self.assertEqual(status["total_runs"], 1)
         self.assertEqual(status["last_users_processed"], 2)
         self.assertEqual(status["last_tickers_processed"], 4)

@@ -22,10 +22,9 @@ import RecentRunsPanel from "../components/RecentRunsPanel";
 import RecentTradesTable from "../components/RecentTradesTable";
 import ResetTradingAccountButton from "../components/ResetTradingAccountButton";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
-import { fetchModelEvaluationSettings } from "../services/modelSettingsApi";
 
 const DEFAULT_PERIOD = "5y";
-const DEFAULT_MODEL = "logistic_regression";
+const AUTO_TRADING_MODEL = "auto_best";
 const HISTORY_PAGE_SIZE = 120;
 const SCHEDULER_REFRESH_MS = 60000;
 
@@ -108,8 +107,6 @@ function formatMoney(value) {
 
 export default function VirtualTraderPage({ languageMode, currentWatchlist, profileId }) {
   const [selectedTicker, setSelectedTicker] = useState(currentWatchlist[0] || "VOO");
-  const [selectedModelName, setSelectedModelName] = useState(DEFAULT_MODEL);
-  const [modelSettingsLoaded, setModelSettingsLoaded] = useState(false);
   const [liveStatus, setLiveStatus] = useState(null);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
@@ -141,31 +138,6 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       setSelectedTicker(currentWatchlist[0]);
     }
   }, [currentWatchlist.join(","), selectedTicker]);
-
-  useEffect(() => {
-    let isActive = true;
-    setModelSettingsLoaded(false);
-    async function loadModelSettings() {
-      try {
-        const settings = await fetchModelEvaluationSettings(profileId);
-        if (!isActive) return;
-        setSelectedModelName(settings.selected_model_name || DEFAULT_MODEL);
-      } catch {
-        if (!isActive) return;
-        setSelectedModelName(DEFAULT_MODEL);
-      } finally {
-        if (isActive) setModelSettingsLoaded(true);
-      }
-    }
-    if (profileId) {
-      loadModelSettings();
-    } else {
-      setModelSettingsLoaded(true);
-    }
-    return () => {
-      isActive = false;
-    };
-  }, [profileId]);
 
   function applyLiveStatusPayload(payload) {
     if (!payload) return;
@@ -207,14 +179,14 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   }
 
   async function loadGlobalViews() {
-    if (!profileId || !modelSettingsLoaded) return;
+    if (!profileId) return;
     setIsLoading(true);
     setError("");
     try {
       // Keep initial render lightweight for low-resource deployments:
       // load core profile-level cards first; ticker-specific replay data is loaded separately.
       const [liveStatusResult, schedulerStatusResult, recentTradesResult] = await Promise.allSettled([
-        fetchLiveVirtualTraderStatus(profileId, null, selectedModelName, false),
+        fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false),
         fetchTraderSchedulerStatus(24),
         fetchVirtualAccountRecentTrades(profileId, 20),
       ]);
@@ -261,8 +233,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     setHistoricalLoading(true);
     try {
       const [historicalSummaryPayload, historicalTradesPayload] = await Promise.all([
-        fetchVirtualTraderSummary(activeTicker, DEFAULT_PERIOD, selectedModelName, 300, profileId),
-        fetchVirtualTraderTrades(activeTicker, DEFAULT_PERIOD, selectedModelName, 120, profileId),
+        fetchVirtualTraderSummary(activeTicker, DEFAULT_PERIOD, null, 300, profileId),
+        fetchVirtualTraderTrades(activeTicker, DEFAULT_PERIOD, null, 120, profileId),
       ]);
       setHistoricalSummary(historicalSummaryPayload);
       setHistoricalContributionData(historicalTradesPayload);
@@ -283,22 +255,20 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   }
 
   useEffect(() => {
-    if (!modelSettingsLoaded) return;
     loadGlobalViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, selectedModelName, modelSettingsLoaded]);
+  }, [profileId]);
 
   useEffect(() => {
-    if (!historyEnabled || !modelSettingsLoaded) return;
+    if (!historyEnabled) return;
     loadAccountHistoryPage({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, historyEnabled, modelSettingsLoaded]);
+  }, [profileId, historyEnabled]);
 
   useEffect(() => {
-    if (!modelSettingsLoaded) return;
     loadTickerSpecificViews(selectedTicker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, selectedModelName, selectedTicker, historicalEnabled, modelSettingsLoaded]);
+  }, [profileId, selectedTicker, historicalEnabled]);
 
   useEffect(() => {
     if (!profileId) return undefined;
@@ -315,7 +285,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     setIsRunningNow(true);
     setError("");
     try {
-      await runLiveVirtualTraderNow(profileId, null, selectedModelName);
+      await runLiveVirtualTraderNow(profileId, null, AUTO_TRADING_MODEL);
       await loadGlobalViews();
       await loadTickerSpecificViews(selectedTicker);
     } catch (requestError) {
@@ -423,7 +393,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             {labelByMode(languageMode, "Tickers Evaluated", ZH.tickersEvaluated)}: {liveStatus?.tickers_evaluated ?? 0}
           </span>
           <span className="helper-chip">
-            {labelByMode(languageMode, "Model", ZH.model)}: {selectedModelName}
+            {labelByMode(languageMode, "Model", ZH.model)}: {AUTO_TRADING_MODEL}
           </span>
           <button type="button" onClick={handleRunNow} disabled={isRunningNow}>
             {isRunningNow

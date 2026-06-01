@@ -547,7 +547,7 @@ class ModelLifecycleService:
         if clean_type not in MODEL_WORKFLOW_TYPES:
             raise ModelLifecycleError(f"Unsupported workflow type: {workflow_type}")
         if clean_type == "daily_incremental":
-            return {"period": "2y", "include_gradient": False, "universe_limit": 18, "benchmark": "VOO"}
+            return {"period": "2y", "include_gradient": True, "universe_limit": 18, "benchmark": "VOO"}
         if clean_type == "weekly_full":
             return {"period": "5y", "include_gradient": True, "universe_limit": 35, "benchmark": "VOO"}
         if clean_type == "monthly_deep":
