@@ -2,14 +2,6 @@ import React from "react";
 import { term } from "../i18n/terms";
 
 export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, languageMode }) {
-  function getActionText(item) {
-    if (languageMode === "zh") return item.action_summary_zh || item.action_summary;
-    if (languageMode === "both") {
-      return item.action_summary_bilingual || item.action_summary;
-    }
-    return item.action_summary_en || item.action_summary;
-  }
-
   return (
     <section className="panel">
       <h3>
@@ -23,7 +15,6 @@ export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, l
               <th>{term("Ticker", languageMode)}</th>
               <th>{term("Score", languageMode)}</th>
               <th>{term("Label", languageMode)}</th>
-              <th>{term("Action", languageMode)}</th>
               <th>{term("Close", languageMode)}</th>
             </tr>
           </thead>
@@ -40,7 +31,6 @@ export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, l
                   <td>{item.ticker}</td>
                   <td>{item.score_breakdown.total_score}</td>
                   <td>{item.label}</td>
-                  <td>{getActionText(item)}</td>
                   <td>{item.latest_close.toFixed(2)}</td>
                 </tr>
               );
