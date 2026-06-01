@@ -51,8 +51,15 @@ function statusText(status, languageMode) {
   return getLabel(languageMode, "runStatusSuccess");
 }
 
+function labelByMode(mode, en, zh) {
+  if (mode === "zh") return zh;
+  if (mode === "both") return `${en} / ${zh}`;
+  return en;
+}
+
 export default function RecentRunsPanel({ languageMode, status, isLoading = false, onRefresh = null }) {
   const recentRuns = useMemo(() => status?.recent_runs || [], [status?.recent_runs]);
+  const fallbackUsed = Number(status?.last_fallback_used ?? 0);
 
   return (
     <section className="panel">
@@ -87,9 +94,23 @@ export default function RecentRunsPanel({ languageMode, status, isLoading = fals
             {status?.last_decisions_executed ?? 0}
           </p>
           <p>
+            <strong>{labelByMode(languageMode, "Fallback used", "使用備援策略")}:</strong>{" "}
+            {fallbackUsed}
+          </p>
+          <p>
             <strong>{getLabel(languageMode, "schedulerErrors")}:</strong> {status?.last_error_count ?? 0}
           </p>
         </div>
+      ) : null}
+
+      {!isLoading && fallbackUsed > 0 ? (
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            `Fallback used ${fallbackUsed} means the trader could not load a compatible trained model for those ticker decisions, so it used the rule-based backup signal instead. It is not the same as ${fallbackUsed} failed trades.`,
+            `使用備援策略 ${fallbackUsed} 次，代表交易員在這些股票決策中未能載入相容的已訓練模型，因此改用規則式備援訊號。這不等於 ${fallbackUsed} 筆交易失敗。`
+          )}
+        </p>
       ) : null}
 
       {onRefresh ? (
@@ -111,6 +132,7 @@ export default function RecentRunsPanel({ languageMode, status, isLoading = fals
                 <th>{getLabel(languageMode, "schedulerMode")}</th>
                 <th>{getLabel(languageMode, "recentRunsUsers")}</th>
                 <th>{getLabel(languageMode, "recentRunsDecisions")}</th>
+                <th>{labelByMode(languageMode, "Fallback", "備援")}</th>
                 <th>{getLabel(languageMode, "recentRunsErrors")}</th>
                 <th>{getLabel(languageMode, "recentRunsNote")}</th>
               </tr>
@@ -127,6 +149,7 @@ export default function RecentRunsPanel({ languageMode, status, isLoading = fals
                   <td>{modeText(item.mode, languageMode)}</td>
                   <td>{item.users_processed ?? 0}</td>
                   <td>{item.decisions_executed ?? 0}</td>
+                  <td>{item.fallback_used ?? 0}</td>
                   <td>{item.errors ?? item.error_count ?? 0}</td>
                   <td>{item.note || item.message || "-"}</td>
                 </tr>

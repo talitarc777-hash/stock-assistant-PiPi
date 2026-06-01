@@ -326,6 +326,44 @@ tbody tr:hover {
   margin: 0;
 }
 
+.beginner-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.beginner-summary-grid div {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f9fafb;
+}
+
+.beginner-summary-grid span {
+  display: block;
+  color: #6b7280;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.beginner-summary-grid strong {
+  display: block;
+  color: #111827;
+  font-size: 20px;
+}
+
+.beginner-summary-grid .pnl-positive strong {
+  color: #047857;
+}
+
+.beginner-summary-grid .pnl-negative strong {
+  color: #b91c1c;
+}
+
+.beginner-action-table table {
+  min-width: 560px;
+}
+
 .error-box {
   background: #fee2e2;
   border: 1px solid #fecaca;
@@ -585,6 +623,10 @@ tbody tr:hover {
 
   .detail-grid,
   .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .beginner-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
