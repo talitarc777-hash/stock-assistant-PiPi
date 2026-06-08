@@ -364,6 +364,52 @@ tbody tr:hover {
   min-width: 560px;
 }
 
+.trade-filter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.trade-filter-grid label {
+  display: grid;
+  gap: 5px;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trade-filter-grid select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+}
+
+.trade-filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.trade-filter-summary button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  cursor: pointer;
+}
+
 .error-box {
   background: #fee2e2;
   border: 1px solid #fecaca;
@@ -630,6 +676,10 @@ tbody tr:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .trade-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .chart-wrap {
     height: 260px;
   }
@@ -663,6 +713,10 @@ tbody tr:hover {
 
   .settings-grid {
     grid-template-columns: 1.1fr 1fr;
+  }
+
+  .trade-filter-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .app-header {
