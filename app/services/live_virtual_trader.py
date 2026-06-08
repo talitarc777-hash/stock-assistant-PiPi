@@ -22,6 +22,8 @@ import pandas as pd
 from app.core.settings import get_settings
 from app.services.account_ledger_service import (
     AccountLedgerError,
+    MIN_TRADE_QUANTITY,
+    TRADE_ADMIN_FEE_HKD,
     get_account_ledger_service,
 )
 from app.services.equity_curve_service import build_live_equity_curve
@@ -681,9 +683,19 @@ def run_live_virtual_trader_now(
                     valuation_ok = pe_ratio is None or float(pe_ratio) <= 85
                     volatility_ok = volatility <= 55
                     allocation = min(cash_available, float(equity * max_position_size_pct))
-                    if allocation > 0 and current_price > 0 and concentration_ok and valuation_ok and volatility_ok:
+                    affordable_quantity = (
+                        (allocation - TRADE_ADMIN_FEE_HKD) / current_price
+                        if current_price > 0
+                        else 0.0
+                    )
+                    if (
+                        affordable_quantity >= MIN_TRADE_QUANTITY
+                        and concentration_ok
+                        and valuation_ok
+                        and volatility_ok
+                    ):
                         action, reason = "buy", "model_bullish_signal"
-                        quantity = float(allocation / current_price)
+                        quantity = float(affordable_quantity)
                     else:
                         action, reason = "no_action", "risk_or_cash_constraint"
                 elif not _confidence_ok(confidence_score, confidence_threshold):
@@ -692,11 +704,13 @@ def run_live_virtual_trader_now(
             threshold_summary = (
                 f"Thresholds: confidence {confidence_score:.0%} vs {confidence_threshold:.0%}; "
                 f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
+                f"minimum quantity {MIN_TRADE_QUANTITY:g}; trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
                 f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
                 if confidence_score is not None
                 else (
                     f"Thresholds: confidence unavailable; required {confidence_threshold:.0%}; "
                     f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
+                    f"minimum quantity {MIN_TRADE_QUANTITY:g}; trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
                     f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
                 )
             )

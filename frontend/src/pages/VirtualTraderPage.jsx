@@ -395,6 +395,13 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         <p className="helper-text">
           {labelByMode(languageMode, "This is simulation only. No broker orders are sent.", ZH.simulationOnly)}
         </p>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "Trading rule: minimum quantity is 1. Each buy or sell costs HKD 50, and the cost is included in profit/loss.",
+            "\u4ea4\u6613\u898f\u5247\uff1a\u6700\u4f4e\u6578\u91cf\u70ba 1\u3002\u6bcf\u6b21\u8cb7\u5165\u6216\u8ce3\u51fa\u6536\u53d6 50 \u6e2f\u5143\uff0c\u4e26\u5df2\u8a08\u5165\u76c8\u8667\u3002"
+          )}
+        </p>
         <div className="table-wrap beginner-action-table">
           <table>
             <thead>

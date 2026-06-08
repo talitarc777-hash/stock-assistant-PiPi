@@ -125,6 +125,7 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
               <th>{labelByMode(languageMode, "Quantity", "數量")}</th>
               <th>{labelByMode(languageMode, "Price", "價格")}</th>
               <th>{labelByMode(languageMode, "Gross Value", "交易總值")}</th>
+              <th>{labelByMode(languageMode, "Admin Cost", "行政費")}</th>
               <th>{labelByMode(languageMode, "Balance After", "交易後現金")}</th>
               <th>{labelByMode(languageMode, "Reason", "原因")}</th>
             </tr>
@@ -139,13 +140,14 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
                   <td>{Number(trade.quantity || 0).toFixed(4)}</td>
                   <td>{formatMoney(trade.price)}</td>
                   <td>{formatMoney(trade.gross_amount)}</td>
+                  <td>{formatMoney(trade.fee_amount)}</td>
                   <td>{formatMoney(trade.cash_balance_after)}</td>
                   <td>{trade.reason || "-"}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={9}>
                   {trades.length
                     ? labelByMode(languageMode, "No trades match these filters.", "沒有交易符合目前篩選條件。")
                     : labelByMode(languageMode, "No executed trades yet.", "目前尚未有已執行交易。")}

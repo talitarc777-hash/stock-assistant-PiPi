@@ -107,6 +107,7 @@ class VirtualAccountRecentTradeResponse(BaseModel):
     quantity: float
     price: float
     gross_amount: float
+    fee_amount: float = 0.0
     net_amount: float
     cash_balance_after: float
     reason: str | None = None

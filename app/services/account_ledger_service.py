@@ -28,6 +28,9 @@ from app.services.monthly_contribution_service import (
 
 logger = logging.getLogger(__name__)
 
+MIN_TRADE_QUANTITY = 1.0
+TRADE_ADMIN_FEE_HKD = 50.0
+
 
 class AccountLedgerError(Exception):
     """Raised when immutable ledger operations fail validation."""
@@ -460,11 +463,49 @@ class AccountLedgerService:
             raise AccountLedgerError("trade action must be buy or sell.")
         numeric_quantity = float(quantity)
         numeric_price = float(price)
-        if numeric_quantity <= 0 or numeric_price <= 0:
-            raise AccountLedgerError("quantity and price must be greater than 0.")
+        if numeric_quantity < MIN_TRADE_QUANTITY:
+            raise AccountLedgerError(
+                f"quantity must be at least {MIN_TRADE_QUANTITY:g}."
+            )
+        if numeric_price <= 0:
+            raise AccountLedgerError("price must be greater than 0.")
 
-        amount = -numeric_quantity * numeric_price if normalized_action == "buy" else numeric_quantity * numeric_price
+        gross_amount = numeric_quantity * numeric_price
+        fee_amount = TRADE_ADMIN_FEE_HKD
+        if normalized_action == "buy":
+            total_cost = gross_amount + fee_amount
+            clean_user_id = _clean_user_id(user_id)
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(amount), 0) AS cash
+                    FROM account_ledger_events
+                    WHERE user_id = ?
+                    """,
+                    (clean_user_id,),
+                ).fetchone()
+            cash_available = float(row["cash"] if row is not None else 0.0)
+            if cash_available < total_cost:
+                raise AccountLedgerError(
+                    "Insufficient cash for trade value and HKD 50 administrative cost."
+                )
+            amount = -total_cost
+        else:
+            holdings, _ = self._rebuild_holdings(user_id)
+            holding = holdings.get(str(ticker).strip().upper())
+            if holding is None or holding.quantity + 1e-8 < numeric_quantity:
+                raise AccountLedgerError("Insufficient holding quantity for sell trade.")
+            amount = gross_amount - fee_amount
+
         event_type = "buy_trade" if normalized_action == "buy" else "sell_trade"
+        event_metadata = dict(metadata or {})
+        event_metadata.update(
+            {
+                "fee_amount": fee_amount,
+                "gross_amount": gross_amount,
+                "minimum_trade_quantity": MIN_TRADE_QUANTITY,
+            }
+        )
         return self._insert_event(
             user_id=user_id,
             event_type=event_type,
@@ -474,7 +515,7 @@ class AccountLedgerService:
             price=numeric_price,
             reason=reason or f"{normalized_action} trade",
             source=source,
-            metadata=metadata or {},
+            metadata=event_metadata,
         )
 
     def list_monthly_contribution_records(self, user_id: str) -> list[dict[str, Any]]:
@@ -643,16 +684,30 @@ class AccountLedgerService:
             if qty <= 0 or price <= 0:
                 continue
             state = holdings.get(ticker) or _HoldingState(ticker=ticker, quantity=0.0, avg_entry_price=0.0)
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            fee_amount = float(metadata.get("fee_amount") or 0.0)
             if row["event_type"] == "buy_trade":
                 new_qty = state.quantity + qty
-                new_avg = ((state.quantity * state.avg_entry_price) + (qty * price)) / new_qty if new_qty > 0 else 0.0
+                new_avg = (
+                    (
+                        (state.quantity * state.avg_entry_price)
+                        + (qty * price)
+                        + fee_amount
+                    )
+                    / new_qty
+                    if new_qty > 0
+                    else 0.0
+                )
                 state.quantity = new_qty
                 state.avg_entry_price = new_avg
             else:
                 sell_qty = min(qty, state.quantity)
                 if sell_qty <= 0:
                     continue
-                realized = (price - state.avg_entry_price) * sell_qty
+                realized = ((price - state.avg_entry_price) * sell_qty) - fee_amount
                 realized_total += realized
                 state.quantity -= sell_qty
                 if state.quantity <= 1e-8:
@@ -698,6 +753,7 @@ class AccountLedgerService:
                     "quantity": quantity,
                     "price": price,
                     "gross_amount": float(row.get("gross_amount") or (quantity * price)),
+                    "fee_amount": float(row.get("fee_amount") or 0.0),
                     "net_amount": float(row["net_amount"]),
                     "cash_balance_after": float(row["cash_balance_after"]),
                     "reason": row.get("reason"),
