@@ -29,7 +29,10 @@ from app.services.account_ledger_service import (
 from app.services.equity_curve_service import build_live_equity_curve
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
-from app.services.model_lifecycle_service import get_model_lifecycle_service
+from app.services.model_lifecycle_service import (
+    TRADING_MODEL_PERIODS,
+    get_model_lifecycle_service,
+)
 from app.services.model_results import (
     ModelResultsError,
     list_compatible_saved_model_candidates,
@@ -546,56 +549,77 @@ def run_live_virtual_trader_now(
                 period=period,
                 target_name=target_name,
                 requested_model_name=None if auto_model_selection else requested_model_name,
+                periods=TRADING_MODEL_PERIODS if auto_model_selection else (period,),
             )
-            saved_candidates = list_compatible_saved_model_candidates(
-                ticker=symbol,
-                period=period,
-                target_name=target_name,
-                requested_model_name=None if auto_model_selection else requested_model_name,
-                limit=12,
-            )
+            candidate_periods = TRADING_MODEL_PERIODS if auto_model_selection else (period,)
+            saved_candidates: list[dict[str, Any]] = []
+            for candidate_period in candidate_periods:
+                for candidate in list_compatible_saved_model_candidates(
+                    ticker=symbol,
+                    period=candidate_period,
+                    target_name=target_name,
+                    requested_model_name=None if auto_model_selection else requested_model_name,
+                    limit=12,
+                ):
+                    saved_candidates.append({**candidate, "period": candidate_period})
 
             runtime_candidates: list[dict[str, Any]] = []
-            seen_runtime: set[tuple[str, str]] = set()
+            seen_runtime: set[tuple[str, str, str]] = set()
             for candidate in registry_candidates + saved_candidates:
                 tkr = str(candidate.get("ticker", symbol)).strip().upper()
+                candidate_period = str(candidate.get("period", period)).strip()
                 mdl = str(candidate.get("model_name", "")).strip().lower()
                 if auto_model_selection and mdl not in TRADING_MODEL_NAMES:
                     continue
-                key = (tkr, mdl)
+                key = (tkr, candidate_period, mdl)
                 if key in seen_runtime:
                     continue
                 seen_runtime.add(key)
                 runtime_candidates.append(
                     {
                         "ticker": tkr,
+                        "period": candidate_period,
                         "model_name": mdl,
                         "source": str(candidate.get("source", "candidate")),
+                        "validation_score": candidate.get("validation_score"),
                     }
                 )
 
             if not runtime_candidates:
                 fallback_model_names = TRADING_MODEL_NAMES if auto_model_selection else (requested_model_name,)
                 runtime_candidates = [
-                    {"ticker": candidate_ticker, "model_name": candidate_model_name, "source": source}
+                    {
+                        "ticker": candidate_ticker,
+                        "period": candidate_period,
+                        "model_name": candidate_model_name,
+                        "source": source,
+                        "validation_score": None,
+                    }
                     for candidate_ticker, source in ((symbol, "trained_model"), ("GLOBAL", "global_model"))
+                    for candidate_period in candidate_periods
                     for candidate_model_name in fallback_model_names
                     if candidate_model_name
                 ]
             logger.info(
                 "Live trader model candidate order ticker=%s candidates=%s",
                 symbol,
-                [f"{row['ticker']}/{row['model_name']}:{row['source']}" for row in runtime_candidates[:8]],
+                [
+                    f"{row['ticker']}/{row['period']}/{row['model_name']}:{row['source']}"
+                    for row in runtime_candidates[:12]
+                ],
             )
 
+            decision_model_period = period
+            decision_validation_score: float | None = None
             for candidate in runtime_candidates:
                 candidate_ticker = str(candidate.get("ticker", symbol)).strip().upper()
+                candidate_period = str(candidate.get("period", period)).strip()
                 candidate_model_name = str(candidate.get("model_name", "")).strip().lower()
                 source_name = str(candidate.get("source", "trained_model"))
                 try:
                     bundle = load_trained_model_bundle(
                         ticker=candidate_ticker,
-                        period=period,
+                        period=candidate_period,
                         target_name=target_name,
                         model_name=candidate_model_name,
                     )
@@ -612,17 +636,26 @@ def run_live_virtual_trader_now(
                             confidence_score = None
                     decision_source = source_name
                     decision_model_name = str(bundle.get("model_name", candidate_model_name))
+                    decision_model_period = candidate_period
+                    score_value = candidate.get("validation_score")
+                    decision_validation_score = (
+                        float(score_value) if isinstance(score_value, (int, float)) else None
+                    )
                     model_loaded = True
                     logger.info(
-                        "Live trader selected saved model ticker=%s selected=%s/%s source=%s",
+                        "Live trader selected saved model ticker=%s selected=%s/%s/%s score=%s source=%s",
                         symbol,
                         candidate_ticker,
+                        candidate_period,
                         decision_model_name,
+                        decision_validation_score,
                         decision_source,
                     )
                     break
                 except ModelResultsError as exc:
-                    model_load_errors.append(f"{candidate_ticker}/{candidate_model_name}:{exc}")
+                    model_load_errors.append(
+                        f"{candidate_ticker}/{candidate_period}/{candidate_model_name}:{exc}"
+                    )
 
             if not model_loaded:
                 prediction_value, confidence_score, task_type, model_fallback_reason = _build_rule_based_fallback(
@@ -747,6 +780,8 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "model_period": decision_model_period,
+                            "validation_score": decision_validation_score,
                             "confidence_score": confidence_score,
                             "prediction_value": prediction_value,
                             "decision_source": decision_source,
@@ -767,6 +802,8 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "model_period": decision_model_period,
+                            "validation_score": decision_validation_score,
                             "confidence_score": confidence_score,
                             "prediction_value": prediction_value,
                             "decision_source": decision_source,
@@ -817,6 +854,8 @@ def run_live_virtual_trader_now(
                     "pe_ratio": pe_ratio,
                     "volatility": volatility,
                     "decision_source": decision_source,
+                    "model_period": decision_model_period,
+                    "validation_score": decision_validation_score,
                     "model_load_errors": model_load_errors,
                 },
             }

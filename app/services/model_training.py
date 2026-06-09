@@ -537,6 +537,7 @@ def train_baseline_models_for_ticker(
     sentiment_model: str = "finbert",
     output_dir: str | Path | None = None,
     include_gradient_boosting: bool = True,
+    target_names: tuple[str, ...] | list[str] | None = None,
 ) -> list[TrainingRunResult]:
     """Train baseline classification and regression models for one ticker."""
     ticker_symbol = ticker.strip().upper()
@@ -553,33 +554,36 @@ def train_baseline_models_for_ticker(
     if not include_gradient_boosting:
         classification_models = [name for name in classification_models if name != "gradient_boosting"]
         regression_models = [name for name in regression_models if name != "gradient_boosting"]
+    selected_targets = set(target_names or ("target_5d_updown", "target_5d_return"))
 
     run_results: list[TrainingRunResult] = []
-    for model_name in classification_models:
-        run_results.append(
-            train_baseline_model(
-                dataset_df=dataset_df,
-                ticker=ticker_symbol,
-                period=period,
-                target_name="target_5d_updown",
-                task_type="classification",
-                model_name=model_name,
-                output_dir=output_dir,
+    if "target_5d_updown" in selected_targets:
+        for model_name in classification_models:
+            run_results.append(
+                train_baseline_model(
+                    dataset_df=dataset_df,
+                    ticker=ticker_symbol,
+                    period=period,
+                    target_name="target_5d_updown",
+                    task_type="classification",
+                    model_name=model_name,
+                    output_dir=output_dir,
+                )
             )
-        )
 
-    for model_name in regression_models:
-        run_results.append(
-            train_baseline_model(
-                dataset_df=dataset_df,
-                ticker=ticker_symbol,
-                period=period,
-                target_name="target_5d_return",
-                task_type="regression",
-                model_name=model_name,
-                output_dir=output_dir,
+    if "target_5d_return" in selected_targets:
+        for model_name in regression_models:
+            run_results.append(
+                train_baseline_model(
+                    dataset_df=dataset_df,
+                    ticker=ticker_symbol,
+                    period=period,
+                    target_name="target_5d_return",
+                    task_type="regression",
+                    model_name=model_name,
+                    output_dir=output_dir,
+                )
             )
-        )
 
     return run_results
 

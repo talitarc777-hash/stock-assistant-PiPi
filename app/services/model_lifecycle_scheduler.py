@@ -261,9 +261,17 @@ class ModelLifecycleSchedulerService:
                     active_triggers = lifecycle.detect_retrain_triggers(max_models=6)
                     lifecycle.set_state("last_trigger_scan_utc", _utc_now_iso())
                     if active_triggers and self._should_fire_trigger_workflow(now_utc):
+                        affected_tickers = list(
+                            dict.fromkeys(
+                                parts[1].strip().upper()
+                                for trigger in active_triggers
+                                if len(parts := str(trigger).split(":")) >= 2 and parts[1].strip()
+                            )
+                        )
                         lifecycle.run_training_workflow(
                             workflow_type="trigger_based",
                             trigger_reason=f"{source}:trigger_based:{';'.join(active_triggers[:3])}",
+                            tickers=affected_tickers or None,
                         )
                         lifecycle.set_state("last_trigger_workflow_utc", _utc_now_iso())
 

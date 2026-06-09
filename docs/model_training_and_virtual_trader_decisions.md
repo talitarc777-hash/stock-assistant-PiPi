@@ -124,6 +124,13 @@ Automatic lifecycle schedule:
   - gradient boosting enabled
 - Trigger-based workflow:
   - checked periodically when no scheduled workflow is due
+  - retrains affected tickers across `2y`, `5y`, and `10y`
+  - verifies `linear_regression`, `random_forest`, and `gradient_boosting`
+
+The Virtual Trader compares validated candidates across all three periods. For
+each ticker it prefers current, non-stale models with the strongest validation
+score, then loads that model's saved training period automatically. Users do
+not choose the model manually.
   - can retrain models when drift or stale-model signals are detected
 
 The scheduler wakes every 15 minutes to check whether a workflow is due. It does not retrain all models every 15 minutes.

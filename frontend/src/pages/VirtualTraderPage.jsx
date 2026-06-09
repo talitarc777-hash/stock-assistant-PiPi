@@ -409,6 +409,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                 <th>{labelByMode(languageMode, "Ticker", ZH.ticker)}</th>
                 <th>{labelByMode(languageMode, "Action", ZH.action)}</th>
                 <th>{labelByMode(languageMode, "Reason", ZH.reason)}</th>
+                <th>{labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}</th>
                 <th>{labelByMode(languageMode, "Price", ZH.price)}</th>
               </tr>
             </thead>
@@ -423,12 +424,18 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                     <td>{item.ticker}</td>
                     <td>{actionText(item.action, languageMode)}</td>
                     <td>{item.action_summary || item.reason}</td>
+                    <td>
+                      {item.model_name || "N/A"}
+                      {(item.metadata?.model_period || item.model_period)
+                        ? ` (${item.metadata?.model_period || item.model_period})`
+                        : ""}
+                    </td>
                     <td>{formatMoney(item.price)}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={4}>{getLabel(languageMode, "noRecentTraderDecisions")}</td>
+                  <td colSpan={5}>{getLabel(languageMode, "noRecentTraderDecisions")}</td>
                 </tr>
               )}
             </tbody>

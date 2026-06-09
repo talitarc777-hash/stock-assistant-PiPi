@@ -360,6 +360,35 @@ tbody tr:hover {
   color: #b91c1c;
 }
 
+.model-overview-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  margin-bottom: 12px;
+  border: 1px solid #d1d5db;
+  background: #d1d5db;
+}
+
+.model-overview-grid div {
+  min-width: 0;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.model-overview-grid span {
+  display: block;
+  margin-bottom: 5px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.model-overview-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-size: 18px;
+}
+
 .beginner-action-table table {
   min-width: 560px;
 }
@@ -673,6 +702,10 @@ tbody tr:hover {
   }
 
   .beginner-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

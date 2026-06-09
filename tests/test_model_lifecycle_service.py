@@ -119,6 +119,50 @@ class ModelLifecycleServiceTests(unittest.TestCase):
         self.assertEqual(by_model["random_forest"]["status"], "production")
         self.assertEqual(by_model["logistic_regression"]["status"], "archived")
 
+    def test_runtime_candidates_rank_validated_models_across_periods(self) -> None:
+        for period, model_name, score in (
+            ("2y", "linear_regression", 0.56),
+            ("5y", "random_forest", 0.64),
+            ("10y", "gradient_boosting", 0.60),
+        ):
+            self.service._upsert_registry(  # pylint: disable=protected-access
+                ticker="AAPL",
+                period=period,
+                target_name="target_5d_return",
+                model_name=model_name,
+                status="production",
+                is_validated=True,
+                validation_score=score,
+                stale_after_days=30,
+                retrain_type="test",
+                metrics_summary={},
+                notes=None,
+                last_trained_at_utc="2026-06-01T00:00:00+00:00",
+                last_evaluated_at_utc="2026-06-01T00:00:00+00:00",
+                last_promoted_at_utc="2026-06-01T00:00:00+00:00",
+            )
+
+        candidates = self.service.resolve_runtime_model_candidates(
+            ticker="AAPL",
+            period="2y",
+            periods=("2y", "5y", "10y"),
+            target_name="target_5d_return",
+        )
+
+        self.assertEqual(
+            [(item["period"], item["model_name"]) for item in candidates],
+            [
+                ("5y", "random_forest"),
+                ("10y", "gradient_boosting"),
+                ("2y", "linear_regression"),
+            ],
+        )
+
+    def test_trigger_workflow_uses_all_trading_periods(self) -> None:
+        config = self.service._workflow_config("trigger_based")  # pylint: disable=protected-access
+        self.assertEqual(tuple(config["periods"]), ("2y", "5y", "10y"))
+        self.assertTrue(config["include_gradient"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,7 +30,9 @@ from app.services.universe_service import get_active_universe
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_NAME = "target_5d_updown"
+TRADING_TARGET_NAME = "target_5d_return"
 DEFAULT_PERIOD = "5y"
+TRADING_MODEL_PERIODS = ("2y", "5y", "10y")
 DEFAULT_STALE_DAYS = 30
 PRODUCTION_MIN_SCORE = 0.50
 PROMOTION_DELTA = 0.005
@@ -547,12 +549,17 @@ class ModelLifecycleService:
         if clean_type not in MODEL_WORKFLOW_TYPES:
             raise ModelLifecycleError(f"Unsupported workflow type: {workflow_type}")
         if clean_type == "daily_incremental":
-            return {"period": "2y", "include_gradient": True, "universe_limit": 18, "benchmark": "VOO"}
+            return {"periods": ("2y",), "include_gradient": True, "universe_limit": 18, "benchmark": "VOO"}
         if clean_type == "weekly_full":
-            return {"period": "5y", "include_gradient": True, "universe_limit": 35, "benchmark": "VOO"}
+            return {"periods": ("5y",), "include_gradient": True, "universe_limit": 35, "benchmark": "VOO"}
         if clean_type == "monthly_deep":
-            return {"period": "10y", "include_gradient": True, "universe_limit": 55, "benchmark": "VOO"}
-        return {"period": "3y", "include_gradient": False, "universe_limit": 24, "benchmark": "VOO"}
+            return {"periods": ("10y",), "include_gradient": True, "universe_limit": 55, "benchmark": "VOO"}
+        return {
+            "periods": TRADING_MODEL_PERIODS,
+            "include_gradient": True,
+            "universe_limit": 6,
+            "benchmark": "VOO",
+        }
 
     @staticmethod
     def _normalize_tickers(values: list[str]) -> list[str]:
@@ -679,29 +686,33 @@ class ModelLifecycleService:
         per_ticker_errors: list[str] = []
         promotion_count = 0
 
+        periods = tuple(str(item) for item in config["periods"])
         for ticker in universe:
-            try:
-                results = train_baseline_models_for_ticker(
-                    ticker=ticker,
-                    period=str(config["period"]),
-                    benchmark=str(config["benchmark"]),
-                    include_gradient_boosting=bool(config["include_gradient"]),
-                )
-                for result in results:
-                    outcome = self.register_training_result(result=result, retrain_type=workflow_type)
-                    successful_models += 1
-                    if outcome["promoted"]:
-                        promotion_count += 1
-            except Exception as exc:  # pragma: no cover - runtime guard
-                failed_models += 1
-                per_ticker_errors.append(f"{ticker}: {exc}")
-                logger.warning(
-                    "Model lifecycle workflow skipped ticker=%s type=%s error=%s",
-                    ticker,
-                    workflow_type,
-                    exc,
-                )
-                continue
+            for training_period in periods:
+                try:
+                    results = train_baseline_models_for_ticker(
+                        ticker=ticker,
+                        period=training_period,
+                        benchmark=str(config["benchmark"]),
+                        include_gradient_boosting=bool(config["include_gradient"]),
+                        target_names=(TRADING_TARGET_NAME,),
+                    )
+                    for result in results:
+                        outcome = self.register_training_result(result=result, retrain_type=workflow_type)
+                        successful_models += 1
+                        if outcome["promoted"]:
+                            promotion_count += 1
+                except Exception as exc:  # pragma: no cover - runtime guard
+                    failed_models += 1
+                    per_ticker_errors.append(f"{ticker}/{training_period}: {exc}")
+                    logger.warning(
+                        "Model lifecycle workflow skipped ticker=%s period=%s type=%s error=%s",
+                        ticker,
+                        training_period,
+                        workflow_type,
+                        exc,
+                    )
+                    continue
 
         workflow_status = "success"
         if failed_models > 0 and successful_models > 0:
@@ -710,7 +721,7 @@ class ModelLifecycleService:
             workflow_status = "failed"
 
         details = {
-            "period": config["period"],
+            "periods": list(periods),
             "include_gradient": bool(config["include_gradient"]),
             "promotion_count": promotion_count,
             "errors": per_ticker_errors[:50],
@@ -780,7 +791,7 @@ class ModelLifecycleService:
         """Evaluate rolling-performance and drift triggers."""
         production_rows = [
             row
-            for row in self.list_registry(target_name=DEFAULT_TARGET_NAME, limit=300)
+            for row in self.list_registry(target_name=TRADING_TARGET_NAME, limit=300)
             if row["status"] == "production"
         ][: max(1, int(max_models))]
         triggers: list[str] = []
@@ -841,76 +852,87 @@ class ModelLifecycleService:
         period: str,
         target_name: str = DEFAULT_TARGET_NAME,
         requested_model_name: str | None = None,
+        periods: tuple[str, ...] | list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the runtime fallback chain metadata.
-
-        Priority:
-        1) production model
-        2) latest validated candidate
-        3) shared/global production
-        4) shared/global validated candidate
-        5) explicitly requested model (if still not covered)
-        """
+        """Return validated runtime candidates ranked across training windows."""
         clean_ticker = str(ticker).strip().upper()
-        clean_period = str(period).strip()
+        requested_periods = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in (periods or (period,))
+                if str(item).strip()
+            )
+        )
         clean_target = str(target_name).strip()
         attempts: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
 
-        def append_attempt(item: dict[str, Any] | None, source: str) -> None:
-            if not item:
-                return
-            key = (str(item["ticker"]).upper(), str(item["model_name"]).lower())
+        registry_rows = self.list_registry(target_name=clean_target, limit=1000)
+        eligible_rows = [
+            row
+            for row in registry_rows
+            if row["period"] in requested_periods
+            and row["ticker"] in {clean_ticker, "GLOBAL"}
+            and row["status"] in {"production", "candidate"}
+            and bool(row["is_validated"])
+        ]
+        eligible_rows.sort(
+            key=lambda row: (
+                0 if row["ticker"] == clean_ticker else 1,
+                bool(row.get("is_stale")),
+                -(float(row.get("validation_score") or 0.0)),
+                0 if row["status"] == "production" else 1,
+                requested_periods.index(row["period"]),
+            )
+        )
+        for row in eligible_rows:
+            key = (
+                str(row["ticker"]).upper(),
+                str(row["period"]),
+                str(row["model_name"]).lower(),
+            )
             if key in seen:
-                return
+                continue
             seen.add(key)
             attempts.append(
                 {
                     "ticker": key[0],
-                    "model_name": key[1],
-                    "source": source,
-                    "status": item.get("status"),
-                    "is_stale": bool(item.get("is_stale", False)),
+                    "period": key[1],
+                    "model_name": key[2],
+                    "source": (
+                        "production_model"
+                        if row["ticker"] == clean_ticker and row["status"] == "production"
+                        else "validated_candidate"
+                        if row["ticker"] == clean_ticker
+                        else "shared_global_production"
+                        if row["status"] == "production"
+                        else "shared_global_candidate"
+                    ),
+                    "status": row["status"],
+                    "is_stale": bool(row.get("is_stale", False)),
+                    "validation_score": row.get("validation_score"),
                 }
             )
 
-        append_attempt(
-            self.get_production_model(ticker=clean_ticker, period=clean_period, target_name=clean_target),
-            "production_model",
-        )
-        append_attempt(
-            self.get_latest_validated_candidate(
-                ticker=clean_ticker,
-                period=clean_period,
-                target_name=clean_target,
-            ),
-            "validated_candidate",
-        )
-        append_attempt(
-            self.get_production_model(ticker="GLOBAL", period=clean_period, target_name=clean_target),
-            "shared_global_production",
-        )
-        append_attempt(
-            self.get_latest_validated_candidate(
-                ticker="GLOBAL",
-                period=clean_period,
-                target_name=clean_target,
-            ),
-            "shared_global_candidate",
-        )
-
         if requested_model_name:
-            key = (clean_ticker, str(requested_model_name).strip().lower())
-            if key not in seen:
-                attempts.append(
-                    {
-                        "ticker": key[0],
-                        "model_name": key[1],
-                        "source": "requested_model",
-                        "status": "requested",
-                        "is_stale": False,
-                    }
+            for requested_period in requested_periods:
+                key = (
+                    clean_ticker,
+                    requested_period,
+                    str(requested_model_name).strip().lower(),
                 )
+                if key not in seen:
+                    attempts.append(
+                        {
+                            "ticker": key[0],
+                            "period": key[1],
+                            "model_name": key[2],
+                            "source": "requested_model",
+                            "status": "requested",
+                            "is_stale": False,
+                            "validation_score": None,
+                        }
+                    )
 
         return attempts
 
