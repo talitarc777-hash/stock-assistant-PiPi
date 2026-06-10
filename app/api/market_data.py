@@ -101,6 +101,10 @@ class LiveMarketSnapshotResponse(BaseModel):
     daily_change_pct: float
     pe_ratio: float | None = None
     market_cap: float | None = None
+    company_name: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    business_summary: str | None = None
     data_freshness_note: str
 
 

@@ -34,10 +34,18 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
 
     pe_ratio = None
     market_cap = None
+    company_name = None
+    sector = None
+    industry = None
+    business_summary = None
     try:
         info = yf.Ticker(symbol).info or {}
         pe_ratio = info.get("trailingPE")
         market_cap = info.get("marketCap")
+        company_name = info.get("longName") or info.get("shortName")
+        sector = info.get("sector")
+        industry = info.get("industry")
+        business_summary = info.get("longBusinessSummary")
     except Exception as exc:  # pragma: no cover - depends on upstream provider
         logger.info("Live valuation fetch skipped for %s: %s", symbol, exc)
 
@@ -63,6 +71,10 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
         "daily_change_pct": daily_change_pct,
         "pe_ratio": float(pe_ratio) if pe_ratio is not None else None,
         "market_cap": float(market_cap) if market_cap is not None else None,
+        "company_name": str(company_name) if company_name else None,
+        "sector": str(sector) if sector else None,
+        "industry": str(industry) if industry else None,
+        "business_summary": str(business_summary) if business_summary else None,
         "data_freshness_note": (
             "Near-live polling snapshot from latest available provider data; "
             "not guaranteed tick-level real-time."

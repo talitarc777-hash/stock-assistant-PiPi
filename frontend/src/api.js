@@ -33,6 +33,13 @@ export async function fetchChartData(ticker, period = "5y") {
   });
 }
 
+export async function fetchLiveMarketSnapshot(ticker, period = "3mo") {
+  return fetchJson(
+    `/market-data/live-snapshot?ticker=${encodeURIComponent(ticker)}&period=${encodeURIComponent(period)}`,
+    { timeoutMs: 18000, retries: 1 }
+  );
+}
+
 export async function fetchForecast(ticker, period = "2y") {
   return fetchJson(`/forecast?ticker=${encodeURIComponent(ticker)}&period=${period}`, { timeoutMs: 14000 });
 }
