@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   fetchTraderSchedulerStatus,
   fetchLiveVirtualTraderStatus,
+  fetchLiveVirtualTraderTrades,
   fetchVirtualAccountHistory,
   fetchVirtualAccountRecentTrades,
   fetchVirtualTraderTrades,
@@ -91,6 +92,56 @@ function actionText(action, languageMode) {
   return labelByMode(languageMode, en, zh);
 }
 
+function decisionReasonText(reason, languageMode) {
+  const normalized = String(reason || "").toLowerCase();
+  const reasons = {
+    model_bullish_signal: ["Model approved this buy", "\u6a21\u578b\u5df2\u6279\u51c6\u8cb7\u5165"],
+    model_bearish_signal: ["Model recommended selling", "\u6a21\u578b\u5efa\u8b70\u8ce3\u51fa"],
+    model_not_bullish: ["Model is not bullish yet", "\u6a21\u578b\u5c1a\u672a\u770b\u597d"],
+    confidence_below_threshold: ["Model confidence is below 55%", "\u6a21\u578b\u4fe1\u5fc3\u4f4e\u65bc 55%"],
+    risk_or_cash_constraint: ["Blocked by cash or risk rules", "\u53d7\u73fe\u91d1\u6216\u98a8\u96aa\u898f\u5247\u9650\u5236"],
+    holding_position: ["Continue holding", "\u7e7c\u7e8c\u6301\u6709"],
+    stop_loss: ["Stop-loss was reached", "\u5df2\u89f8\u53ca\u6b62\u8755"],
+    take_profit: ["Profit target was reached", "\u5df2\u9054\u5230\u6b62\u76c8\u76ee\u6a19"],
+    signal_cooldown_active: ["Waiting for the signal cooldown", "\u6b63\u7b49\u5f85\u8a0a\u865f\u51b7\u975c\u671f"],
+    duplicate_signal_suppressed: ["Repeated signal was ignored", "\u91cd\u8907\u8a0a\u865f\u5df2\u5ffd\u7565"],
+    fallback_rule_neutral_hold: ["Backup rules are neutral", "\u5f8c\u5099\u898f\u5247\u76ee\u524d\u4e2d\u6027"],
+  };
+  const [en, zh] = reasons[normalized] || [
+    String(reason || "No action"),
+    String(reason || "\u672a\u6709\u52d5\u4f5c"),
+  ];
+  return labelByMode(languageMode, en, zh);
+}
+
+function opportunityText(item, languageMode) {
+  const action = String(item?.action || "").toLowerCase();
+  if (action === "buy") return labelByMode(languageMode, "Bought", "\u5df2\u8cb7\u5165");
+  if (action === "sell") return labelByMode(languageMode, "Sell action", "\u8ce3\u51fa\u52d5\u4f5c");
+  if (action === "hold") return labelByMode(languageMode, "Holding", "\u6301\u6709\u4e2d");
+
+  const prediction = Number(item?.metadata?.prediction_value);
+  const confidence = Number(item?.confidence_score);
+  if (prediction > 0 && confidence >= 0.55) {
+    return labelByMode(languageMode, "High, but blocked", "\u9ad8\uff0c\u4f46\u53d7\u898f\u5247\u9650\u5236");
+  }
+  if (prediction > 0) return labelByMode(languageMode, "Watching", "\u89c0\u5bdf\u4e2d");
+  return labelByMode(languageMode, "Low now", "\u76ee\u524d\u8f03\u4f4e");
+}
+
+function decisionOpportunityScore(item, isWatchlist) {
+  const actionRank = { buy: 5, sell: 4, hold: 2, no_action: 1 };
+  const action = String(item?.action || "no_action").toLowerCase();
+  const prediction = Number(item?.metadata?.prediction_value);
+  const confidence = Number(item?.confidence_score);
+  return (
+    (actionRank[action] || 0) * 1000000
+    + (isWatchlist ? 10000 : 0)
+    + (Number.isFinite(prediction) ? prediction * 1000 : 0)
+    + (Number.isFinite(confidence) ? confidence * 100 : 0)
+  );
+}
+
 export default function VirtualTraderPage({ languageMode, currentWatchlist, profileId }) {
   const [selectedTicker, setSelectedTicker] = useState(currentWatchlist[0] || "VOO");
   const [liveStatus, setLiveStatus] = useState(null);
@@ -170,15 +221,22 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     setIsLoading(true);
     setError("");
     try {
-      const [liveStatusResult, schedulerStatusResult, recentTradesResult] = await Promise.allSettled([
-        fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false),
-        fetchTraderSchedulerStatus(24),
-        fetchVirtualAccountRecentTrades(profileId, 20),
-      ]);
+      const [liveStatusResult, schedulerStatusResult, recentTradesResult, decisionHistoryResult] =
+        await Promise.allSettled([
+          fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false),
+          fetchTraderSchedulerStatus(24),
+          fetchVirtualAccountRecentTrades(profileId, 20),
+          fetchLiveVirtualTraderTrades(profileId, null, 300),
+        ]);
 
       if (schedulerStatusResult.status === "fulfilled") setSchedulerStatus(schedulerStatusResult.value);
       if (liveStatusResult.status === "fulfilled") applyLiveStatusPayload(liveStatusResult.value);
       if (recentTradesResult.status === "fulfilled") setRecentTrades(recentTradesResult.value.trades || []);
+      if (decisionHistoryResult.status === "fulfilled") {
+        const decisions = decisionHistoryResult.value.trades || [];
+        setLiveDecisionLog(decisions);
+        setSelectedLiveTrade(decisions[0] || null);
+      }
 
       if (liveStatusResult.status === "rejected") {
         setError(liveStatusResult.reason?.message || "Failed to load virtual trader status.");
@@ -357,7 +415,42 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     );
   }, [liveStatus]);
 
-  const actionRows = liveDecisionLog.slice(0, 6);
+  const actionRows = useMemo(() => {
+    const watchlistSet = new Set(
+      currentWatchlist.map((ticker) => String(ticker).trim().toUpperCase()).filter(Boolean)
+    );
+    const latestByTicker = new Map();
+
+    for (const item of liveDecisionLog) {
+      const ticker = String(item?.ticker || "").trim().toUpperCase();
+      if (!ticker || latestByTicker.has(ticker)) continue;
+      latestByTicker.set(ticker, {
+        ...item,
+        is_watchlist: watchlistSet.has(ticker),
+      });
+    }
+
+    return [...latestByTicker.values()]
+      .sort(
+        (left, right) =>
+          decisionOpportunityScore(right, right.is_watchlist)
+          - decisionOpportunityScore(left, left.is_watchlist)
+      )
+      .slice(0, 15);
+  }, [currentWatchlist, liveDecisionLog]);
+
+  useEffect(() => {
+    if (!actionRows.length) {
+      setSelectedLiveTrade(null);
+      return;
+    }
+    setSelectedLiveTrade((current) => {
+      const remainsVisible = actionRows.some(
+        (item) => item.timestamp === current?.timestamp && item.ticker === current?.ticker
+      );
+      return remainsVisible ? current : actionRows[0];
+    });
+  }, [actionRows]);
 
   return (
     <>
@@ -393,7 +486,11 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       <section className="panel">
         <h3>{labelByMode(languageMode, "Latest Stock Action", "最新股票動作")}</h3>
         <p className="helper-text">
-          {labelByMode(languageMode, "This is simulation only. No broker orders are sent.", ZH.simulationOnly)}
+          {labelByMode(
+            languageMode,
+            "Top opportunities from the full market universe are shown. Executed actions appear first, and watchlist tickers are clearly marked.",
+            "\u986f\u793a\u6574\u500b\u5e02\u5834\u7bc4\u570d\u5167\u7684\u6700\u4f73\u6a5f\u6703\u3002\u5df2\u57f7\u884c\u7684\u52d5\u4f5c\u6703\u512a\u5148\u986f\u793a\uff0c\u89c0\u5bdf\u6e05\u55ae\u80a1\u7968\u6703\u6e05\u695a\u6a19\u8a18\u3002"
+          )}
         </p>
         <p className="helper-text">
           {labelByMode(
@@ -407,7 +504,9 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "Ticker", ZH.ticker)}</th>
+                <th>{labelByMode(languageMode, "Source", "\u4f86\u6e90")}</th>
                 <th>{labelByMode(languageMode, "Action", ZH.action)}</th>
+                <th>{labelByMode(languageMode, "Buy potential", "\u8cb7\u5165\u6f5b\u529b")}</th>
                 <th>{labelByMode(languageMode, "Reason", ZH.reason)}</th>
                 <th>{labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}</th>
                 <th>{labelByMode(languageMode, "Price", ZH.price)}</th>
@@ -422,8 +521,16 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                     onClick={() => setSelectedLiveTrade(item)}
                   >
                     <td>{item.ticker}</td>
+                    <td>
+                      <span className={item.is_watchlist ? "ticker-source-watchlist" : "ticker-source-market"}>
+                        {item.is_watchlist
+                          ? labelByMode(languageMode, "Watchlist", "\u89c0\u5bdf\u6e05\u55ae")
+                          : labelByMode(languageMode, "Market", "\u5e02\u5834")}
+                      </span>
+                    </td>
                     <td>{actionText(item.action, languageMode)}</td>
-                    <td>{item.action_summary || item.reason}</td>
+                    <td>{opportunityText(item, languageMode)}</td>
+                    <td>{decisionReasonText(item.reason, languageMode)}</td>
                     <td>
                       {item.model_name || "N/A"}
                       {(item.metadata?.model_period || item.model_period)
@@ -435,7 +542,13 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5}>{getLabel(languageMode, "noRecentTraderDecisions")}</td>
+                  <td colSpan={7}>
+                    {labelByMode(
+                      languageMode,
+                      "No recent market decisions. Select Update decisions to scan the universe now.",
+                      "\u76ee\u524d\u5c1a\u672a\u6709\u6700\u65b0\u5e02\u5834\u6c7a\u7b56\u3002\u8acb\u6309\u300c\u66f4\u65b0\u6c7a\u7b56\u300d\u7acb\u5373\u6383\u63cf\u5e02\u5834\u3002"
+                    )}
+                  </td>
                 </tr>
               )}
             </tbody>

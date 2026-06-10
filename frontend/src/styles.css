@@ -390,7 +390,29 @@ tbody tr:hover {
 }
 
 .beginner-action-table table {
-  min-width: 560px;
+  min-width: 760px;
+}
+
+.ticker-source-watchlist,
+.ticker-source-market {
+  display: inline-block;
+  padding: 3px 7px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ticker-source-watchlist {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ticker-source-market {
+  background: #f9fafb;
+  color: #4b5563;
 }
 
 .trade-filter-grid {
