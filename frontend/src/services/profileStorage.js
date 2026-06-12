@@ -37,5 +37,3 @@ export function setStoredProfileId(profileId) {
 export function normalizeProfileId(profileId) {
   return String(profileId || "").trim() || DEFAULT_PROFILE_ID;
 }
-
-export { DEFAULT_PROFILE_ID };

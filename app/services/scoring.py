@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import pandas as pd
 
@@ -223,17 +222,3 @@ def score_from_indicators(
         action_summary=action_summary,
         explanations=explanations,
     )
-
-
-def score_to_dict(score: ScoreBreakdown) -> dict[str, Any]:
-    """Convert score dataclass to plain dict for API serialization."""
-    return {
-        "trend_score": score.trend_score,
-        "momentum_score": score.momentum_score,
-        "confirmation_score": score.confirmation_score,
-        "risk_penalty": score.risk_penalty,
-        "total_score": score.total_score,
-        "label": score.label,
-        "action_summary": score.action_summary,
-        "explanations": score.explanations,
-    }

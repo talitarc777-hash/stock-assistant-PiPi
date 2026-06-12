@@ -160,46 +160,11 @@ export async function fetchNewsSentimentLatest(ticker, period = "6mo") {
   return fetchJson(`/news-sentiment/latest?ticker=${encodeURIComponent(ticker)}&period=${period}`);
 }
 
-export async function fetchNewsSentimentDebug(ticker, date = null, period = "6mo") {
-  const dateQuery = date ? `&date=${encodeURIComponent(date)}` : "";
-  return fetchJson(
-    `/news-sentiment/debug?ticker=${encodeURIComponent(ticker)}${dateQuery}&period=${period}`
-  );
-}
-
-export async function fetchVirtualAccountSummary(userId) {
-  return fetchJson(`/virtual-account/summary?user_id=${encodeURIComponent(userId)}`, {
-    timeoutMs: 12000,
-    retries: 1,
-  });
-}
-
-export async function fetchVirtualAccountEquityCurve(userId, limit = 160) {
-  return fetchJson(
-    `/virtual-account/equity-curve?user_id=${encodeURIComponent(userId)}&limit=${encodeURIComponent(limit)}`,
-    { timeoutMs: 15000, retries: 1 }
-  );
-}
-
-export async function fetchVirtualAccountLedger(userId, limit = 100, offset = 0) {
-  return fetchJson(
-    `/virtual-account/ledger?user_id=${encodeURIComponent(userId)}&limit=${limit}&offset=${offset}`,
-    { timeoutMs: 14000, retries: 1 }
-  );
-}
-
 export async function fetchVirtualAccountHistory(userId, limit = 120, offset = 0) {
   return fetchJson(
     `/virtual-account/history?user_id=${encodeURIComponent(userId)}&limit=${limit}&offset=${offset}`,
     { timeoutMs: 14000, retries: 1 }
   );
-}
-
-export async function fetchVirtualAccountHoldings(userId) {
-  return fetchJson(`/virtual-account/holdings?user_id=${encodeURIComponent(userId)}`, {
-    timeoutMs: 12000,
-    retries: 1,
-  });
 }
 
 export async function fetchVirtualAccountRecentTrades(userId, limit = 20) {
@@ -225,10 +190,6 @@ export async function postVirtualAccountWithdraw(userId, amount, reason = "") {
     reason,
     source: "web",
   });
-}
-
-export async function fetchVirtualAccountDiagnostics(userId) {
-  return fetchJson(`/virtual-account/diagnostics?user_id=${encodeURIComponent(userId)}`);
 }
 
 export async function postVirtualAccountReset(userId, resetMonthlyContributions = true) {

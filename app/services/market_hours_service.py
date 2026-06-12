@@ -52,11 +52,6 @@ def is_market_open(now: datetime | None = None) -> bool:
     return _MARKET_OPEN_TIME <= current_time < _MARKET_CLOSE_TIME
 
 
-def get_scheduler_mode(now: datetime | None = None) -> str:
-    """Return scheduler mode label: market_open or market_closed."""
-    return "market_open" if is_market_open(now) else "market_closed"
-
-
 def get_scheduler_interval_seconds(now: datetime | None = None) -> int:
     """Return cadence based on current market-hours mode."""
     if is_market_open(now):

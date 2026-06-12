@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 
-import Chart from "./Chart";
+import LineChart from "./LineChart";
 
 export default function PredictionChart({ ticker, points = [], languageMode = "both" }) {
   const title =
@@ -31,7 +31,7 @@ export default function PredictionChart({ ticker, points = [], languageMode = "b
   }, [points]);
 
   return (
-    <Chart
+    <LineChart
       title={title}
       subtitle={subtitle}
       points={points}

@@ -1,6 +1,6 @@
 import React from "react";
 
-import Chart from "./Chart";
+import LineChart from "./LineChart";
 
 export default function EquityChart({
   ticker,
@@ -25,7 +25,7 @@ export default function EquityChart({
         : `Ticker: ${ticker} / \u80a1\u7968: ${ticker}`);
 
   return (
-    <Chart
+    <LineChart
       title={title}
       subtitle={subtitle}
       points={points}

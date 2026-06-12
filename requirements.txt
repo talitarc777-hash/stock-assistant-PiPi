@@ -5,6 +5,4 @@ numpy
 yfinance
 pydantic
 python-dotenv
-matplotlib
-scipy
 scikit-learn

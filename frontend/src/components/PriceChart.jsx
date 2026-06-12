@@ -1,6 +1,6 @@
 import React from "react";
 
-import Chart from "./Chart";
+import LineChart from "./LineChart";
 
 export default function PriceChart({
   ticker,
@@ -20,7 +20,7 @@ export default function PriceChart({
         : `Ticker: ${ticker} / 股票: ${ticker} | ${periodLabel}`;
 
   return (
-    <Chart
+    <LineChart
       title={title}
       subtitle={subtitle}
       points={points}
