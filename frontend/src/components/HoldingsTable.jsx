@@ -174,7 +174,7 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
                       {holding.ticker}
                     </button>
                   </td>
-                  <td>{Number(holding.quantity || 0).toFixed(4)}</td>
+                  <td>{Number(holding.quantity || 0).toFixed(0)}</td>
                   <td>{formatMoney(holding.avg_entry_price)}</td>
                   <td>{formatMoney(holding.current_price)}</td>
                   <td>{formatMoney(holding.market_value)}</td>

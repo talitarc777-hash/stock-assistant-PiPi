@@ -82,7 +82,7 @@ export default function TransactionHistoryTable({
                   <td>{event.ticker || "-"}</td>
                   <td>
                     {event.quantity !== null && event.quantity !== undefined
-                      ? Number(event.quantity).toFixed(4)
+                      ? Number(event.quantity).toFixed(0)
                       : "-"}
                   </td>
                   <td>

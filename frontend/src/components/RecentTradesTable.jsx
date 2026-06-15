@@ -137,7 +137,7 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
                   <td>{trade.created_at}</td>
                   <td>{formatEventType(trade.event_type, languageMode)}</td>
                   <td>{trade.ticker}</td>
-                  <td>{Number(trade.quantity || 0).toFixed(4)}</td>
+                  <td>{Number(trade.quantity || 0).toFixed(0)}</td>
                   <td>{formatMoney(trade.price)}</td>
                   <td>{formatMoney(trade.gross_amount)}</td>
                   <td>{formatMoney(trade.fee_amount)}</td>

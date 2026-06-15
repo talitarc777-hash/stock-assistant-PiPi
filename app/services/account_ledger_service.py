@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,7 +29,7 @@ from app.services.monthly_contribution_service import (
 
 logger = logging.getLogger(__name__)
 
-MIN_TRADE_QUANTITY = 1.0
+MIN_TRADE_QUANTITY = 1
 TRADE_ADMIN_FEE_HKD = 50.0
 
 
@@ -463,10 +464,13 @@ class AccountLedgerService:
             raise AccountLedgerError("trade action must be buy or sell.")
         numeric_quantity = float(quantity)
         numeric_price = float(price)
-        if numeric_quantity < MIN_TRADE_QUANTITY:
+        if not math.isfinite(numeric_quantity) or numeric_quantity < MIN_TRADE_QUANTITY:
             raise AccountLedgerError(
                 f"quantity must be at least {MIN_TRADE_QUANTITY:g}."
             )
+        if not numeric_quantity.is_integer():
+            raise AccountLedgerError("quantity must be a whole number.")
+        numeric_quantity = float(int(numeric_quantity))
         if numeric_price <= 0:
             raise AccountLedgerError("price must be greater than 0.")
 

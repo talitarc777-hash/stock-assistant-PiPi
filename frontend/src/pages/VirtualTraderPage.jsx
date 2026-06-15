@@ -96,7 +96,7 @@ function decisionReasonText(reason, languageMode) {
   const normalized = String(reason || "").toLowerCase();
   const reasons = {
     model_bullish_signal: ["Model approved this buy", "\u6a21\u578b\u5df2\u6279\u51c6\u8cb7\u5165"],
-    model_bearish_signal: ["Model recommended selling", "\u6a21\u578b\u5efa\u8b70\u8ce3\u51fa"],
+    model_bearish_signal: ["Model recommended reducing the holding", "\u6a21\u578b\u5efa\u8b70\u6e1b\u6301"],
     model_not_bullish: ["Model is not bullish yet", "\u6a21\u578b\u5c1a\u672a\u770b\u597d"],
     confidence_below_threshold: ["Model confidence is below 55%", "\u6a21\u578b\u4fe1\u5fc3\u4f4e\u65bc 55%"],
     risk_or_cash_constraint: ["Blocked by cash or risk rules", "\u53d7\u73fe\u91d1\u6216\u98a8\u96aa\u898f\u5247\u9650\u5236"],
@@ -495,8 +495,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Trading rule: minimum quantity is 1. Each buy or sell costs HKD 50, and the cost is included in profit/loss.",
-            "\u4ea4\u6613\u898f\u5247\uff1a\u6700\u4f4e\u6578\u91cf\u70ba 1\u3002\u6bcf\u6b21\u8cb7\u5165\u6216\u8ce3\u51fa\u6536\u53d6 50 \u6e2f\u5143\uff0c\u4e26\u5df2\u8a08\u5165\u76c8\u8667\u3002"
+            "Trading rule: quantities use whole shares. Normal sell signals reduce about 50% of the holding; a stop-loss sells all shares. Each trade costs HKD 50.",
+            "\u4ea4\u6613\u898f\u5247\uff1a\u53ea\u4f7f\u7528\u6574\u6578\u80a1\u6578\u3002\u4e00\u822c\u8ce3\u51fa\u8a0a\u865f\u6703\u6e1b\u6301\u7d04 50%\uff1b\u89f8\u53ca\u6b62\u8755\u6642\u6703\u8ce3\u51fa\u5168\u90e8\u6301\u5009\u3002\u6bcf\u6b21\u4ea4\u6613\u6536\u53d6 50 \u6e2f\u5143\u3002"
           )}
         </p>
         <div className="table-wrap beginner-action-table">

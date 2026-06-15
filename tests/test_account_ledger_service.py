@@ -177,6 +177,17 @@ class AccountLedgerServiceTests(unittest.TestCase):
                 price=100.0,
             )
 
+    def test_trade_quantity_must_be_a_whole_number(self) -> None:
+        self.service.create_manual_deposit("u1", 1000.0)
+        with self.assertRaisesRegex(AccountLedgerError, "whole number"):
+            self.service.create_trade_event(
+                user_id="u1",
+                action="buy",
+                ticker="VOO",
+                quantity=1.5,
+                price=100.0,
+            )
+
     def test_buy_and_sell_each_charge_hkd_50_and_reduce_profit(self) -> None:
         self.service.create_manual_deposit("u1", 1000.0)
         buy = self.service.create_trade_event(
@@ -202,6 +213,27 @@ class AccountLedgerServiceTests(unittest.TestCase):
         summary = self.service.build_account_summary("u1")
         self.assertAlmostEqual(summary["cash"], 1000.0, places=6)
         self.assertAlmostEqual(summary["realized_pnl"], 0.0, places=6)
+
+    def test_partial_integer_sell_preserves_remaining_holding(self) -> None:
+        self.service.create_manual_deposit("u1", 2000.0)
+        self.service.create_trade_event(
+            user_id="u1",
+            action="buy",
+            ticker="VOO",
+            quantity=8,
+            price=100.0,
+        )
+        self.service.create_trade_event(
+            user_id="u1",
+            action="sell",
+            ticker="VOO",
+            quantity=5,
+            price=110.0,
+        )
+
+        holdings = self.service.list_current_holdings("u1", latest_prices={"VOO": 110.0})
+        self.assertEqual(len(holdings), 1)
+        self.assertEqual(holdings[0]["quantity"], 3.0)
 
 
 if __name__ == "__main__":

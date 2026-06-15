@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import logging
+import math
 from pathlib import Path
 import sqlite3
 from threading import Thread, Lock
@@ -88,6 +89,7 @@ _TRAINING_LOCK = Lock()
 TRADING_TARGET_NAME = "target_5d_return"
 AUTO_TRADING_MODEL_NAME = "auto_best"
 TRADING_MODEL_NAMES = ("linear_regression", "random_forest", "gradient_boosting")
+PARTIAL_SELL_FRACTION = 0.5
 
 
 class LiveVirtualTraderStore:
@@ -417,6 +419,14 @@ def _build_rule_based_fallback(
     return (0.0, 0.55, "regression", reason)
 
 
+def _calculate_sell_quantity(holding_quantity: float, reason: str) -> int:
+    """Size exits in whole shares while allowing partial position reduction."""
+    whole_holding = max(0, math.floor(float(holding_quantity)))
+    if whole_holding <= 1 or reason == "stop_loss":
+        return whole_holding
+    return max(1, math.ceil(whole_holding * PARTIAL_SELL_FRACTION))
+
+
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
     """Parse ISO timestamp safely for cooldown checks."""
     if not value:
@@ -697,8 +707,11 @@ def run_live_virtual_trader_now(
 
             if position and float(position["quantity"]) > 0:
                 entry = float(position["avg_entry_price"])
-                quantity = float(position["quantity"])
-                if stop_loss_pct > 0 and current_price <= entry * (1 - stop_loss_pct):
+                whole_holding_quantity = math.floor(float(position["quantity"]))
+                quantity = float(whole_holding_quantity)
+                if whole_holding_quantity < MIN_TRADE_QUANTITY:
+                    action, reason = "hold", "holding_position"
+                elif stop_loss_pct > 0 and current_price <= entry * (1 - stop_loss_pct):
                     action, reason = "sell", "stop_loss"
                 elif take_profit_pct is not None and current_price >= entry * (1 + take_profit_pct):
                     action, reason = "sell", "take_profit"
@@ -706,6 +719,13 @@ def run_live_virtual_trader_now(
                     action, reason = "sell", "model_bearish_signal"
                 else:
                     action, reason = "hold", "holding_position"
+                if action == "sell":
+                    quantity = float(
+                        _calculate_sell_quantity(
+                            holding_quantity=whole_holding_quantity,
+                            reason=reason,
+                        )
+                    )
             else:
                 if bullish and _confidence_ok(confidence_score, confidence_threshold):
                     account = ledger.build_account_summary(clean_user_id, latest_prices=latest_price_cache)
@@ -716,7 +736,7 @@ def run_live_virtual_trader_now(
                     valuation_ok = pe_ratio is None or float(pe_ratio) <= 85
                     volatility_ok = volatility <= 55
                     allocation = min(cash_available, float(equity * max_position_size_pct))
-                    affordable_quantity = (
+                    affordable_quantity = math.floor(
                         (allocation - TRADE_ADMIN_FEE_HKD) / current_price
                         if current_price > 0
                         else 0.0
@@ -737,13 +757,17 @@ def run_live_virtual_trader_now(
             threshold_summary = (
                 f"Thresholds: confidence {confidence_score:.0%} vs {confidence_threshold:.0%}; "
                 f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
-                f"minimum quantity {MIN_TRADE_QUANTITY:g}; trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
+                f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
+                f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
+                f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
                 f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
                 if confidence_score is not None
                 else (
                     f"Thresholds: confidence unavailable; required {confidence_threshold:.0%}; "
                     f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
-                    f"minimum quantity {MIN_TRADE_QUANTITY:g}; trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
+                    f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
+                    f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
+                    f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
                     f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
                 )
             )
@@ -822,7 +846,11 @@ def run_live_virtual_trader_now(
             unrealized_after = float(updated_pos["unrealized_pnl"]) if updated_pos else 0.0
             action_summary = {
                 "buy": "Simulated buy executed from model/fallback signal.",
-                "sell": "Simulated sell executed from risk/model rule.",
+                "sell": (
+                    "Full position sold because the stop-loss was reached."
+                    if reason == "stop_loss"
+                    else "Part of the position sold in whole shares; remaining shares stay invested."
+                ),
                 "hold": "Holding position. No exit trigger was hit.",
                 "no_action": "No action taken. Entry conditions were not met.",
             }.get(action, "No action.")
