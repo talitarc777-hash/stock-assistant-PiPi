@@ -6,7 +6,8 @@ This guide runs the backend API, SQLite data, model artifacts, and Discord bot o
 
 - Repo checkout: `/home/pi/stock-assistant-PiPi`
 - Python venv: `/home/pi/stock-assistant-PiPi/.venv`
-- Runtime data: `/home/pi/stock-assistant-PiPi/data`
+- Persistent account data: `/home/pi/.local/share/stock-assistant`
+- Replaceable model/research data: `/home/pi/stock-assistant-PiPi/data`
 - Local API URL: `http://127.0.0.1:8000`
 - Public API URL: `https://api.your-domain.com`
 
@@ -38,6 +39,7 @@ Recommended Pi values:
 APP_ENV=production
 APP_HOST=0.0.0.0
 APP_PORT=8000
+PERSISTENT_DATA_DIR=/home/pi/.local/share/stock-assistant
 PROFILE_DB_PATH=data/user_profiles.db
 RESEARCH_DATA_DIR=data/research
 RESEARCH_MODELS_DIR=data/models
@@ -47,6 +49,12 @@ CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev
 ```
 
 Add your real `DISCORD_BOT_TOKEN` and any `ALLOWED_CHANNEL_IDS` in `.env`. Do not commit `.env`.
+
+In production, a relative `PROFILE_DB_PATH` is resolved below
+`PERSISTENT_DATA_DIR`. On the first startup after this change, the app copies
+the existing `data/user_profiles.db` into the persistent directory when the
+new database does not exist. Later Git pulls and application deployments do
+not replace that persistent copy.
 
 ## 2. Smoke Test Manually
 
@@ -157,7 +165,7 @@ rsync -av data/ pi@<pi-host>:/home/pi/stock-assistant-PiPi/data/
 
 Important paths:
 
-- `data/user_profiles.db`
+- `/home/pi/.local/share/stock-assistant/user_profiles.db`
 - `data/research/`
 - `data/models/`
 - `data/discord_user_settings.json`
@@ -179,11 +187,14 @@ Create a daily backup script on the Pi, for example `/home/pi/backup-stock-assis
 set -euo pipefail
 
 APP_DIR=/home/pi/stock-assistant-PiPi
+PERSISTENT_DIR=/home/pi/.local/share/stock-assistant
 BACKUP_DIR=/home/pi/stock-assistant-backups
 STAMP=$(date +%Y%m%d-%H%M%S)
 
 mkdir -p "$BACKUP_DIR"
-tar -czf "$BACKUP_DIR/data-$STAMP.tar.gz" -C "$APP_DIR" data
+tar -czf "$BACKUP_DIR/data-$STAMP.tar.gz" \
+  -C "$PERSISTENT_DIR" user_profiles.db \
+  -C "$APP_DIR" data/research data/models data/discord_user_settings.json
 find "$BACKUP_DIR" -name 'data-*.tar.gz' -mtime +14 -delete
 ```
 

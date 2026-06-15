@@ -69,6 +69,29 @@ jobs:
             fi
 
             cd "$APP_DIR"
+
+            # Migrate mutable account state out of the Git checkout before an
+            # update can replace tracked files. The app uses this location in
+            # production even when PROFILE_DB_PATH is still a relative path.
+            PERSISTENT_DIR="$HOME/.local/share/stock-assistant"
+            mkdir -p "$PERSISTENT_DIR"
+            if [ ! -f "$PERSISTENT_DIR/user_profiles.db" ] && [ -f "$APP_DIR/data/user_profiles.db" ]; then
+              LEGACY_DB="$APP_DIR/data/user_profiles.db" \
+              PERSISTENT_DB="$PERSISTENT_DIR/user_profiles.db" \
+              .venv/bin/python - <<'PY'
+            import os
+            import sqlite3
+
+            source = sqlite3.connect(os.environ["LEGACY_DB"])
+            target = sqlite3.connect(os.environ["PERSISTENT_DB"])
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+                source.close()
+            PY
+            fi
+
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
             git pull --ff-only origin "$BRANCH"
