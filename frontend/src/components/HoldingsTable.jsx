@@ -37,6 +37,16 @@ function formatLargeNumber(value) {
   }).format(numeric);
 }
 
+function businessSummaryText(profile, languageMode) {
+  const en =
+    profile?.business_summary
+    || "A business description is not available from the market-data provider.";
+  const zh =
+    profile?.business_summary_zh
+    || "\u5e02\u5834\u8cc7\u6599\u4f9b\u61c9\u5546\u672a\u63d0\u4f9b\u53ef\u7528\u7684\u4e2d\u6587\u516c\u53f8\u696d\u52d9\u63cf\u8ff0\u3002";
+  return labelByMode(languageMode, en, zh);
+}
+
 export default function HoldingsTable({ languageMode, holdings = [] }) {
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [companyProfile, setCompanyProfile] = useState(null);
@@ -293,14 +303,7 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
 
                 <div className="holding-business-summary">
                   <h4>{labelByMode(languageMode, "What the company does", "\u516c\u53f8\u696d\u52d9\u6027\u8cea")}</h4>
-                  <p>
-                    {companyProfile.business_summary
-                      || labelByMode(
-                        languageMode,
-                        "A business description is not available from the market-data provider.",
-                        "\u5e02\u5834\u8cc7\u6599\u4f9b\u61c9\u5546\u672a\u63d0\u4f9b\u516c\u53f8\u696d\u52d9\u63cf\u8ff0\u3002"
-                      )}
-                  </p>
+                  <p>{businessSummaryText(companyProfile, languageMode)}</p>
                 </div>
 
                 <p className="helper-text">

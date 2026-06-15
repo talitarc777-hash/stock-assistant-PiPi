@@ -105,6 +105,7 @@ class LiveMarketSnapshotResponse(BaseModel):
     sector: str | None = None
     industry: str | None = None
     business_summary: str | None = None
+    business_summary_zh: str | None = None
     data_freshness_note: str
 
 

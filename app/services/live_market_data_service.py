@@ -17,6 +17,63 @@ from app.services.market_data import get_price_history
 
 logger = logging.getLogger(__name__)
 
+_SECTOR_ZH = {
+    "Basic Materials": "基礎材料",
+    "Communication Services": "通訊服務",
+    "Consumer Cyclical": "非必需消費品",
+    "Consumer Defensive": "必需消費品",
+    "Energy": "能源",
+    "Financial Services": "金融服務",
+    "Healthcare": "醫療保健",
+    "Industrials": "工業",
+    "Real Estate": "房地產",
+    "Technology": "科技",
+    "Utilities": "公用事業",
+}
+
+_INDUSTRY_ZH = {
+    "Asset Management": "資產管理",
+    "Banks - Diversified": "綜合銀行",
+    "Consumer Electronics": "消費電子產品",
+    "Internet Content & Information": "互聯網內容及資訊服務",
+    "Oil & Gas Integrated": "綜合石油及天然氣",
+    "Semiconductors": "半導體",
+    "Software - Infrastructure": "基礎軟件",
+    "Software - Application": "應用軟件",
+}
+
+
+def _build_business_summary_zh(
+    *,
+    company_name: str | None,
+    ticker: str,
+    quote_type: str | None,
+    sector: str | None,
+    industry: str | None,
+    category: str | None,
+    fund_family: str | None,
+) -> str | None:
+    """Build a concise Traditional Chinese business description."""
+    name = str(company_name or ticker).strip()
+    normalized_type = str(quote_type or "").strip().upper()
+
+    if normalized_type == "ETF":
+        manager = str(fund_family or "").strip()
+        category_text = str(category or "").strip()
+        manager_text = f"由 {manager} 管理，" if manager else ""
+        focus_text = f"主要投資於「{category_text}」類別的資產" if category_text else "持有一籃子證券"
+        return f"{name} 是一隻交易所買賣基金（ETF），{manager_text}{focus_text}。"
+
+    industry_zh = _INDUSTRY_ZH.get(str(industry or "").strip())
+    sector_zh = _SECTOR_ZH.get(str(sector or "").strip())
+    if industry_zh and sector_zh:
+        return f"{name} 主要從事{industry_zh}相關業務，屬於{sector_zh}板塊。"
+    if industry_zh:
+        return f"{name} 主要從事{industry_zh}相關業務。"
+    if sector_zh:
+        return f"{name} 主要從事{sector_zh}相關業務。"
+    return None
+
 
 def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]:
     """Return latest available market snapshot for one ticker."""
@@ -38,6 +95,9 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
     sector = None
     industry = None
     business_summary = None
+    quote_type = None
+    category = None
+    fund_family = None
     try:
         info = yf.Ticker(symbol).info or {}
         pe_ratio = info.get("trailingPE")
@@ -46,6 +106,9 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
         sector = info.get("sector")
         industry = info.get("industry")
         business_summary = info.get("longBusinessSummary")
+        quote_type = info.get("quoteType")
+        category = info.get("category")
+        fund_family = info.get("fundFamily")
     except Exception as exc:  # pragma: no cover - depends on upstream provider
         logger.info("Live valuation fetch skipped for %s: %s", symbol, exc)
 
@@ -75,6 +138,15 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
         "sector": str(sector) if sector else None,
         "industry": str(industry) if industry else None,
         "business_summary": str(business_summary) if business_summary else None,
+        "business_summary_zh": _build_business_summary_zh(
+            company_name=str(company_name) if company_name else None,
+            ticker=symbol,
+            quote_type=str(quote_type) if quote_type else None,
+            sector=str(sector) if sector else None,
+            industry=str(industry) if industry else None,
+            category=str(category) if category else None,
+            fund_family=str(fund_family) if fund_family else None,
+        ),
         "data_freshness_note": (
             "Near-live polling snapshot from latest available provider data; "
             "not guaranteed tick-level real-time."
