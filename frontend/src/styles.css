@@ -303,6 +303,11 @@ tbody tr:hover {
   min-height: 40px;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .forecast-card {
   margin-top: 14px;
   padding-top: 10px;
@@ -391,6 +396,10 @@ tbody tr:hover {
 
 .beginner-action-table table {
   min-width: 760px;
+}
+
+.recent-trades-table table {
+  min-width: 720px;
 }
 
 .action-filter-panel {
@@ -949,6 +958,87 @@ tbody tr:hover {
 }
 
 @media (max-width: 560px) {
+  .app-shell {
+    padding: 8px;
+  }
+
+  .global-header,
+  .panel {
+    border-radius: 6px;
+  }
+
+  .nav-link {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+    padding: 9px 8px;
+  }
+
+  .header-controls button,
+  .settings-actions button,
+  .settings-form button,
+  .watchlist-form button {
+    width: 100%;
+  }
+
+  .beginner-summary-grid strong {
+    font-size: 18px;
+  }
+
+  .action-filter-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .action-filter-bar button {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .responsive-card-table {
+    overflow-x: visible;
+  }
+
+  .responsive-card-table table,
+  .responsive-card-table thead,
+  .responsive-card-table tbody,
+  .responsive-card-table tr,
+  .responsive-card-table th,
+  .responsive-card-table td {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .responsive-card-table thead {
+    display: none;
+  }
+
+  .responsive-card-table tr {
+    margin-bottom: 10px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow: hidden;
+  }
+
+  .responsive-card-table td {
+    display: grid;
+    grid-template-columns: minmax(110px, 42%) minmax(0, 1fr);
+    gap: 8px;
+    border-bottom: 1px solid #f3f4f6;
+  }
+
+  .responsive-card-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .responsive-card-table td::before {
+    content: attr(data-label);
+    color: #6b7280;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
   .holding-profile-grid {
     grid-template-columns: 1fr;
   }

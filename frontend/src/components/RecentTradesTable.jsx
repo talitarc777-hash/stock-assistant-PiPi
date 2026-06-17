@@ -124,7 +124,7 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
         </button>
       </div>
 
-      <div className="table-wrap">
+      <div className="table-wrap recent-trades-table responsive-card-table">
         <table>
           <thead>
             <tr>
@@ -141,13 +141,13 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
             {filteredTrades.length ? (
               filteredTrades.map((trade) => (
                 <tr key={trade.id}>
-                  <td>{trade.created_at}</td>
-                  <td>{formatEventType(trade.event_type, languageMode)}</td>
-                  <td>{trade.ticker}</td>
-                  <td>{formatQuantity(trade.quantity)}</td>
-                  <td>{formatQuantity(trade.remaining_quantity)}</td>
-                  <td>{formatMoney(trade.price)}</td>
-                  <td>{trade.reason || "-"}</td>
+                  <td data-label={labelByMode(languageMode, "Date/Time", "\u65e5\u671f/\u6642\u9593")}>{trade.created_at}</td>
+                  <td data-label={labelByMode(languageMode, "Type", "\u985e\u578b")}>{formatEventType(trade.event_type, languageMode)}</td>
+                  <td data-label={labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}>{trade.ticker}</td>
+                  <td data-label={labelByMode(languageMode, "Quantity", "\u6578\u91cf")}>{formatQuantity(trade.quantity)}</td>
+                  <td data-label={labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}>{formatQuantity(trade.remaining_quantity)}</td>
+                  <td data-label={labelByMode(languageMode, "Price", "\u50f9\u683c")}>{formatMoney(trade.price)}</td>
+                  <td data-label={labelByMode(languageMode, "Reason", "\u539f\u56e0")}>{trade.reason || "-"}</td>
                 </tr>
               ))
             ) : (

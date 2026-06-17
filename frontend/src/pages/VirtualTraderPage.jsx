@@ -26,35 +26,57 @@ import TransactionHistoryTable from "../components/TransactionHistoryTable";
 const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
 const HISTORY_PAGE_SIZE = 120;
+const DECISION_HISTORY_LIMIT = 160;
 const SCHEDULER_REFRESH_MS = 60000;
 const BUY_POTENTIAL_FILTERS = ["all", "bought", "high_blocked", "watching", "low_now", "holding", "sell_action"];
 
 const ZH = {
-  virtualTrader: "虛擬交易員",
-  intro: "專注於最新動作、原因、持倉、賺蝕和注資。所有交易都是模擬，不會發送真實下單。",
+  intro: "這是一個給新手投資者使用的虛擬交易和學習頁面，只作教育和模擬用途。",
   ticker: "股票代號",
-  model: "模型",
   running: "執行中...",
-  runNow: "立即更新模擬決策",
-  loading: "載入中...",
-  simulationOnly: "只屬模擬，不會發送真實下單。",
+  runNow: "更新決策",
+  loadingAccount: "正在載入模擬帳戶...",
+  retry: "重試",
   cash: "現金",
-  holdingsValue: "持倉市值",
-  totalEquity: "總資產",
-  realizedPnl: "已實現賺蝕",
-  unrealizedPnl: "未實現賺蝕",
-  appliedContributions: "累計注資",
-  amountUsd: "金額 USD",
-  deposit: "加入一次性入金",
-  withdraw: "加入一次性提款",
+  holdingsValue: "持倉價值",
+  totalEquity: "帳戶總值",
+  appliedContributions: "已加入資金",
+  amountUsd: "金額 (USD)",
+  deposit: "加入現金",
+  withdraw: "提取現金",
   action: "動作",
   price: "價格",
   reason: "原因",
+  latestStockAction: "最新股票動作",
+  buyPotential: "買入潛力",
+  source: "來源",
+  modelUsed: "使用模型",
+  reasonDetail: "原因詳情",
+  totalEarnLoss: "總賺蝕",
+  accountValue: "帳戶總值",
+  profitLoss: "賺蝕",
+  contributions: "注資",
+  totalCashAdded: "總加入現金",
+  recentMonthly: "最近每月注資",
+  recentOneTime: "最近一次性現金",
+  oneTimeCash: "一次性現金加入 / 提取",
+  advancedDetails: "進階資料",
+  showAdvanced: "顯示進階資料",
+  hideAdvanced: "隱藏進階資料",
   newsSentiment: "新聞情緒",
-  historicalMode: "歷史回放模式",
-  monthlyContributionHistory: "每月注資紀錄",
-  totalContributions: "累計注資金額",
+  loadNews: "載入新聞情緒",
+  historicalMode: "歷史回測模式",
+  historicalEquity: "歷史回測帳戶曲線",
+  monthlyContributionHistory: "每月注資記錄",
+  totalContributions: "累計注資",
   monthlyContribution: "每月注資",
+  watchlist: "觀察清單",
+  market: "市場",
+  all: "全部",
+  filterBuyPotential: "篩選買入潛力",
+  groupBuyPotential: "按買入潛力分類",
+  noFilterMatch: "沒有決策符合此買入潛力篩選。",
+  noRecentDecisions: "目前尚未有最新市場決策。請按「更新決策」立即掃描市場。",
 };
 
 function labelByMode(mode, en, zh) {
@@ -87,7 +109,7 @@ function actionText(action, languageMode) {
     buy: ["Buy", "買入"],
     sell: ["Sell", "賣出"],
     hold: ["Hold", "持有"],
-    no_action: ["No action", "暫不動作"],
+    no_action: ["No action", "沒有動作"],
   };
   const [en, zh] = map[normalized] || [action || "N/A", action || "N/A"];
   return labelByMode(languageMode, en, zh);
@@ -96,35 +118,21 @@ function actionText(action, languageMode) {
 function decisionReasonText(reason, languageMode) {
   const normalized = String(reason || "").toLowerCase();
   const reasons = {
-    model_bullish_signal: ["Model approved this buy", "\u6a21\u578b\u5df2\u6279\u51c6\u8cb7\u5165"],
-    model_bearish_signal: ["Model recommended reducing the holding", "\u6a21\u578b\u5efa\u8b70\u6e1b\u6301"],
-    model_not_bullish: ["Model is not bullish yet", "\u6a21\u578b\u5c1a\u672a\u770b\u597d"],
-    confidence_below_threshold: ["Model confidence is below 55%", "\u6a21\u578b\u4fe1\u5fc3\u4f4e\u65bc 55%"],
-    risk_or_cash_constraint: ["Blocked by cash or risk rules", "\u53d7\u73fe\u91d1\u6216\u98a8\u96aa\u898f\u5247\u9650\u5236"],
-    holding_position: ["Continue holding", "\u7e7c\u7e8c\u6301\u6709"],
-    stop_loss: ["Stop-loss was reached", "\u5df2\u89f8\u53ca\u6b62\u8755"],
-    take_profit: ["Profit target was reached", "\u5df2\u9054\u5230\u6b62\u76c8\u76ee\u6a19"],
-    signal_cooldown_active: ["Waiting for the signal cooldown", "\u6b63\u7b49\u5f85\u8a0a\u865f\u51b7\u975c\u671f"],
-    duplicate_signal_suppressed: ["Repeated signal was ignored", "\u91cd\u8907\u8a0a\u865f\u5df2\u5ffd\u7565"],
-    fallback_rule_neutral_hold: ["Backup rules are neutral", "\u5f8c\u5099\u898f\u5247\u76ee\u524d\u4e2d\u6027"],
+    model_bullish_signal: ["Model approved this buy", "模型已批准買入"],
+    model_bearish_signal: ["Model recommended reducing the holding", "模型建議減持"],
+    model_not_bullish: ["Model is not bullish yet", "模型暫時未看好"],
+    confidence_below_threshold: ["Model confidence is below 55%", "模型信心低於 55%"],
+    risk_or_cash_constraint: ["Blocked by cash or risk rules", "受現金或風險規則限制"],
+    holding_position: ["Continue holding", "繼續持有"],
+    stop_loss: ["Stop-loss was reached", "已觸及止蝕"],
+    take_profit: ["Profit target was reached", "已達到止賺目標"],
+    signal_cooldown_active: ["Waiting for signal cooldown", "等待交易冷靜期"],
+    duplicate_signal_suppressed: ["Repeated signal ignored", "重複訊號已忽略"],
+    fallback_rule_bullish_trend_momentum: ["Backup rule found bullish trend", "後備規則看到上升趨勢"],
+    fallback_rule_bearish_trend: ["Backup rule found bearish trend", "後備規則看到下跌趨勢"],
+    fallback_rule_neutral_hold: ["Backup rules are neutral", "後備規則目前中性"],
   };
-  const [en, zh] = reasons[normalized] || [
-    String(reason || "No action"),
-    String(reason || "\u672a\u6709\u52d5\u4f5c"),
-  ];
-  return labelByMode(languageMode, en, zh);
-}
-
-function opportunityText(item, languageMode) {
-  const labels = {
-    bought: ["Bought", "\u5df2\u8cb7\u5165"],
-    high_blocked: ["High, but blocked", "\u9ad8\uff0c\u4f46\u53d7\u898f\u5247\u9650\u5236"],
-    watching: ["Watching", "\u89c0\u5bdf\u4e2d"],
-    low_now: ["Low now", "\u76ee\u524d\u8f03\u4f4e"],
-    holding: ["Holding", "\u6301\u6709\u4e2d"],
-    sell_action: ["Sell action", "\u8ce3\u51fa\u52d5\u4f5c"],
-  };
-  const [en, zh] = labels[getBuyPotentialKey(item)] || labels.low_now;
+  const [en, zh] = reasons[normalized] || [String(reason || "No action"), String(reason || "未有動作")];
   return labelByMode(languageMode, en, zh);
 }
 
@@ -137,11 +145,23 @@ function getBuyPotentialKey(item) {
 
   const prediction = Number(item?.metadata?.prediction_value);
   const confidence = Number(item?.confidence_score);
-  if (prediction > 0 && confidence >= 0.55) {
-    return "high_blocked";
-  }
+  if (prediction > 0 && confidence >= 0.55) return "high_blocked";
   if (prediction > 0) return "watching";
   return "low_now";
+}
+
+function buyPotentialText(keyOrItem, languageMode) {
+  const key = typeof keyOrItem === "string" ? keyOrItem : getBuyPotentialKey(keyOrItem);
+  const labels = {
+    bought: ["Bought", "已買入"],
+    high_blocked: ["High, but blocked", "高，但受規則限制"],
+    watching: ["Watching", "觀察中"],
+    low_now: ["Low now", "目前較低"],
+    holding: ["Holding", "持有中"],
+    sell_action: ["Sell action", "賣出動作"],
+  };
+  const [en, zh] = labels[key] || labels.low_now;
+  return labelByMode(languageMode, en, zh);
 }
 
 function decisionOpportunityScore(item, isWatchlist) {
@@ -191,7 +211,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     if (!currentWatchlist.includes(selectedTicker)) {
       setSelectedTicker(currentWatchlist[0]);
     }
-  }, [currentWatchlist.join(","), selectedTicker]);
+  }, [currentWatchlist, selectedTicker]);
 
   function applyLiveStatusPayload(payload) {
     if (!payload) return;
@@ -209,7 +229,6 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         unrealized_pnl_pct: holding.unrealized_pnl_pct ?? unrealizedPnlPct,
       };
     });
-    const latestDecisions = payload.latest_decisions || [];
 
     setLiveStatus(payload);
     setAccountSummary({
@@ -228,8 +247,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     });
     setAccountHoldings(holdings);
     setEquityCurve(payload.equity_curve || []);
-    setLiveDecisionLog(latestDecisions);
-    setSelectedLiveTrade(latestDecisions[0] || null);
+    setLiveDecisionLog(payload.latest_decisions || []);
+    setSelectedLiveTrade((payload.latest_decisions || [])[0] || null);
   }
 
   async function loadGlobalViews() {
@@ -242,7 +261,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false),
           fetchTraderSchedulerStatus(24),
           fetchVirtualAccountRecentTrades(profileId, 20),
-          fetchLiveVirtualTraderTrades(profileId, null, 300),
+          fetchLiveVirtualTraderTrades(profileId, null, DECISION_HISTORY_LIMIT),
         ]);
 
       if (schedulerStatusResult.status === "fulfilled") setSchedulerStatus(schedulerStatusResult.value);
@@ -269,8 +288,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     setHistoricalLoading(true);
     try {
       const [historicalSummaryPayload, historicalTradesPayload] = await Promise.all([
-        fetchVirtualTraderSummary(activeTicker, DEFAULT_PERIOD, null, 300, profileId),
-        fetchVirtualTraderTrades(activeTicker, DEFAULT_PERIOD, null, 120, profileId),
+        fetchVirtualTraderSummary(activeTicker, DEFAULT_PERIOD, null, 240, profileId),
+        fetchVirtualTraderTrades(activeTicker, DEFAULT_PERIOD, null, 100, profileId),
       ]);
       setHistoricalSummary(historicalSummaryPayload);
       setHistoricalContributionData(historicalTradesPayload);
@@ -347,11 +366,14 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     }
   }
 
+  const cashValue = Number(cashAmount);
+  const canSubmitCash = Number.isFinite(cashValue) && cashValue > 0;
+
   async function handleDeposit() {
-    if (!profileId || !cashAmount) return;
+    if (!profileId || !canSubmitCash) return;
     setError("");
     try {
-      await postVirtualAccountDeposit(profileId, Number(cashAmount), cashReason);
+      await postVirtualAccountDeposit(profileId, cashValue, cashReason);
       setCashAmount("");
       setCashReason("");
       await loadGlobalViews();
@@ -361,10 +383,10 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   }
 
   async function handleWithdraw() {
-    if (!profileId || !cashAmount) return;
+    if (!profileId || !canSubmitCash) return;
     setError("");
     try {
-      await postVirtualAccountWithdraw(profileId, Number(cashAmount), cashReason);
+      await postVirtualAccountWithdraw(profileId, cashValue, cashReason);
       setCashAmount("");
       setCashReason("");
       await loadGlobalViews();
@@ -498,7 +520,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       <header className="app-header">
         <div>
           <h1>{getLabel(languageMode, "virtualTrader")}</h1>
-          <p>{labelByMode(languageMode, "A simple simulation view for new investors.", ZH.intro)}</p>
+          <p>{labelByMode(languageMode, "A simple virtual trading view for learning and paper trading.", ZH.intro)}</p>
         </div>
         <div className="header-controls">
           <button type="button" onClick={handleRunNow} disabled={isRunningNow}>
@@ -513,38 +535,38 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         <div className="error-box">
           <p>{error}</p>
           <button type="button" onClick={loadGlobalViews}>
-            {labelByMode(languageMode, "Retry", "重試")}
+            {labelByMode(languageMode, "Retry", ZH.retry)}
           </button>
         </div>
       ) : null}
 
       {isLoading ? (
         <section className="panel">
-          <p>{labelByMode(languageMode, "Loading your simulation account...", "正在載入模擬帳戶...")}</p>
+          <p>{labelByMode(languageMode, "Loading your simulation account...", ZH.loadingAccount)}</p>
         </section>
       ) : null}
 
       <section className="panel">
-        <h3>{labelByMode(languageMode, "Latest Stock Action", "最新股票動作")}</h3>
+        <h3>{labelByMode(languageMode, "Latest Stock Action", ZH.latestStockAction)}</h3>
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Top opportunities from the full market universe are shown. Executed actions appear first, and watchlist tickers are clearly marked.",
-            "\u986f\u793a\u6574\u500b\u5e02\u5834\u7bc4\u570d\u5167\u7684\u6700\u4f73\u6a5f\u6703\u3002\u5df2\u57f7\u884c\u7684\u52d5\u4f5c\u6703\u512a\u5148\u986f\u793a\uff0c\u89c0\u5bdf\u6e05\u55ae\u80a1\u7968\u6703\u6e05\u695a\u6a19\u8a18\u3002"
+            "Top paper-trading opportunities from the market universe are shown. Executed actions appear first, and watchlist tickers are marked.",
+            "顯示整個市場範圍內的主要模擬交易機會。已執行的動作會優先顯示，觀察清單股票會清楚標記。"
           )}
         </p>
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Trading rule: quantities use whole shares. Normal sell signals reduce about 50% of the holding; a stop-loss sells all shares. Each trade costs HKD 50.",
-            "\u4ea4\u6613\u898f\u5247\uff1a\u53ea\u4f7f\u7528\u6574\u6578\u80a1\u6578\u3002\u4e00\u822c\u8ce3\u51fa\u8a0a\u865f\u6703\u6e1b\u6301\u7d04 50%\uff1b\u89f8\u53ca\u6b62\u8755\u6642\u6703\u8ce3\u51fa\u5168\u90e8\u6301\u5009\u3002\u6bcf\u6b21\u4ea4\u6613\u6536\u53d6 50 \u6e2f\u5143\u3002"
+            "Educational simulation only. Whole-share trades are used, normal sell signals reduce about 50% of a holding, stop-loss sells all shares, and each trade includes HKD 50 cost.",
+            "只作教育模擬用途。交易使用整數股；一般賣出訊號會減持約 50%；止蝕會賣出全部持倉；每次交易計入 50 港元成本。"
           )}
         </p>
         <div className="action-filter-panel">
           <div className="action-filter-title">
-            {labelByMode(languageMode, "Group by buy potential", "\u6309\u8cb7\u5165\u6f5b\u529b\u5206\u985e")}
+            {labelByMode(languageMode, "Group by buy potential", ZH.groupBuyPotential)}
           </div>
-          <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter buy potential", "\u7be9\u9078\u8cb7\u5165\u6f5b\u529b")}>
+          <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter buy potential", ZH.filterBuyPotential)}>
             {BUY_POTENTIAL_FILTERS.map((filterValue) => (
               <button
                 key={filterValue}
@@ -553,23 +575,23 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                 onClick={() => setBuyPotentialFilter(filterValue)}
               >
                 {filterValue === "all"
-                  ? labelByMode(languageMode, "All", "\u5168\u90e8")
-                  : opportunityText({ action: "no_action", metadata: {}, confidence_score: null, potential: filterValue }, languageMode)}
+                  ? labelByMode(languageMode, "All", ZH.all)
+                  : buyPotentialText(filterValue, languageMode)}
                 <span>{buyPotentialCounts[filterValue] || 0}</span>
               </button>
             ))}
           </div>
         </div>
-        <div className="table-wrap beginner-action-table">
+        <div className="table-wrap beginner-action-table responsive-card-table">
           <table>
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "Ticker", ZH.ticker)}</th>
-                <th>{labelByMode(languageMode, "Source", "\u4f86\u6e90")}</th>
+                <th>{labelByMode(languageMode, "Source", ZH.source)}</th>
                 <th>{labelByMode(languageMode, "Action", ZH.action)}</th>
-                <th>{labelByMode(languageMode, "Buy potential", "\u8cb7\u5165\u6f5b\u529b")}</th>
+                <th>{labelByMode(languageMode, "Buy potential", ZH.buyPotential)}</th>
                 <th>{labelByMode(languageMode, "Reason", ZH.reason)}</th>
-                <th>{labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}</th>
+                <th>{labelByMode(languageMode, "Model used", ZH.modelUsed)}</th>
                 <th>{labelByMode(languageMode, "Price", ZH.price)}</th>
               </tr>
             </thead>
@@ -581,24 +603,24 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                     className={selectedLiveTrade?.timestamp === item.timestamp ? "selected-row" : ""}
                     onClick={() => setSelectedLiveTrade(item)}
                   >
-                    <td>{item.ticker}</td>
-                    <td>
+                    <td data-label={labelByMode(languageMode, "Ticker", ZH.ticker)}>{item.ticker}</td>
+                    <td data-label={labelByMode(languageMode, "Source", ZH.source)}>
                       <span className={item.is_watchlist ? "ticker-source-watchlist" : "ticker-source-market"}>
                         {item.is_watchlist
-                          ? labelByMode(languageMode, "Watchlist", "\u89c0\u5bdf\u6e05\u55ae")
-                          : labelByMode(languageMode, "Market", "\u5e02\u5834")}
+                          ? labelByMode(languageMode, "Watchlist", ZH.watchlist)
+                          : labelByMode(languageMode, "Market", ZH.market)}
                       </span>
                     </td>
-                    <td>{actionText(item.action, languageMode)}</td>
-                    <td>{opportunityText(item, languageMode)}</td>
-                    <td>{decisionReasonText(item.reason, languageMode)}</td>
-                    <td>
+                    <td data-label={labelByMode(languageMode, "Action", ZH.action)}>{actionText(item.action, languageMode)}</td>
+                    <td data-label={labelByMode(languageMode, "Buy potential", ZH.buyPotential)}>{buyPotentialText(item, languageMode)}</td>
+                    <td data-label={labelByMode(languageMode, "Reason", ZH.reason)}>{decisionReasonText(item.reason, languageMode)}</td>
+                    <td data-label={labelByMode(languageMode, "Model used", ZH.modelUsed)}>
                       {item.model_name || "N/A"}
                       {(item.metadata?.model_period || item.model_period)
                         ? ` (${item.metadata?.model_period || item.model_period})`
                         : ""}
                     </td>
-                    <td>{formatMoney(item.price)}</td>
+                    <td data-label={labelByMode(languageMode, "Price", ZH.price)}>{formatMoney(item.price)}</td>
                   </tr>
                 ))
               ) : (
@@ -609,9 +631,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                       actionRows.length
                         ? "No decisions match this buy potential filter."
                         : "No recent market decisions. Select Update decisions to scan the universe now.",
-                      actionRows.length
-                        ? "\u6c92\u6709\u6c7a\u7b56\u7b26\u5408\u6b64\u8cb7\u5165\u6f5b\u529b\u7be9\u9078\u3002"
-                        : "\u76ee\u524d\u5c1a\u672a\u6709\u6700\u65b0\u5e02\u5834\u6c7a\u7b56\u3002\u8acb\u6309\u300c\u66f4\u65b0\u6c7a\u7b56\u300d\u7acb\u5373\u6383\u63cf\u5e02\u5834\u3002"
+                      actionRows.length ? ZH.noFilterMatch : ZH.noRecentDecisions
                     )}
                   </td>
                 </tr>
@@ -621,21 +641,21 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         </div>
         {selectedLiveTrade ? (
           <p className="helper-text">
-            <strong>{labelByMode(languageMode, "Reason detail", "原因詳情")}:</strong>{" "}
+            <strong>{labelByMode(languageMode, "Reason detail", ZH.reasonDetail)}:</strong>{" "}
             {selectedLiveTrade.threshold_summary || selectedLiveTrade.reason}
           </p>
         ) : null}
       </section>
 
       <section className="panel">
-        <h3>{labelByMode(languageMode, "Total Earn / Loss", "總賺蝕")}</h3>
+        <h3>{labelByMode(languageMode, "Total Earn / Loss", ZH.totalEarnLoss)}</h3>
         <div className="beginner-summary-grid">
           <div>
-            <span>{labelByMode(languageMode, "Account value", ZH.totalEquity)}</span>
+            <span>{labelByMode(languageMode, "Account value", ZH.accountValue)}</span>
             <strong>{formatMoney(accountSummary?.total_account_value)}</strong>
           </div>
           <div className={totalProfitLoss >= 0 ? "pnl-positive" : "pnl-negative"}>
-            <span>{labelByMode(languageMode, "Profit / Loss", "賺蝕")}</span>
+            <span>{labelByMode(languageMode, "Profit / Loss", ZH.profitLoss)}</span>
             <strong>{formatMoney(totalProfitLoss)}{formatPercent(totalProfitLossPct)}</strong>
           </div>
           <div>
@@ -652,18 +672,18 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       <HoldingsTable languageMode={languageMode} holdings={accountHoldings} />
 
       <section className="panel">
-        <h3>{labelByMode(languageMode, "Contributions", "注資")}</h3>
+        <h3>{labelByMode(languageMode, "Contributions", ZH.contributions)}</h3>
         <div className="beginner-summary-grid">
           <div>
-            <span>{labelByMode(languageMode, "Total cash added", ZH.appliedContributions)}</span>
+            <span>{labelByMode(languageMode, "Total cash added", ZH.totalCashAdded)}</span>
             <strong>{formatMoney(accountSummary?.net_deposits)}</strong>
           </div>
           <div>
-            <span>{labelByMode(languageMode, "Recent monthly", "最近每月注資")}</span>
+            <span>{labelByMode(languageMode, "Recent monthly", ZH.recentMonthly)}</span>
             <strong>{formatMoney(contributionSummary.monthly)}</strong>
           </div>
           <div>
-            <span>{labelByMode(languageMode, "Recent one-time", "最近一次性現金變動")}</span>
+            <span>{labelByMode(languageMode, "Recent one-time", ZH.recentOneTime)}</span>
             <strong>{formatMoney(contributionSummary.oneTime)}</strong>
           </div>
         </div>
@@ -672,7 +692,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       <MonthlyContributionInput userId={profileId} languageMode={languageMode} onUpdated={loadGlobalViews} />
 
       <section className="panel">
-        <h3>{labelByMode(languageMode, "One-Time Cash Add / Withdraw", "一次性入金 / 提款")}</h3>
+        <h3>{labelByMode(languageMode, "One-Time Cash Add / Withdraw", ZH.oneTimeCash)}</h3>
         <div className="settings-form">
           <label>
             {labelByMode(languageMode, "Amount (USD)", ZH.amountUsd)}
@@ -689,13 +709,18 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             <input type="text" value={cashReason} onChange={(event) => setCashReason(event.target.value)} />
           </label>
           <div className="settings-actions">
-            <button type="button" onClick={handleDeposit}>
+            <button type="button" onClick={handleDeposit} disabled={!canSubmitCash}>
               {labelByMode(languageMode, "Add deposit", ZH.deposit)}
             </button>
-            <button type="button" onClick={handleWithdraw}>
+            <button type="button" onClick={handleWithdraw} disabled={!canSubmitCash}>
               {labelByMode(languageMode, "Add withdrawal", ZH.withdraw)}
             </button>
           </div>
+          {!canSubmitCash && cashAmount ? (
+            <p className="helper-text">
+              {labelByMode(languageMode, "Enter an amount greater than 0.", "請輸入大於 0 的金額。")}
+            </p>
+          ) : null}
         </div>
         <ResetTradingAccountButton userId={profileId} languageMode={languageMode} onResetComplete={loadGlobalViews} />
       </section>
@@ -703,19 +728,19 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       <RecentTradesTable languageMode={languageMode} trades={recentTrades} />
 
       <section className="panel">
-        <h3>{labelByMode(languageMode, "Advanced Details", "進階資料")}</h3>
+        <h3>{labelByMode(languageMode, "Advanced Details", ZH.advancedDetails)}</h3>
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Open this for scheduler status, charts, news sentiment, account history, and replay data.",
-            "打開後可查看排程狀態、圖表、新聞情緒、交易歷史和回放資料。"
+            "Open this only when you want scheduler status, charts, news sentiment, account history, or replay data.",
+            "只在需要查看排程狀態、圖表、新聞情緒、帳戶歷史或回測資料時才打開。"
           )}
         </p>
         <div className="settings-actions">
           <button type="button" onClick={() => setAdvancedEnabled((value) => !value)}>
             {advancedEnabled
-              ? labelByMode(languageMode, "Hide advanced details", "隱藏進階資料")
-              : labelByMode(languageMode, "Show advanced details", "顯示進階資料")}
+              ? labelByMode(languageMode, "Hide advanced details", ZH.hideAdvanced)
+              : labelByMode(languageMode, "Show advanced details", ZH.showAdvanced)}
           </button>
         </div>
       </section>
@@ -743,13 +768,13 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
               <p className="helper-text">
                 {labelByMode(
                   languageMode,
-                  "News sentiment is optional and can be slower, so it loads only when requested.",
-                  "新聞情緒屬於選用資料，可能較慢，因此只在需要時載入。"
+                  "News sentiment is optional and may be slower, so it loads only when requested.",
+                  "新聞情緒屬於選擇性資料，可能較慢，所以只會在需要時載入。"
                 )}
               </p>
               <div className="settings-actions">
                 <button type="button" onClick={() => setNewsEnabled(true)}>
-                  {labelByMode(languageMode, "Load news sentiment", "載入新聞情緒")}
+                  {labelByMode(languageMode, "Load news sentiment", ZH.loadNews)}
                 </button>
               </div>
             </section>
@@ -800,8 +825,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                 ticker={selectedTicker}
                 points={historicalEquityPoints}
                 languageMode={languageMode}
-                title={labelByMode(languageMode, "Historical Replay Equity Curve", "歷史回放資產曲線")}
-                subtitle={labelByMode(languageMode, `Ticker: ${selectedTicker}`, `股票: ${selectedTicker}`)}
+                title={labelByMode(languageMode, "Historical Replay Equity Curve", ZH.historicalEquity)}
+                subtitle={labelByMode(languageMode, `Ticker: ${selectedTicker}`, `股票代號: ${selectedTicker}`)}
               />
               <LineChart
                 title={labelByMode(languageMode, "Monthly Contribution History", ZH.monthlyContributionHistory)}
@@ -832,7 +857,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             </>
           ) : (
             <section className="panel">
-              <p>{labelByMode(languageMode, "Loading...", ZH.loading)}</p>
+              <p>{getLabel(languageMode, "loading")}</p>
             </section>
           )}
         </>
