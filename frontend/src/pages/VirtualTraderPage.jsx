@@ -27,7 +27,7 @@ const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
 const HISTORY_PAGE_SIZE = 120;
 const SCHEDULER_REFRESH_MS = 60000;
-const ACTION_FILTERS = ["all", "buy", "sell", "hold", "no_action"];
+const BUY_POTENTIAL_FILTERS = ["all", "bought", "high_blocked", "watching", "low_now", "holding", "sell_action"];
 
 const ZH = {
   virtualTrader: "虛擬交易員",
@@ -116,18 +116,32 @@ function decisionReasonText(reason, languageMode) {
 }
 
 function opportunityText(item, languageMode) {
+  const labels = {
+    bought: ["Bought", "\u5df2\u8cb7\u5165"],
+    high_blocked: ["High, but blocked", "\u9ad8\uff0c\u4f46\u53d7\u898f\u5247\u9650\u5236"],
+    watching: ["Watching", "\u89c0\u5bdf\u4e2d"],
+    low_now: ["Low now", "\u76ee\u524d\u8f03\u4f4e"],
+    holding: ["Holding", "\u6301\u6709\u4e2d"],
+    sell_action: ["Sell action", "\u8ce3\u51fa\u52d5\u4f5c"],
+  };
+  const [en, zh] = labels[getBuyPotentialKey(item)] || labels.low_now;
+  return labelByMode(languageMode, en, zh);
+}
+
+function getBuyPotentialKey(item) {
+  if (BUY_POTENTIAL_FILTERS.includes(item?.potential)) return item.potential;
   const action = String(item?.action || "").toLowerCase();
-  if (action === "buy") return labelByMode(languageMode, "Bought", "\u5df2\u8cb7\u5165");
-  if (action === "sell") return labelByMode(languageMode, "Sell action", "\u8ce3\u51fa\u52d5\u4f5c");
-  if (action === "hold") return labelByMode(languageMode, "Holding", "\u6301\u6709\u4e2d");
+  if (action === "buy") return "bought";
+  if (action === "sell") return "sell_action";
+  if (action === "hold") return "holding";
 
   const prediction = Number(item?.metadata?.prediction_value);
   const confidence = Number(item?.confidence_score);
   if (prediction > 0 && confidence >= 0.55) {
-    return labelByMode(languageMode, "High, but blocked", "\u9ad8\uff0c\u4f46\u53d7\u898f\u5247\u9650\u5236");
+    return "high_blocked";
   }
-  if (prediction > 0) return labelByMode(languageMode, "Watching", "\u89c0\u5bdf\u4e2d");
-  return labelByMode(languageMode, "Low now", "\u76ee\u524d\u8f03\u4f4e");
+  if (prediction > 0) return "watching";
+  return "low_now";
 }
 
 function decisionOpportunityScore(item, isWatchlist) {
@@ -167,7 +181,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   const [historicalEnabled, setHistoricalEnabled] = useState(false);
   const [newsEnabled, setNewsEnabled] = useState(false);
   const [advancedEnabled, setAdvancedEnabled] = useState(false);
-  const [actionFilter, setActionFilter] = useState("all");
+  const [buyPotentialFilter, setBuyPotentialFilter] = useState("all");
   const [isLoading, setIsLoading] = useState(false);
   const [isRunningNow, setIsRunningNow] = useState(false);
   const [error, setError] = useState("");
@@ -441,24 +455,30 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       .slice(0, 15);
   }, [currentWatchlist, liveDecisionLog]);
 
-  const actionCounts = useMemo(() => {
+  const buyPotentialCounts = useMemo(() => {
     return actionRows.reduce(
       (counts, item) => {
-        const action = String(item.action || "no_action").toLowerCase();
+        const potential = getBuyPotentialKey(item);
         counts.all += 1;
-        counts[action] = (counts[action] || 0) + 1;
+        counts[potential] = (counts[potential] || 0) + 1;
         return counts;
       },
-      { all: 0, buy: 0, sell: 0, hold: 0, no_action: 0 }
+      {
+        all: 0,
+        bought: 0,
+        high_blocked: 0,
+        watching: 0,
+        low_now: 0,
+        holding: 0,
+        sell_action: 0,
+      }
     );
   }, [actionRows]);
 
   const filteredActionRows = useMemo(() => {
-    if (actionFilter === "all") return actionRows;
-    return actionRows.filter(
-      (item) => String(item.action || "no_action").toLowerCase() === actionFilter
-    );
-  }, [actionRows, actionFilter]);
+    if (buyPotentialFilter === "all") return actionRows;
+    return actionRows.filter((item) => getBuyPotentialKey(item) === buyPotentialFilter);
+  }, [actionRows, buyPotentialFilter]);
 
   useEffect(() => {
     if (!filteredActionRows.length) {
@@ -522,20 +542,20 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         </p>
         <div className="action-filter-panel">
           <div className="action-filter-title">
-            {labelByMode(languageMode, "Group by action", "\u6309\u52d5\u4f5c\u5206\u985e")}
+            {labelByMode(languageMode, "Group by buy potential", "\u6309\u8cb7\u5165\u6f5b\u529b\u5206\u985e")}
           </div>
-          <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter actions", "\u7be9\u9078\u52d5\u4f5c")}>
-            {ACTION_FILTERS.map((filterValue) => (
+          <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter buy potential", "\u7be9\u9078\u8cb7\u5165\u6f5b\u529b")}>
+            {BUY_POTENTIAL_FILTERS.map((filterValue) => (
               <button
                 key={filterValue}
                 type="button"
-                className={actionFilter === filterValue ? "active" : ""}
-                onClick={() => setActionFilter(filterValue)}
+                className={buyPotentialFilter === filterValue ? "active" : ""}
+                onClick={() => setBuyPotentialFilter(filterValue)}
               >
                 {filterValue === "all"
                   ? labelByMode(languageMode, "All", "\u5168\u90e8")
-                  : actionText(filterValue, languageMode)}
-                <span>{actionCounts[filterValue] || 0}</span>
+                  : opportunityText({ action: "no_action", metadata: {}, confidence_score: null, potential: filterValue }, languageMode)}
+                <span>{buyPotentialCounts[filterValue] || 0}</span>
               </button>
             ))}
           </div>
@@ -587,10 +607,10 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                     {labelByMode(
                       languageMode,
                       actionRows.length
-                        ? "No decisions match this action filter."
+                        ? "No decisions match this buy potential filter."
                         : "No recent market decisions. Select Update decisions to scan the universe now.",
                       actionRows.length
-                        ? "\u6c92\u6709\u6c7a\u7b56\u7b26\u5408\u6b64\u52d5\u4f5c\u7be9\u9078\u3002"
+                        ? "\u6c92\u6709\u6c7a\u7b56\u7b26\u5408\u6b64\u8cb7\u5165\u6f5b\u529b\u7be9\u9078\u3002"
                         : "\u76ee\u524d\u5c1a\u672a\u6709\u6700\u65b0\u5e02\u5834\u6c7a\u7b56\u3002\u8acb\u6309\u300c\u66f4\u65b0\u6c7a\u7b56\u300d\u7acb\u5373\u6383\u63cf\u5e02\u5834\u3002"
                     )}
                   </td>
