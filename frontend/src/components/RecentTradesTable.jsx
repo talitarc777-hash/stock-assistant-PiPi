@@ -20,8 +20,8 @@ function formatQuantity(value) {
 
 function formatEventType(eventType, languageMode) {
   const map = {
-    buy_trade: ["Buy", "買入"],
-    sell_trade: ["Sell", "賣出"],
+    buy_trade: ["Buy", "\u8cb7\u5165"],
+    sell_trade: ["Sell", "\u8ce3\u51fa"],
   };
   const [en, zh] = map[eventType] || [eventType || "unknown", eventType || "unknown"];
   return labelByMode(languageMode, en, zh);
@@ -39,7 +39,8 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
   const [sortOrder, setSortOrder] = useState("newest");
 
   const tickerOptions = useMemo(
-    () => [...new Set(trades.map((trade) => String(trade.ticker || "").trim().toUpperCase()).filter(Boolean))].sort(),
+    () =>
+      [...new Set(trades.map((trade) => String(trade.ticker || "").trim().toUpperCase()).filter(Boolean))].sort(),
     [trades]
   );
 
@@ -71,53 +72,55 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
 
   return (
     <section className="panel">
-      <h3>{labelByMode(languageMode, "Recent Trades", "最近交易")}</h3>
+      <h3>{labelByMode(languageMode, "Recent Trades", "\u6700\u8fd1\u4ea4\u6613")}</h3>
 
       <div className="trade-filter-grid">
         <label>
-          {labelByMode(languageMode, "Ticker", "股票代號")}
+          {labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}
           <select value={tickerFilter} onChange={(event) => setTickerFilter(event.target.value)}>
-            <option value="all">{labelByMode(languageMode, "All tickers", "全部股票")}</option>
+            <option value="all">{labelByMode(languageMode, "All tickers", "\u5168\u90e8\u80a1\u7968")}</option>
             {tickerOptions.map((ticker) => (
-              <option key={ticker} value={ticker}>{ticker}</option>
+              <option key={ticker} value={ticker}>
+                {ticker}
+              </option>
             ))}
           </select>
         </label>
 
         <label>
-          {labelByMode(languageMode, "Trade type", "交易類型")}
+          {labelByMode(languageMode, "Trade type", "\u4ea4\u6613\u985e\u578b")}
           <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-            <option value="all">{labelByMode(languageMode, "Buy and sell", "買入及賣出")}</option>
-            <option value="buy_trade">{labelByMode(languageMode, "Buy only", "只看買入")}</option>
-            <option value="sell_trade">{labelByMode(languageMode, "Sell only", "只看賣出")}</option>
+            <option value="all">{labelByMode(languageMode, "Buy and sell", "\u8cb7\u5165\u548c\u8ce3\u51fa")}</option>
+            <option value="buy_trade">{labelByMode(languageMode, "Buy only", "\u53ea\u770b\u8cb7\u5165")}</option>
+            <option value="sell_trade">{labelByMode(languageMode, "Sell only", "\u53ea\u770b\u8ce3\u51fa")}</option>
           </select>
         </label>
 
         <label>
-          {labelByMode(languageMode, "Time", "時間")}
+          {labelByMode(languageMode, "Time", "\u6642\u9593")}
           <select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value)}>
-            <option value="all">{labelByMode(languageMode, "All loaded trades", "全部已載入交易")}</option>
-            <option value="24h">{labelByMode(languageMode, "Last 24 hours", "最近 24 小時")}</option>
-            <option value="7d">{labelByMode(languageMode, "Last 7 days", "最近 7 日")}</option>
-            <option value="30d">{labelByMode(languageMode, "Last 30 days", "最近 30 日")}</option>
+            <option value="all">{labelByMode(languageMode, "All loaded trades", "\u5168\u90e8\u5df2\u8f09\u5165\u4ea4\u6613")}</option>
+            <option value="24h">{labelByMode(languageMode, "Last 24 hours", "\u6700\u8fd1 24 \u5c0f\u6642")}</option>
+            <option value="7d">{labelByMode(languageMode, "Last 7 days", "\u6700\u8fd1 7 \u5929")}</option>
+            <option value="30d">{labelByMode(languageMode, "Last 30 days", "\u6700\u8fd1 30 \u5929")}</option>
           </select>
         </label>
 
         <label>
-          {labelByMode(languageMode, "Order", "排序")}
+          {labelByMode(languageMode, "Order", "\u6392\u5e8f")}
           <select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}>
-            <option value="newest">{labelByMode(languageMode, "Newest first", "最新優先")}</option>
-            <option value="oldest">{labelByMode(languageMode, "Oldest first", "最舊優先")}</option>
+            <option value="newest">{labelByMode(languageMode, "Newest first", "\u6700\u65b0\u512a\u5148")}</option>
+            <option value="oldest">{labelByMode(languageMode, "Oldest first", "\u6700\u820a\u512a\u5148")}</option>
           </select>
         </label>
       </div>
 
       <div className="trade-filter-summary">
         <span>
-          {labelByMode(languageMode, "Showing", "顯示")} {filteredTrades.length} / {trades.length}
+          {labelByMode(languageMode, "Showing", "\u986f\u793a")} {filteredTrades.length} / {trades.length}
         </span>
         <button type="button" onClick={resetFilters}>
-          {labelByMode(languageMode, "Clear filters", "清除篩選")}
+          {labelByMode(languageMode, "Clear filters", "\u6e05\u9664\u7be9\u9078")}
         </button>
       </div>
 
@@ -125,14 +128,13 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
         <table>
           <thead>
             <tr>
-              <th>{labelByMode(languageMode, "Date/Time", "日期/時間")}</th>
-              <th>{labelByMode(languageMode, "Type", "類型")}</th>
-              <th>{labelByMode(languageMode, "Ticker", "股票代號")}</th>
-              <th>{labelByMode(languageMode, "Quantity", "交易數量")}</th>
-              <th>{labelByMode(languageMode, "Remaining Qty", "剩餘數量")}</th>
-              <th>{labelByMode(languageMode, "Price", "價格")}</th>
-              <th>{labelByMode(languageMode, "Balance After", "交易後現金")}</th>
-              <th>{labelByMode(languageMode, "Reason", "原因")}</th>
+              <th>{labelByMode(languageMode, "Date/Time", "\u65e5\u671f/\u6642\u9593")}</th>
+              <th>{labelByMode(languageMode, "Type", "\u985e\u578b")}</th>
+              <th>{labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}</th>
+              <th>{labelByMode(languageMode, "Quantity", "\u6578\u91cf")}</th>
+              <th>{labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}</th>
+              <th>{labelByMode(languageMode, "Price", "\u50f9\u683c")}</th>
+              <th>{labelByMode(languageMode, "Reason", "\u539f\u56e0")}</th>
             </tr>
           </thead>
           <tbody>
@@ -145,16 +147,15 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
                   <td>{formatQuantity(trade.quantity)}</td>
                   <td>{formatQuantity(trade.remaining_quantity)}</td>
                   <td>{formatMoney(trade.price)}</td>
-                  <td>{formatMoney(trade.cash_balance_after)}</td>
                   <td>{trade.reason || "-"}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={7}>
                   {trades.length
-                    ? labelByMode(languageMode, "No trades match these filters.", "沒有交易符合目前篩選條件。")
-                    : labelByMode(languageMode, "No executed trades yet.", "尚未有已執行交易。")}
+                    ? labelByMode(languageMode, "No trades match these filters.", "\u6c92\u6709\u4ea4\u6613\u7b26\u5408\u9019\u4e9b\u7be9\u9078\u3002")
+                    : labelByMode(languageMode, "No executed trades yet.", "\u5c1a\u672a\u6709\u5df2\u57f7\u884c\u7684\u4ea4\u6613\u3002")}
                 </td>
               </tr>
             )}
