@@ -393,11 +393,25 @@ tbody tr:hover {
   min-width: 760px;
 }
 
+.action-filter-panel {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.action-filter-title {
+  margin-bottom: 8px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .action-filter-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 12px 0;
 }
 
 .action-filter-bar button {

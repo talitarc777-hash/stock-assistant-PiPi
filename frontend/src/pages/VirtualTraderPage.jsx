@@ -520,20 +520,25 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             "\u4ea4\u6613\u898f\u5247\uff1a\u53ea\u4f7f\u7528\u6574\u6578\u80a1\u6578\u3002\u4e00\u822c\u8ce3\u51fa\u8a0a\u865f\u6703\u6e1b\u6301\u7d04 50%\uff1b\u89f8\u53ca\u6b62\u8755\u6642\u6703\u8ce3\u51fa\u5168\u90e8\u6301\u5009\u3002\u6bcf\u6b21\u4ea4\u6613\u6536\u53d6 50 \u6e2f\u5143\u3002"
           )}
         </p>
-        <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter actions", "\u7be9\u9078\u52d5\u4f5c")}>
-          {ACTION_FILTERS.map((filterValue) => (
-            <button
-              key={filterValue}
-              type="button"
-              className={actionFilter === filterValue ? "active" : ""}
-              onClick={() => setActionFilter(filterValue)}
-            >
-              {filterValue === "all"
-                ? labelByMode(languageMode, "All", "\u5168\u90e8")
-                : actionText(filterValue, languageMode)}
-              <span>{actionCounts[filterValue] || 0}</span>
-            </button>
-          ))}
+        <div className="action-filter-panel">
+          <div className="action-filter-title">
+            {labelByMode(languageMode, "Group by action", "\u6309\u52d5\u4f5c\u5206\u985e")}
+          </div>
+          <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter actions", "\u7be9\u9078\u52d5\u4f5c")}>
+            {ACTION_FILTERS.map((filterValue) => (
+              <button
+                key={filterValue}
+                type="button"
+                className={actionFilter === filterValue ? "active" : ""}
+                onClick={() => setActionFilter(filterValue)}
+              >
+                {filterValue === "all"
+                  ? labelByMode(languageMode, "All", "\u5168\u90e8")
+                  : actionText(filterValue, languageMode)}
+                <span>{actionCounts[filterValue] || 0}</span>
+              </button>
+            ))}
+          </div>
         </div>
         <div className="table-wrap beginner-action-table">
           <table>
