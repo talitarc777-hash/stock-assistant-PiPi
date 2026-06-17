@@ -44,53 +44,6 @@ export async function fetchForecast(ticker, period = "2y") {
   return fetchJson(`/forecast?ticker=${encodeURIComponent(ticker)}&period=${period}`, { timeoutMs: 14000 });
 }
 
-export async function fetchModelLatest(
-  ticker,
-  period = "5y",
-  targetName = "target_5d_updown",
-  modelName = "logistic_regression",
-  userId = null
-) {
-  const userQuery = userId ? `&user_id=${encodeURIComponent(userId)}` : "";
-  return fetchJson(
-    `/model-latest?ticker=${encodeURIComponent(ticker)}&period=${period}&target_name=${encodeURIComponent(
-      targetName
-    )}&model_name=${encodeURIComponent(modelName)}${userQuery}`
-  );
-}
-
-export async function fetchModelHistory(
-  ticker,
-  period = "5y",
-  targetName = "target_5d_updown",
-  modelName = "logistic_regression",
-  limit = 200,
-  userId = null
-) {
-  const userQuery = userId ? `&user_id=${encodeURIComponent(userId)}` : "";
-  return fetchJson(
-    `/model-history?ticker=${encodeURIComponent(ticker)}&period=${period}&target_name=${encodeURIComponent(
-      targetName
-    )}&model_name=${encodeURIComponent(modelName)}&limit=${limit}${userQuery}`
-  );
-}
-
-export async function fetchModelAccuracy(
-  ticker,
-  period = "5y",
-  targetName = "target_5d_updown",
-  modelName = "logistic_regression",
-  window = 20,
-  userId = null
-) {
-  const userQuery = userId ? `&user_id=${encodeURIComponent(userId)}` : "";
-  return fetchJson(
-    `/model-accuracy?ticker=${encodeURIComponent(ticker)}&period=${period}&target_name=${encodeURIComponent(
-      targetName
-    )}&model_name=${encodeURIComponent(modelName)}&window=${window}${userQuery}`
-  );
-}
-
 export async function fetchVirtualTraderSummary(
   ticker,
   period = "5y",
@@ -213,8 +166,12 @@ export async function fetchModelLifecycleStatus(
   );
 }
 
-export async function fetchModelLifecycleRegistry(limit = 200) {
-  return fetchJson(`/model-lifecycle/registry?limit=${encodeURIComponent(limit)}`);
+export async function fetchModelLifecycleRegistry(limit = 200, filters = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (filters.ticker) params.set("ticker", filters.ticker);
+  if (filters.period) params.set("period", filters.period);
+  if (filters.targetName) params.set("target_name", filters.targetName);
+  return fetchJson(`/model-lifecycle/registry?${params.toString()}`);
 }
 
 export async function fetchModelLifecycleRuns(limit = 20) {

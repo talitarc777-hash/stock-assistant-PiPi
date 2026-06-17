@@ -7,7 +7,6 @@ import WatchlistManager from "./components/WatchlistManager";
 import WatchlistTable from "./components/WatchlistTable";
 import GlossaryPage from "./pages/GlossaryPage";
 import ModelLifecyclePage from "./pages/ModelLifecyclePage";
-import ModelEvaluationPage from "./pages/ModelEvaluationPage";
 import SettingsPage from "./pages/SettingsPage";
 import VirtualTraderPage from "./pages/VirtualTraderPage";
 import {
@@ -26,7 +25,6 @@ import "./styles.css";
 const DEFAULT_PERIOD = "5y";
 const DASHBOARD_PATH = "/";
 const GLOSSARY_PATH = "/glossary";
-const MODEL_EVALUATION_PATH = "/model-evaluation";
 const MODEL_LIFECYCLE_PATH = "/model-lifecycle";
 const SETTINGS_PATH = "/settings";
 const VIRTUAL_TRADER_PATH = "/virtual-trader";
@@ -64,8 +62,7 @@ const ZH = {
   totalScore: "\u7e3d\u8a55\u5206",
   settings: "\u8a2d\u5b9a",
   glossary: "\u8a5e\u5f59\u8868",
-  modelEvaluation: "\u6a21\u578b\u8a55\u4f30",
-  modelLifecycle: "\u6a21\u578b\u751f\u547d\u9031\u671f",
+  modelLifecycle: "\u4ea4\u6613\u6a21\u578b",
   virtualTrader: "\u865b\u64ec\u4ea4\u6613\u54e1",
   language: "\u8a9e\u8a00",
   chinese: "\u4e2d\u6587",
@@ -73,7 +70,7 @@ const ZH = {
 
 function normalizePath(pathname) {
   if (pathname === GLOSSARY_PATH) return GLOSSARY_PATH;
-  if (pathname === MODEL_EVALUATION_PATH) return MODEL_EVALUATION_PATH;
+  if (pathname === "/model-evaluation") return MODEL_LIFECYCLE_PATH;
   if (pathname === MODEL_LIFECYCLE_PATH) return MODEL_LIFECYCLE_PATH;
   if (pathname === SETTINGS_PATH) return SETTINGS_PATH;
   if (pathname === VIRTUAL_TRADER_PATH) return VIRTUAL_TRADER_PATH;
@@ -657,31 +654,24 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={routePath === SETTINGS_PATH ? "nav-link active" : "nav-link"}
-            onClick={() => navigateTo(SETTINGS_PATH, setRoutePath)}
+            className={routePath === VIRTUAL_TRADER_PATH ? "nav-link active" : "nav-link"}
+            onClick={() => navigateTo(VIRTUAL_TRADER_PATH, setRoutePath)}
           >
-            {formatBilingualLabel(languageMode, "Settings", ZH.settings)}
-          </button>
-          <button
-            type="button"
-            className={routePath === MODEL_EVALUATION_PATH ? "nav-link active" : "nav-link"}
-            onClick={() => navigateTo(MODEL_EVALUATION_PATH, setRoutePath)}
-          >
-            {formatBilingualLabel(languageMode, "Model Evaluation", ZH.modelEvaluation)}
+            {formatBilingualLabel(languageMode, "Virtual Trader", ZH.virtualTrader)}
           </button>
           <button
             type="button"
             className={routePath === MODEL_LIFECYCLE_PATH ? "nav-link active" : "nav-link"}
             onClick={() => navigateTo(MODEL_LIFECYCLE_PATH, setRoutePath)}
           >
-            {formatBilingualLabel(languageMode, "Model Lifecycle", ZH.modelLifecycle)}
+            {formatBilingualLabel(languageMode, "Trading Models", ZH.modelLifecycle)}
           </button>
           <button
             type="button"
-            className={routePath === VIRTUAL_TRADER_PATH ? "nav-link active" : "nav-link"}
-            onClick={() => navigateTo(VIRTUAL_TRADER_PATH, setRoutePath)}
+            className={routePath === SETTINGS_PATH ? "nav-link active" : "nav-link"}
+            onClick={() => navigateTo(SETTINGS_PATH, setRoutePath)}
           >
-            {formatBilingualLabel(languageMode, "Virtual Trader", ZH.virtualTrader)}
+            {formatBilingualLabel(languageMode, "Settings", ZH.settings)}
           </button>
           <button
             type="button"
@@ -709,12 +699,6 @@ export default function App() {
 
       {routePath === GLOSSARY_PATH ? (
         <GlossaryPage languageMode={languageMode} />
-      ) : routePath === MODEL_EVALUATION_PATH ? (
-        <ModelEvaluationPage
-          languageMode={languageMode}
-          currentWatchlist={currentWatchlist}
-          profileId={profileId}
-        />
       ) : routePath === MODEL_LIFECYCLE_PATH ? (
         <ModelLifecyclePage languageMode={languageMode} />
       ) : routePath === SETTINGS_PATH ? (

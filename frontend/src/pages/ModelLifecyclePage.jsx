@@ -68,7 +68,7 @@ export default function ModelLifecyclePage({ languageMode }) {
     setError("");
     const results = await Promise.allSettled([
       fetchModelLifecycleStatus("VOO", "2y", "target_5d_return", 6),
-      fetchModelLifecycleRegistry(160),
+      fetchModelLifecycleRegistry(1000, { targetName: "target_5d_return" }),
       fetchModelLifecycleRuns(8),
     ]);
 
@@ -135,7 +135,12 @@ export default function ModelLifecyclePage({ languageMode }) {
   const preferredModel = rankedForVoo[0] || null;
   const periodRows = TRADING_PERIODS.map((period) => {
     const rows = tradingRegistry
-      .filter((item) => item.period === period && item.ticker === "VOO" && item.is_validated)
+      .filter(
+        (item) =>
+          item.period === period &&
+          item.is_validated &&
+          ["production", "candidate"].includes(item.status)
+      )
       .sort((left, right) => Number(right.validation_score || 0) - Number(left.validation_score || 0));
     return {
       period,
@@ -238,7 +243,7 @@ export default function ModelLifecyclePage({ languageMode }) {
                   <td>{row.available}</td>
                   <td>
                     {row.best
-                      ? `${modelText(row.best.model_name)} (${scoreText(row.best.validation_score)})`
+                      ? `${row.best.ticker}: ${modelText(row.best.model_name)} (${scoreText(row.best.validation_score)})`
                       : labelByMode(languageMode, "Waiting for training", "\u7b49\u5f85\u8a13\u7df4")}
                   </td>
                 </tr>
@@ -246,6 +251,13 @@ export default function ModelLifecyclePage({ languageMode }) {
             </tbody>
           </table>
         </div>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "This counts validated trading models across the loaded market registry, not only VOO.",
+            "\u9019\u88e1\u7d71\u8a08\u5df2\u8f09\u5165\u5e02\u5834\u767b\u8a18\u4e2d\u7684\u5df2\u9a57\u8b49\u4ea4\u6613\u6a21\u578b\uff0c\u4e0d\u53ea\u662f VOO\u3002"
+          )}
+        </p>
       </section>
 
       <section className="panel">

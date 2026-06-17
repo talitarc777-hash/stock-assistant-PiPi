@@ -1,14 +1,7 @@
 import React, { useEffect, useState } from "react";
 
 import WatchlistManager from "../components/WatchlistManager";
-import {
-  labelByMode,
-  SETTINGS_MODEL_EVAL_LABELS as MODEL_LABELS,
-} from "../i18n/bilingualUiLabels";
-import {
-  fetchModelEvaluationSettings,
-  updateModelEvaluationSettings,
-} from "../services/modelSettingsApi";
+import { labelByMode } from "../i18n/bilingualUiLabels";
 import {
   fetchUserAlertSettings,
   updateUserAlertSettings,
@@ -62,8 +55,6 @@ export default function SettingsPage({
   const [alertHigh, setAlertHigh] = useState(80);
   const [alertLow, setAlertLow] = useState(45);
   const [alertWatchlist, setAlertWatchlist] = useState("");
-  const [selectedModelName, setSelectedModelName] = useState("logistic_regression");
-  const [availableModels, setAvailableModels] = useState([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [remoteLoadError, setRemoteLoadError] = useState("");
@@ -89,17 +80,12 @@ export default function SettingsPage({
     async function loadRemoteSettings() {
       setRemoteLoadError("");
       try {
-        const [alertSettings, modelSettings] = await Promise.all([
-          fetchUserAlertSettings(profileId),
-          fetchModelEvaluationSettings(profileId),
-        ]);
+        const alertSettings = await fetchUserAlertSettings(profileId);
         if (!isActive) return;
         setAlertEnabled(Boolean(alertSettings.alert_enabled));
         setAlertHigh(alertSettings.alert_threshold_high ?? 80);
         setAlertLow(alertSettings.alert_threshold_low ?? 45);
         setAlertWatchlist(watchlistToText(alertSettings.alert_watchlist || []));
-        setSelectedModelName(modelSettings.selected_model_name || "logistic_regression");
-        setAvailableModels(modelSettings.available_models || []);
       } catch (requestError) {
         // Keep the page usable even if the backend is temporarily busy.
         if (!isActive) return;
@@ -130,11 +116,6 @@ export default function SettingsPage({
         preferred_language: language,
         compact_mode: compactMode,
         last_active_source: "dashboard",
-      });
-
-      await updateModelEvaluationSettings({
-        user_id: nextProfileId,
-        selected_model_name: selectedModelName,
       });
 
       await updateUserAlertSettings({
@@ -212,27 +193,6 @@ export default function SettingsPage({
             />
             {labelByMode(languageMode, "Compact mode", ZH.compact)}
           </label>
-
-          <label>
-            {labelByMode(languageMode, MODEL_LABELS.modelEvaluation.en, MODEL_LABELS.modelEvaluation.zh)}
-            <select
-              value={selectedModelName}
-              onChange={(event) => setSelectedModelName(event.target.value)}
-            >
-              {availableModels.map((item) => (
-                <option key={item.model_name} value={item.model_name}>
-                  {item.display_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="helper-text">
-            {labelByMode(
-              languageMode,
-              MODEL_LABELS.modelEvaluationHint.en,
-              MODEL_LABELS.modelEvaluationHint.zh
-            )}
-          </p>
 
           <label className="checkbox-row">
             <input
