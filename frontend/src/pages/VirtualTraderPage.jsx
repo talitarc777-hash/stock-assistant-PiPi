@@ -27,6 +27,7 @@ const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
 const HISTORY_PAGE_SIZE = 120;
 const SCHEDULER_REFRESH_MS = 60000;
+const ACTION_FILTERS = ["all", "buy", "sell", "hold", "no_action"];
 
 const ZH = {
   virtualTrader: "虛擬交易員",
@@ -166,6 +167,7 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   const [historicalEnabled, setHistoricalEnabled] = useState(false);
   const [newsEnabled, setNewsEnabled] = useState(false);
   const [advancedEnabled, setAdvancedEnabled] = useState(false);
+  const [actionFilter, setActionFilter] = useState("all");
   const [isLoading, setIsLoading] = useState(false);
   const [isRunningNow, setIsRunningNow] = useState(false);
   const [error, setError] = useState("");
@@ -439,18 +441,37 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       .slice(0, 15);
   }, [currentWatchlist, liveDecisionLog]);
 
+  const actionCounts = useMemo(() => {
+    return actionRows.reduce(
+      (counts, item) => {
+        const action = String(item.action || "no_action").toLowerCase();
+        counts.all += 1;
+        counts[action] = (counts[action] || 0) + 1;
+        return counts;
+      },
+      { all: 0, buy: 0, sell: 0, hold: 0, no_action: 0 }
+    );
+  }, [actionRows]);
+
+  const filteredActionRows = useMemo(() => {
+    if (actionFilter === "all") return actionRows;
+    return actionRows.filter(
+      (item) => String(item.action || "no_action").toLowerCase() === actionFilter
+    );
+  }, [actionRows, actionFilter]);
+
   useEffect(() => {
-    if (!actionRows.length) {
+    if (!filteredActionRows.length) {
       setSelectedLiveTrade(null);
       return;
     }
     setSelectedLiveTrade((current) => {
-      const remainsVisible = actionRows.some(
+      const remainsVisible = filteredActionRows.some(
         (item) => item.timestamp === current?.timestamp && item.ticker === current?.ticker
       );
-      return remainsVisible ? current : actionRows[0];
+      return remainsVisible ? current : filteredActionRows[0];
     });
-  }, [actionRows]);
+  }, [filteredActionRows]);
 
   return (
     <>
@@ -499,6 +520,21 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             "\u4ea4\u6613\u898f\u5247\uff1a\u53ea\u4f7f\u7528\u6574\u6578\u80a1\u6578\u3002\u4e00\u822c\u8ce3\u51fa\u8a0a\u865f\u6703\u6e1b\u6301\u7d04 50%\uff1b\u89f8\u53ca\u6b62\u8755\u6642\u6703\u8ce3\u51fa\u5168\u90e8\u6301\u5009\u3002\u6bcf\u6b21\u4ea4\u6613\u6536\u53d6 50 \u6e2f\u5143\u3002"
           )}
         </p>
+        <div className="action-filter-bar" aria-label={labelByMode(languageMode, "Filter actions", "\u7be9\u9078\u52d5\u4f5c")}>
+          {ACTION_FILTERS.map((filterValue) => (
+            <button
+              key={filterValue}
+              type="button"
+              className={actionFilter === filterValue ? "active" : ""}
+              onClick={() => setActionFilter(filterValue)}
+            >
+              {filterValue === "all"
+                ? labelByMode(languageMode, "All", "\u5168\u90e8")
+                : actionText(filterValue, languageMode)}
+              <span>{actionCounts[filterValue] || 0}</span>
+            </button>
+          ))}
+        </div>
         <div className="table-wrap beginner-action-table">
           <table>
             <thead>
@@ -513,8 +549,8 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
               </tr>
             </thead>
             <tbody>
-              {actionRows.length ? (
-                actionRows.map((item) => (
+              {filteredActionRows.length ? (
+                filteredActionRows.map((item) => (
                   <tr
                     key={`${item.timestamp}-${item.ticker}-${item.action}`}
                     className={selectedLiveTrade?.timestamp === item.timestamp ? "selected-row" : ""}
@@ -545,8 +581,12 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                   <td colSpan={7}>
                     {labelByMode(
                       languageMode,
-                      "No recent market decisions. Select Update decisions to scan the universe now.",
-                      "\u76ee\u524d\u5c1a\u672a\u6709\u6700\u65b0\u5e02\u5834\u6c7a\u7b56\u3002\u8acb\u6309\u300c\u66f4\u65b0\u6c7a\u7b56\u300d\u7acb\u5373\u6383\u63cf\u5e02\u5834\u3002"
+                      actionRows.length
+                        ? "No decisions match this action filter."
+                        : "No recent market decisions. Select Update decisions to scan the universe now.",
+                      actionRows.length
+                        ? "\u6c92\u6709\u6c7a\u7b56\u7b26\u5408\u6b64\u52d5\u4f5c\u7be9\u9078\u3002"
+                        : "\u76ee\u524d\u5c1a\u672a\u6709\u6700\u65b0\u5e02\u5834\u6c7a\u7b56\u3002\u8acb\u6309\u300c\u66f4\u65b0\u6c7a\u7b56\u300d\u7acb\u5373\u6383\u63cf\u5e02\u5834\u3002"
                     )}
                   </td>
                 </tr>
