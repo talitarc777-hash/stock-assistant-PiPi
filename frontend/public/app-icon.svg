@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Stock Assistant red OpenClaw lobster icon</title>
+  <desc id="desc">A red cartoon lobster with technology and stock chart accents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="lobster" x1="16" y1="10" x2="48" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FCA5A5"/>
+      <stop offset="0.45" stop-color="#EF4444"/>
+      <stop offset="1" stop-color="#B91C1C"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <path d="M9 18H16M48 14H56M49 51H57M8 47H15" stroke="#38BDF8" stroke-width="1.5" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="18" cy="18" r="1.9" fill="#22D3EE"/>
+  <circle cx="46" cy="14" r="1.9" fill="#22D3EE"/>
+  <circle cx="47" cy="51" r="1.9" fill="#22D3EE"/>
+  <circle cx="17" cy="47" r="1.9" fill="#22D3EE"/>
+
+  <path d="M28 17C24 12 18 11 14 15C10 19 12 25 18 26C22 27 25 24 27 21Z" fill="url(#lobster)" stroke="#FEE2E2" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M36 17C40 12 46 11 50 15C54 19 52 25 46 26C42 27 39 24 37 21Z" fill="url(#lobster)" stroke="#FEE2E2" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M17 18C21 17 23 18 25 21" fill="none" stroke="#7F1D1D" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+  <path d="M47 18C43 17 41 18 39 21" fill="none" stroke="#7F1D1D" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+
+  <path d="M24 23C21 26 19 30 19 35C19 44 25 51 32 51C39 51 45 44 45 35C45 30 43 26 40 23C38 21 35 20 32 20C29 20 26 21 24 23Z" fill="url(#lobster)" stroke="#FEE2E2" stroke-width="2.2"/>
+  <path d="M24 50L20 57H44L40 50" fill="#991B1B" stroke="#FEE2E2" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M28 53L26 58M32 53V59M36 53L38 58" stroke="#FCA5A5" stroke-width="1.8" stroke-linecap="round"/>
+
+  <circle cx="28" cy="28" r="2" fill="#111827"/>
+  <circle cx="36" cy="28" r="2" fill="#111827"/>
+  <circle cx="28.8" cy="27.2" r="0.6" fill="#FFFFFF"/>
+  <circle cx="36.8" cy="27.2" r="0.6" fill="#FFFFFF"/>
+  <path d="M30 35C31.5 36.2 33.5 36.2 35 35" fill="none" stroke="#7F1D1D" stroke-width="2" stroke-linecap="round"/>
+  <path d="M23 34H41M24 40H40M27 46H37" stroke="#FCA5A5" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+
+  <path d="M14 44L23 38L31 41L42 31L50 27" fill="none" stroke="#34D399" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="14" cy="44" r="2.3" fill="#111827" stroke="#34D399" stroke-width="1.5"/>
+  <circle cx="31" cy="41" r="2.3" fill="#111827" stroke="#34D399" stroke-width="1.5"/>
+  <circle cx="50" cy="27" r="2.3" fill="#111827" stroke="#34D399" stroke-width="1.5"/>
+</svg>
