@@ -105,6 +105,7 @@ class VirtualAccountRecentTradeResponse(BaseModel):
     event_type: str
     ticker: str
     quantity: float
+    remaining_quantity: float = 0.0
     price: float
     gross_amount: float
     fee_amount: float = 0.0

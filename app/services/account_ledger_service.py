@@ -322,17 +322,30 @@ class AccountLedgerService:
         }
         chronological_events = self.list_events_chronological(user_id=user_id)
         running_cash = 0.0
+        running_quantities: dict[str, float] = {}
         history_rows: list[dict[str, Any]] = []
         for event in chronological_events:
             net_amount = float(event["amount"])
             running_cash += net_amount
             quantity = event.get("quantity")
             price = event.get("price")
+            ticker = str(event.get("ticker") or "").upper()
             metadata = dict(event.get("metadata") or {})
             fee_amount = float(metadata.get("fee_amount") or 0.0)
             gross_amount = None
             if quantity is not None and price is not None:
                 gross_amount = float(quantity) * float(price)
+            remaining_quantity = None
+            if ticker and quantity is not None and event["event_type"] in {"buy_trade", "sell_trade"}:
+                current_quantity = float(running_quantities.get(ticker, 0.0))
+                if event["event_type"] == "buy_trade":
+                    current_quantity += float(quantity)
+                else:
+                    current_quantity -= float(quantity)
+                if current_quantity <= 1e-8:
+                    current_quantity = 0.0
+                running_quantities[ticker] = current_quantity
+                remaining_quantity = current_quantity
             history_row = {
                 "id": int(event["id"]),
                 "user_id": event["user_id"],
@@ -340,6 +353,7 @@ class AccountLedgerService:
                 "created_at": event["created_at"],
                 "ticker": event.get("ticker"),
                 "quantity": quantity,
+                "remaining_quantity": remaining_quantity,
                 "price": price,
                 "gross_amount": gross_amount,
                 "fee_amount": fee_amount,
@@ -755,6 +769,7 @@ class AccountLedgerService:
                     "event_type": row["event_type"],
                     "ticker": str(row.get("ticker") or "").upper(),
                     "quantity": quantity,
+                    "remaining_quantity": float(row.get("remaining_quantity") or 0.0),
                     "price": price,
                     "gross_amount": float(row.get("gross_amount") or (quantity * price)),
                     "fee_amount": float(row.get("fee_amount") or 0.0),

@@ -680,12 +680,14 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         <ResetTradingAccountButton userId={profileId} languageMode={languageMode} onResetComplete={loadGlobalViews} />
       </section>
 
+      <RecentTradesTable languageMode={languageMode} trades={recentTrades} />
+
       <section className="panel">
         <h3>{labelByMode(languageMode, "Advanced Details", "進階資料")}</h3>
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Open this for scheduler status, charts, news sentiment, trade history, and replay data.",
+            "Open this for scheduler status, charts, news sentiment, account history, and replay data.",
             "打開後可查看排程狀態、圖表、新聞情緒、交易歷史和回放資料。"
           )}
         </p>
@@ -714,8 +716,6 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             title={labelByMode(languageMode, "Account Value Chart", "帳戶價值圖")}
             subtitle={labelByMode(languageMode, `Profile ID: ${profileId}`, `Profile ID: ${profileId}`)}
           />
-
-          <RecentTradesTable languageMode={languageMode} trades={recentTrades} />
 
           {!newsEnabled ? (
             <section className="panel">

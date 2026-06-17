@@ -235,6 +235,12 @@ class AccountLedgerServiceTests(unittest.TestCase):
         self.assertEqual(len(holdings), 1)
         self.assertEqual(holdings[0]["quantity"], 3.0)
 
+        trades = self.service.list_recent_trade_events("u1", limit=5)
+        self.assertEqual(trades[0]["event_type"], "sell_trade")
+        self.assertEqual(trades[0]["remaining_quantity"], 3.0)
+        self.assertEqual(trades[1]["event_type"], "buy_trade")
+        self.assertEqual(trades[1]["remaining_quantity"], 8.0)
+
 
 if __name__ == "__main__":
     unittest.main()
