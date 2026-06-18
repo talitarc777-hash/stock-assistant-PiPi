@@ -26,6 +26,18 @@ def _parse_ticker_csv_env(value: str) -> list[str]:
     return [item.upper() for item in _parse_csv_env(value)]
 
 
+def _parse_bool_env(value: str | None, default: bool = False) -> bool:
+    """Parse common truthy/falsy environment values."""
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _combine_cors_regex(*patterns: str | None) -> str | None:
     """Combine optional CORS regex patterns without losing deployment defaults."""
     clean_patterns = [pattern.strip() for pattern in patterns if pattern and pattern.strip()]
@@ -87,6 +99,14 @@ class Settings(BaseModel):
     cors_allow_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
+    external_context_enabled: bool = True
+    external_context_timeout_seconds: float = 2.5
+    alpha_vantage_api_key: str | None = None
+    reddit_context_enabled: bool = True
+    reddit_context_subreddits: list[str] = ["stocks", "investing"]
+    reddit_context_limit: int = 8
+    sec_context_enabled: bool = True
+    sec_user_agent: str = "StockAssistantPiPi/1.0 contact@example.com"
 
 
 _CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
@@ -117,5 +137,16 @@ def get_settings() -> Settings:
         ),
         default_watchlist=_parse_ticker_csv_env(
             os.getenv("WATCHLIST_TICKERS", "VOO,SPY,QQQ,AAPL,MSFT,NVDA")
+        ),
+        external_context_enabled=_parse_bool_env(os.getenv("EXTERNAL_CONTEXT_ENABLED"), True),
+        external_context_timeout_seconds=float(os.getenv("EXTERNAL_CONTEXT_TIMEOUT_SECONDS", "2.5")),
+        alpha_vantage_api_key=(os.getenv("ALPHA_VANTAGE_API_KEY") or "").strip() or None,
+        reddit_context_enabled=_parse_bool_env(os.getenv("REDDIT_CONTEXT_ENABLED"), True),
+        reddit_context_subreddits=_parse_csv_env(os.getenv("REDDIT_CONTEXT_SUBREDDITS", "stocks,investing")),
+        reddit_context_limit=max(1, int(os.getenv("REDDIT_CONTEXT_LIMIT", "8"))),
+        sec_context_enabled=_parse_bool_env(os.getenv("SEC_CONTEXT_ENABLED"), True),
+        sec_user_agent=os.getenv(
+            "SEC_USER_AGENT",
+            "StockAssistantPiPi/1.0 contact@example.com",
         ),
     )

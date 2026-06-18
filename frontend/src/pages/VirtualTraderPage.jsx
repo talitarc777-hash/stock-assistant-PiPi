@@ -123,6 +123,8 @@ function decisionReasonText(reason, languageMode) {
     model_not_bullish: ["Model is not bullish yet", "模型暫時未看好"],
     confidence_below_threshold: ["Model confidence is below 55%", "模型信心低於 55%"],
     risk_or_cash_constraint: ["Blocked by cash or risk rules", "受現金或風險規則限制"],
+    context_score_too_low: ["Context score is too weak to buy", "背景評分不足，暫不買入"],
+    context_risk_reduction: ["Context risk triggered a partial sell", "背景風險觸發部分賣出"],
     holding_position: ["Continue holding", "繼續持有"],
     stop_loss: ["Stop-loss was reached", "已觸及止蝕"],
     take_profit: ["Profit target was reached", "已達到止賺目標"],
@@ -640,10 +642,36 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           </table>
         </div>
         {selectedLiveTrade ? (
-          <p className="helper-text">
-            <strong>{labelByMode(languageMode, "Reason detail", ZH.reasonDetail)}:</strong>{" "}
-            {selectedLiveTrade.threshold_summary || selectedLiveTrade.reason}
-          </p>
+          <div className="decision-context-box">
+            <p>
+              <strong>{labelByMode(languageMode, "Reason detail", ZH.reasonDetail)}:</strong>{" "}
+              {selectedLiveTrade.threshold_summary || selectedLiveTrade.reason}
+            </p>
+            {selectedLiveTrade.metadata?.context_score !== undefined ? (
+              <>
+                <p>
+                  <strong>{labelByMode(languageMode, "Context score", "背景評分")}:</strong>{" "}
+                  {Number(selectedLiveTrade.metadata.context_score).toFixed(0)}/100
+                  {selectedLiveTrade.metadata.context_label ? ` (${selectedLiveTrade.metadata.context_label})` : ""}
+                </p>
+                <p>{selectedLiveTrade.metadata.context_summary}</p>
+                {selectedLiveTrade.metadata.external_context?.sources_available?.length ? (
+                  <p>
+                    <strong>{labelByMode(languageMode, "Extra feeds used", "已使用額外資料")}:</strong>{" "}
+                    {selectedLiveTrade.metadata.external_context.sources_available.join(", ")}
+                  </p>
+                ) : null}
+                {Array.isArray(selectedLiveTrade.metadata.context_factors)
+                  && selectedLiveTrade.metadata.context_factors.length > 0 ? (
+                    <div className="decision-factor-list" aria-label="Decision factors">
+                      {selectedLiveTrade.metadata.context_factors.slice(0, 8).map((factor) => (
+                        <span key={factor}>{factor}</span>
+                      ))}
+                    </div>
+                  ) : null}
+              </>
+            ) : null}
+          </div>
         ) : null}
       </section>
 

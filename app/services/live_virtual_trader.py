@@ -28,6 +28,7 @@ from app.services.account_ledger_service import (
     get_account_ledger_service,
 )
 from app.services.equity_curve_service import build_live_equity_curve
+from app.services.external_market_context_service import build_external_market_context
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
 from app.services.model_lifecycle_service import (
@@ -90,6 +91,8 @@ TRADING_TARGET_NAME = "target_5d_return"
 AUTO_TRADING_MODEL_NAME = "auto_best"
 TRADING_MODEL_NAMES = ("linear_regression", "random_forest", "gradient_boosting")
 PARTIAL_SELL_FRACTION = 0.5
+MIN_CONTEXT_SCORE_FOR_BUY = 55.0
+MAX_CONTEXT_SCORE_FOR_HOLD = 35.0
 
 
 class LiveVirtualTraderStore:
@@ -419,6 +422,205 @@ def _build_rule_based_fallback(
     return (0.0, 0.55, "regression", reason)
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _score_virtual_trader_context(
+    *,
+    latest_row: pd.Series,
+    snapshot: dict[str, Any],
+    external_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Score non-price context used to confirm virtual-trader actions.
+
+    This is intentionally transparent and conservative. It uses data already
+    available to the trader run: news sentiment, benchmark strength, valuation,
+    company size, volatility, technical alignment, and headline-derived context
+    for political/regulatory risk, public interest, analyst revisions, and
+    earnings tone.
+    """
+    score = 50.0
+    factors: list[str] = []
+
+    recent_articles = _safe_float(latest_row.get("article_count_recent_7d"))
+    recent_sentiment = _safe_float(latest_row.get("average_sentiment_recent_7d"))
+    positive_ratio = _safe_float(latest_row.get("positive_article_ratio_recent_7d"))
+    negative_ratio = _safe_float(latest_row.get("negative_article_ratio_recent_7d"))
+    if recent_articles and recent_articles > 0 and recent_sentiment is not None:
+        if recent_sentiment >= 0.15 or (positive_ratio or 0.0) > (negative_ratio or 0.0) + 0.2:
+            score += 10
+            factors.append("recent news tone supports the setup")
+        elif recent_sentiment <= -0.15 or (negative_ratio or 0.0) > (positive_ratio or 0.0) + 0.2:
+            score -= 12
+            factors.append("recent news tone is a risk")
+        else:
+            factors.append("recent news tone is balanced")
+    else:
+        factors.append("news/public sentiment data is limited")
+
+    political_risk_ratio = _safe_float(latest_row.get("political_risk_article_ratio_recent_7d"))
+    if political_risk_ratio is not None:
+        if political_risk_ratio >= 0.35:
+            score -= 10
+            factors.append("headline political/regulatory risk is elevated")
+        elif political_risk_ratio >= 0.15:
+            score -= 5
+            factors.append("some political/regulatory risk appears in headlines")
+
+    public_interest_ratio = _safe_float(latest_row.get("public_interest_article_ratio_recent_7d"))
+    if public_interest_ratio is not None and public_interest_ratio >= 0.3:
+        if recent_sentiment is not None and recent_sentiment < -0.1:
+            score -= 5
+            factors.append("public/social attention is negative")
+        else:
+            score += 6
+            factors.append("public/social attention supports the setup")
+
+    analyst_positive_ratio = _safe_float(latest_row.get("analyst_positive_ratio_recent_7d"))
+    analyst_negative_ratio = _safe_float(latest_row.get("analyst_negative_ratio_recent_7d"))
+    analyst_positive_ratio = analyst_positive_ratio or 0.0
+    analyst_negative_ratio = analyst_negative_ratio or 0.0
+    if analyst_positive_ratio > analyst_negative_ratio + 0.1:
+        score += 7
+        factors.append("headline analyst revisions are positive")
+    elif analyst_negative_ratio > analyst_positive_ratio + 0.1:
+        score -= 9
+        factors.append("headline analyst revisions are negative")
+
+    earnings_positive_ratio = _safe_float(latest_row.get("earnings_positive_ratio_recent_7d"))
+    earnings_negative_ratio = _safe_float(latest_row.get("earnings_negative_ratio_recent_7d"))
+    earnings_positive_ratio = earnings_positive_ratio or 0.0
+    earnings_negative_ratio = earnings_negative_ratio or 0.0
+    if earnings_positive_ratio > earnings_negative_ratio + 0.1:
+        score += 7
+        factors.append("headline earnings tone is positive")
+    elif earnings_negative_ratio > earnings_positive_ratio + 0.1:
+        score -= 10
+        factors.append("headline earnings tone is negative")
+
+    external_context = external_context or {}
+    social_sentiment = _safe_float(external_context.get("social_sentiment_score"))
+    social_mentions = _safe_float(external_context.get("social_mention_count"))
+    social_engagement = _safe_float(external_context.get("social_engagement_score"))
+    if social_mentions and social_mentions > 0 and social_sentiment is not None:
+        if social_sentiment >= 0.12:
+            score += 6
+            factors.append("direct public-opinion feed is positive")
+        elif social_sentiment <= -0.12:
+            score -= 7
+            factors.append("direct public-opinion feed is negative")
+        else:
+            factors.append("direct public-opinion feed is balanced")
+        if social_engagement is not None and social_engagement >= 50 and social_sentiment < 0:
+            score -= 3
+            factors.append("negative public discussion has high engagement")
+
+    analyst_revision_score = _safe_float(external_context.get("analyst_revision_score"))
+    analyst_consensus_score = _safe_float(external_context.get("analyst_consensus_score"))
+    analyst_score = analyst_revision_score if analyst_revision_score is not None else analyst_consensus_score
+    if analyst_score is not None:
+        if analyst_score >= 0.25:
+            score += 8
+            factors.append("analyst consensus/revisions support the setup")
+        elif analyst_score <= -0.25:
+            score -= 10
+            factors.append("analyst consensus/revisions are a risk")
+
+    regulatory_risk = _safe_float(external_context.get("official_regulatory_risk_score"))
+    if regulatory_risk is not None:
+        if regulatory_risk >= 50:
+            score -= 10
+            factors.append("official regulatory filings show elevated event risk")
+        elif regulatory_risk >= 20:
+            score -= 5
+            factors.append("official regulatory filings show some event risk")
+
+    earnings_call_tone = _safe_float(external_context.get("earnings_call_tone_score"))
+    if earnings_call_tone is not None:
+        if earnings_call_tone >= 0.12:
+            score += 6
+            factors.append("earnings-call transcript tone is positive")
+        elif earnings_call_tone <= -0.12:
+            score -= 8
+            factors.append("earnings-call transcript tone is negative")
+
+    benchmark_score = _safe_float(latest_row.get("benchmark_strength_score"))
+    if benchmark_score is not None:
+        if benchmark_score >= 75:
+            score += 8
+            factors.append("ticker has strong relative performance versus benchmark")
+        elif benchmark_score <= 25:
+            score -= 8
+            factors.append("ticker is weak versus benchmark")
+
+    close = _safe_float(latest_row.get("close"))
+    sma50 = _safe_float(latest_row.get("sma_50"))
+    sma200 = _safe_float(latest_row.get("sma_200"))
+    if close and sma50 and sma200:
+        if close > sma50 > sma200:
+            score += 8
+            factors.append("technical trend is constructive")
+        elif close < sma50 < sma200:
+            score -= 10
+            factors.append("technical trend is weak")
+
+    volatility = _safe_float(latest_row.get("rolling_volatility_20_pct"))
+    if volatility is not None:
+        if volatility <= 25:
+            score += 4
+            factors.append("recent volatility is controlled")
+        elif volatility >= 55:
+            score -= 10
+            factors.append("recent volatility is high")
+
+    pe_ratio = _safe_float(snapshot.get("pe_ratio"))
+    if pe_ratio is not None:
+        if 0 < pe_ratio <= 35:
+            score += 5
+            factors.append("valuation is not extreme by PE")
+        elif pe_ratio > 85:
+            score -= 15
+            factors.append("PE valuation is very high")
+        elif pe_ratio > 50:
+            score -= 7
+            factors.append("PE valuation is elevated")
+    else:
+        factors.append("PE valuation is unavailable")
+
+    market_cap = _safe_float(snapshot.get("market_cap"))
+    if market_cap is not None:
+        if market_cap >= 10_000_000_000:
+            score += 5
+            factors.append("company size/liquidity looks established")
+        elif market_cap < 1_000_000_000:
+            score -= 8
+            factors.append("company size is small, adding risk")
+    else:
+        factors.append("company size is unavailable")
+
+    if snapshot.get("sector") or snapshot.get("industry"):
+        score += 2
+        factors.append("sector/industry context is available")
+    else:
+        factors.append("sector/social trend context is limited")
+
+    score = max(0.0, min(100.0, score))
+    return {
+        "score": score,
+        "label": "supportive" if score >= MIN_CONTEXT_SCORE_FOR_BUY else "cautious" if score >= 40 else "weak",
+        "factors": factors,
+        "summary": f"Context score {score:.0f}/100: " + "; ".join(factors[:4]) + ".",
+        "missing_context": [
+            *external_context.get("missing_sources", []),
+        ],
+    }
+
+
 def _calculate_sell_quantity(holding_quantity: float, reason: str) -> int:
     """Size exits in whole shares while allowing partial position reduction."""
     whole_holding = max(0, math.floor(float(holding_quantity)))
@@ -700,6 +902,24 @@ def run_live_virtual_trader_now(
 
             position = holdings_by_ticker.get(symbol)
             bullish, bearish = _derive_signal_flags(prediction_value, task_type, min_predicted_return_pct)
+            external_context: dict[str, Any] | None = None
+            if position or bullish:
+                try:
+                    external_context = build_external_market_context(
+                        symbol,
+                        company_name=snapshot.get("company_name"),
+                    )
+                except Exception as exc:  # pragma: no cover - provider guard
+                    logger.warning("External context skipped ticker=%s error=%s", symbol, exc)
+                    external_context = {
+                        "missing_sources": ["external_context_error"],
+                        "provider_notes": [str(exc)],
+                    }
+            context_score = _score_virtual_trader_context(
+                latest_row=latest_row,
+                snapshot=snapshot,
+                external_context=external_context,
+            )
             action = "no_action"
             reason = model_fallback_reason if decision_source == "fallback_rule" else "model_not_bullish"
             quantity = 0.0
@@ -717,6 +937,8 @@ def run_live_virtual_trader_now(
                     action, reason = "sell", "take_profit"
                 elif bearish and _confidence_ok(confidence_score, confidence_threshold):
                     action, reason = "sell", "model_bearish_signal"
+                elif context_score["score"] <= MAX_CONTEXT_SCORE_FOR_HOLD and _confidence_ok(confidence_score, confidence_threshold):
+                    action, reason = "sell", "context_risk_reduction"
                 else:
                     action, reason = "hold", "holding_position"
                 if action == "sell":
@@ -741,16 +963,19 @@ def run_live_virtual_trader_now(
                         if current_price > 0
                         else 0.0
                     )
+                    context_ok = context_score["score"] >= MIN_CONTEXT_SCORE_FOR_BUY
                     if (
                         affordable_quantity >= MIN_TRADE_QUANTITY
                         and concentration_ok
                         and valuation_ok
                         and volatility_ok
+                        and context_ok
                     ):
                         action, reason = "buy", "model_bullish_signal"
                         quantity = float(affordable_quantity)
                     else:
-                        action, reason = "no_action", "risk_or_cash_constraint"
+                        action = "no_action"
+                        reason = "context_score_too_low" if not context_ok else "risk_or_cash_constraint"
                 elif not _confidence_ok(confidence_score, confidence_threshold):
                     action, reason = "no_action", "confidence_below_threshold"
 
@@ -760,7 +985,8 @@ def run_live_virtual_trader_now(
                 f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                 f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
                 f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
-                f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
+                f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
+                f"context score {context_score['score']:.0f}/100."
                 if confidence_score is not None
                 else (
                     f"Thresholds: confidence unavailable; required {confidence_threshold:.0%}; "
@@ -768,7 +994,8 @@ def run_live_virtual_trader_now(
                     f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                     f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
                     f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
-                    f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}."
+                    f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
+                    f"context score {context_score['score']:.0f}/100."
                 )
             )
 
@@ -880,10 +1107,39 @@ def run_live_virtual_trader_now(
                     "price_date": str(latest_row.get("date")),
                     "explanation": explanation["explanation"],
                     "pe_ratio": pe_ratio,
+                    "market_cap": snapshot.get("market_cap"),
+                    "sector": snapshot.get("sector"),
+                    "industry": snapshot.get("industry"),
                     "volatility": volatility,
                     "decision_source": decision_source,
                     "model_period": decision_model_period,
                     "validation_score": decision_validation_score,
+                    "context_score": context_score["score"],
+                    "context_label": context_score["label"],
+                    "context_summary": context_score["summary"],
+                    "context_factors": context_score["factors"],
+                    "external_context": external_context or {},
+                    "headline_context": {
+                        "political_risk_ratio_recent_7d": _safe_float(
+                            latest_row.get("political_risk_article_ratio_recent_7d")
+                        ),
+                        "public_interest_ratio_recent_7d": _safe_float(
+                            latest_row.get("public_interest_article_ratio_recent_7d")
+                        ),
+                        "analyst_positive_ratio_recent_7d": _safe_float(
+                            latest_row.get("analyst_positive_ratio_recent_7d")
+                        ),
+                        "analyst_negative_ratio_recent_7d": _safe_float(
+                            latest_row.get("analyst_negative_ratio_recent_7d")
+                        ),
+                        "earnings_positive_ratio_recent_7d": _safe_float(
+                            latest_row.get("earnings_positive_ratio_recent_7d")
+                        ),
+                        "earnings_negative_ratio_recent_7d": _safe_float(
+                            latest_row.get("earnings_negative_ratio_recent_7d")
+                        ),
+                    },
+                    "missing_context": context_score["missing_context"],
                     "model_load_errors": model_load_errors,
                 },
             }

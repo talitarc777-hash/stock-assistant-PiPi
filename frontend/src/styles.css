@@ -480,6 +480,42 @@ button:disabled {
   color: #4b5563;
 }
 
+.decision-context-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #374151;
+  font-size: 13px;
+}
+
+.decision-context-box p {
+  margin: 0 0 6px 0;
+}
+
+.decision-context-box p:last-child {
+  margin-bottom: 0;
+}
+
+.decision-factor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.decision-factor-list span {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #374151;
+  line-height: 1.35;
+}
+
 .holding-ticker-button {
   padding: 0;
   border: 0;

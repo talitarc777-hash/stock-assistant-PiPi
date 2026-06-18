@@ -88,6 +88,135 @@ _NEGATIVE_WORDS: set[str] = {
     "weak",
 }
 
+_HEADLINE_TOPIC_COLUMNS: tuple[str, ...] = (
+    "political_risk_flag",
+    "public_interest_flag",
+    "analyst_positive_flag",
+    "analyst_negative_flag",
+    "earnings_positive_flag",
+    "earnings_negative_flag",
+)
+
+_POLITICAL_RISK_TERMS: set[str] = {
+    "antitrust",
+    "ban",
+    "congress",
+    "doj",
+    "election",
+    "export control",
+    "export controls",
+    "ftc",
+    "geopolitical",
+    "government",
+    "investigation",
+    "lawsuit",
+    "policy",
+    "probe",
+    "regulation",
+    "regulatory",
+    "sanction",
+    "sanctions",
+    "sec",
+    "senate",
+    "tariff",
+    "trade war",
+}
+
+_PUBLIC_INTEREST_TERMS: set[str] = {
+    "adoption",
+    "artificial intelligence",
+    "buzz",
+    "consumer demand",
+    "customer demand",
+    "demand",
+    "downloads",
+    "online",
+    "popular",
+    "public opinion",
+    "social media",
+    "subscribers",
+    "trend",
+    "trending",
+    "users",
+    "viral",
+}
+
+_ANALYST_POSITIVE_TERMS: set[str] = {
+    "buy rating",
+    "initiates buy",
+    "outperform",
+    "price target raised",
+    "raises price target",
+    "raised price target",
+    "upgrade",
+    "upgraded",
+    "upgrades",
+}
+
+_ANALYST_NEGATIVE_TERMS: set[str] = {
+    "cut price target",
+    "cuts price target",
+    "downgrade",
+    "downgraded",
+    "downgrades",
+    "lowers price target",
+    "price target cut",
+    "price target lowered",
+    "sell rating",
+    "underperform",
+}
+
+_EARNINGS_POSITIVE_TERMS: set[str] = {
+    "beat estimates",
+    "beats estimates",
+    "earnings beat",
+    "guidance raised",
+    "profit rises",
+    "raises forecast",
+    "raises guidance",
+    "record revenue",
+    "revenue beat",
+    "strong earnings",
+}
+
+_EARNINGS_NEGATIVE_TERMS: set[str] = {
+    "cuts forecast",
+    "cuts guidance",
+    "earnings miss",
+    "guidance cut",
+    "loss widens",
+    "lowers forecast",
+    "lowers guidance",
+    "misses estimates",
+    "profit falls",
+    "revenue miss",
+    "weak earnings",
+}
+
+
+def _contains_any_term(text: str, terms: set[str]) -> bool:
+    normalized = str(text or "").lower()
+    for term in terms:
+        if " " in term:
+            if term in normalized:
+                return True
+        elif re.search(rf"\b{re.escape(term)}\b", normalized):
+            return True
+    return False
+
+
+def _headline_topic_flags(title: str) -> dict[str, int]:
+    """Classify headline context into simple explainable topic flags."""
+    text = str(title or "")
+    return {
+        "political_risk_flag": int(_contains_any_term(text, _POLITICAL_RISK_TERMS)),
+        "public_interest_flag": int(_contains_any_term(text, _PUBLIC_INTEREST_TERMS)),
+        "analyst_positive_flag": int(_contains_any_term(text, _ANALYST_POSITIVE_TERMS)),
+        "analyst_negative_flag": int(_contains_any_term(text, _ANALYST_NEGATIVE_TERMS)),
+        "earnings_positive_flag": int(_contains_any_term(text, _EARNINGS_POSITIVE_TERMS)),
+        "earnings_negative_flag": int(_contains_any_term(text, _EARNINGS_NEGATIVE_TERMS)),
+    }
+
 
 def _score_text_sentiment_lexicon(text: str) -> float:
     """Score text with a very small keyword lexicon."""
@@ -179,6 +308,14 @@ def _score_articles(
     result["sentiment_label"] = "neutral"
     result.loc[result["sentiment_score"] > 0.05, "sentiment_label"] = "positive"
     result.loc[result["sentiment_score"] < -0.05, "sentiment_label"] = "negative"
+    if result.empty:
+        for column in _HEADLINE_TOPIC_COLUMNS:
+            result[column] = []
+        return result
+    topic_flags = result["title"].fillna("").astype(str).apply(_headline_topic_flags)
+    topic_df = pd.DataFrame(topic_flags.tolist(), index=result.index)
+    for column in _HEADLINE_TOPIC_COLUMNS:
+        result[column] = topic_df[column].fillna(0).astype(int)
     return result
 
 
@@ -194,15 +331,30 @@ def _aggregate_daily_features(
     base["average_sentiment"] = 0.0
     base["positive_article_ratio"] = 0.0
     base["negative_article_ratio"] = 0.0
+    base["political_risk_article_ratio"] = 0.0
+    base["public_interest_article_ratio"] = 0.0
+    base["analyst_positive_ratio"] = 0.0
+    base["analyst_negative_ratio"] = 0.0
+    base["earnings_positive_ratio"] = 0.0
+    base["earnings_negative_ratio"] = 0.0
     base["article_count_recent_7d"] = 0
     base["average_sentiment_recent_7d"] = 0.0
     base["positive_article_ratio_recent_7d"] = 0.0
     base["negative_article_ratio_recent_7d"] = 0.0
+    base["political_risk_article_ratio_recent_7d"] = 0.0
+    base["public_interest_article_ratio_recent_7d"] = 0.0
+    base["analyst_positive_ratio_recent_7d"] = 0.0
+    base["analyst_negative_ratio_recent_7d"] = 0.0
+    base["earnings_positive_ratio_recent_7d"] = 0.0
+    base["earnings_negative_ratio_recent_7d"] = 0.0
 
     if scored_article_df.empty:
         return base
 
     daily = scored_article_df.copy()
+    for column in _HEADLINE_TOPIC_COLUMNS:
+        if column not in daily.columns:
+            daily[column] = 0
     daily["date"] = pd.to_datetime(daily["article_date"], errors="coerce")
     daily = daily.dropna(subset=["date"]).sort_values("date")
 
@@ -213,13 +365,36 @@ def _aggregate_daily_features(
             average_sentiment=("sentiment_score", "mean"),
             positive_count=("sentiment_label", lambda values: int((values == "positive").sum())),
             negative_count=("sentiment_label", lambda values: int((values == "negative").sum())),
+            political_risk_count=("political_risk_flag", "sum"),
+            public_interest_count=("public_interest_flag", "sum"),
+            analyst_positive_count=("analyst_positive_flag", "sum"),
+            analyst_negative_count=("analyst_negative_flag", "sum"),
+            earnings_positive_count=("earnings_positive_flag", "sum"),
+            earnings_negative_count=("earnings_negative_flag", "sum"),
         )
     )
     grouped["positive_article_ratio"] = grouped["positive_count"] / grouped["article_count"]
     grouped["negative_article_ratio"] = grouped["negative_count"] / grouped["article_count"]
+    grouped["political_risk_article_ratio"] = grouped["political_risk_count"] / grouped["article_count"]
+    grouped["public_interest_article_ratio"] = grouped["public_interest_count"] / grouped["article_count"]
+    grouped["analyst_positive_ratio"] = grouped["analyst_positive_count"] / grouped["article_count"]
+    grouped["analyst_negative_ratio"] = grouped["analyst_negative_count"] / grouped["article_count"]
+    grouped["earnings_positive_ratio"] = grouped["earnings_positive_count"] / grouped["article_count"]
+    grouped["earnings_negative_ratio"] = grouped["earnings_negative_count"] / grouped["article_count"]
 
     merged = base.merge(grouped, on="date", how="left", suffixes=("", "_agg"))
-    for column in ("article_count", "average_sentiment", "positive_article_ratio", "negative_article_ratio"):
+    for column in (
+        "article_count",
+        "average_sentiment",
+        "positive_article_ratio",
+        "negative_article_ratio",
+        "political_risk_article_ratio",
+        "public_interest_article_ratio",
+        "analyst_positive_ratio",
+        "analyst_negative_ratio",
+        "earnings_positive_ratio",
+        "earnings_negative_ratio",
+    ):
         agg_column = f"{column}_agg"
         if agg_column in merged.columns:
             merged[column] = merged[agg_column].fillna(merged[column])
@@ -240,6 +415,24 @@ def _aggregate_daily_features(
     )
     grouped_indexed["negative_count_recent_7d"] = (
         grouped_indexed["negative_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["political_risk_count_recent_7d"] = (
+        grouped_indexed["political_risk_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["public_interest_count_recent_7d"] = (
+        grouped_indexed["public_interest_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["analyst_positive_count_recent_7d"] = (
+        grouped_indexed["analyst_positive_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["analyst_negative_count_recent_7d"] = (
+        grouped_indexed["analyst_negative_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["earnings_positive_count_recent_7d"] = (
+        grouped_indexed["earnings_positive_count"].rolling(window=7, min_periods=1).sum()
+    )
+    grouped_indexed["earnings_negative_count_recent_7d"] = (
+        grouped_indexed["earnings_negative_count"].rolling(window=7, min_periods=1).sum()
     )
     grouped_indexed["weighted_sentiment_recent_7d"] = (
         grouped_indexed["weighted_sentiment"].rolling(window=7, min_periods=1).sum()
@@ -268,6 +461,22 @@ def _aggregate_daily_features(
         ),
         axis=1,
     )
+    for count_column, ratio_column in (
+        ("political_risk_count_recent_7d", "political_risk_article_ratio_recent_7d"),
+        ("public_interest_count_recent_7d", "public_interest_article_ratio_recent_7d"),
+        ("analyst_positive_count_recent_7d", "analyst_positive_ratio_recent_7d"),
+        ("analyst_negative_count_recent_7d", "analyst_negative_ratio_recent_7d"),
+        ("earnings_positive_count_recent_7d", "earnings_positive_ratio_recent_7d"),
+        ("earnings_negative_count_recent_7d", "earnings_negative_ratio_recent_7d"),
+    ):
+        grouped_indexed[ratio_column] = grouped_indexed.apply(
+            lambda row, count_column=count_column: (
+                row[count_column] / row["article_count_recent_7d"]
+                if row["article_count_recent_7d"] > 0
+                else 0.0
+            ),
+            axis=1,
+        )
 
     merged = merged.merge(
         grouped_indexed[
@@ -276,6 +485,12 @@ def _aggregate_daily_features(
                 "average_sentiment_recent_7d",
                 "positive_article_ratio_recent_7d",
                 "negative_article_ratio_recent_7d",
+                "political_risk_article_ratio_recent_7d",
+                "public_interest_article_ratio_recent_7d",
+                "analyst_positive_ratio_recent_7d",
+                "analyst_negative_ratio_recent_7d",
+                "earnings_positive_ratio_recent_7d",
+                "earnings_negative_ratio_recent_7d",
             ]
         ].reset_index(),
         on="date",
@@ -287,6 +502,12 @@ def _aggregate_daily_features(
         "average_sentiment_recent_7d",
         "positive_article_ratio_recent_7d",
         "negative_article_ratio_recent_7d",
+        "political_risk_article_ratio_recent_7d",
+        "public_interest_article_ratio_recent_7d",
+        "analyst_positive_ratio_recent_7d",
+        "analyst_negative_ratio_recent_7d",
+        "earnings_positive_ratio_recent_7d",
+        "earnings_negative_ratio_recent_7d",
     ):
         rolling_column = f"{column}_rolling"
         if rolling_column in merged.columns:
