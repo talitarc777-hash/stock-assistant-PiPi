@@ -107,6 +107,18 @@ class Settings(BaseModel):
     reddit_context_limit: int = 8
     sec_context_enabled: bool = True
     sec_user_agent: str = "StockAssistantPiPi/1.0 contact@example.com"
+    discord_webhook_url: str | None = None
+    virtual_trade_discord_alert_enabled: bool = True
+    virtual_trade_alert_window_minutes: int = 30
+    virtual_trade_large_value_hkd_threshold: float = 50_000.0
+    virtual_trade_alert_min_trade_count: int = 2
+    real_market_discord_alert_enabled: bool = True
+    real_market_alert_window_minutes: int = 15
+    real_market_large_value_threshold: float = 10_000_000.0
+    real_market_volume_spike_multiplier: float = 3.0
+    real_market_price_move_threshold_pct: float = 1.5
+    real_market_min_window_volume: float = 100_000.0
+    real_market_alert_ticker_limit: int = 40
 
 
 _CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
@@ -148,5 +160,50 @@ def get_settings() -> Settings:
         sec_user_agent=os.getenv(
             "SEC_USER_AGENT",
             "StockAssistantPiPi/1.0 contact@example.com",
+        ),
+        discord_webhook_url=(os.getenv("DISCORD_WEBHOOK_URL") or "").strip() or None,
+        virtual_trade_discord_alert_enabled=_parse_bool_env(
+            os.getenv("VIRTUAL_TRADE_DISCORD_ALERT_ENABLED"),
+            True,
+        ),
+        virtual_trade_alert_window_minutes=max(
+            1,
+            int(os.getenv("VIRTUAL_TRADE_ALERT_WINDOW_MINUTES", "30")),
+        ),
+        virtual_trade_large_value_hkd_threshold=max(
+            0.0,
+            float(os.getenv("VIRTUAL_TRADE_LARGE_VALUE_HKD_THRESHOLD", "50000")),
+        ),
+        virtual_trade_alert_min_trade_count=max(
+            1,
+            int(os.getenv("VIRTUAL_TRADE_ALERT_MIN_TRADE_COUNT", "2")),
+        ),
+        real_market_discord_alert_enabled=_parse_bool_env(
+            os.getenv("REAL_MARKET_DISCORD_ALERT_ENABLED"),
+            True,
+        ),
+        real_market_alert_window_minutes=max(
+            5,
+            int(os.getenv("REAL_MARKET_ALERT_WINDOW_MINUTES", "15")),
+        ),
+        real_market_large_value_threshold=max(
+            0.0,
+            float(os.getenv("REAL_MARKET_LARGE_VALUE_THRESHOLD", "10000000")),
+        ),
+        real_market_volume_spike_multiplier=max(
+            1.0,
+            float(os.getenv("REAL_MARKET_VOLUME_SPIKE_MULTIPLIER", "3")),
+        ),
+        real_market_price_move_threshold_pct=max(
+            0.0,
+            float(os.getenv("REAL_MARKET_PRICE_MOVE_THRESHOLD_PCT", "1.5")),
+        ),
+        real_market_min_window_volume=max(
+            0.0,
+            float(os.getenv("REAL_MARKET_MIN_WINDOW_VOLUME", "100000")),
+        ),
+        real_market_alert_ticker_limit=max(
+            1,
+            int(os.getenv("REAL_MARKET_ALERT_TICKER_LIMIT", "40")),
         ),
     )

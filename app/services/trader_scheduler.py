@@ -17,6 +17,7 @@ from typing import Any
 from app.services.account_ledger_service import get_account_ledger_service
 from app.services.live_virtual_trader import LiveStatus, run_live_virtual_trader_now
 from app.services.market_hours_service import get_market_hours_state
+from app.services.real_market_discord_alerts import scan_real_market_activity_alerts
 from app.services.user_profile_service import get_user_profile_store
 from app.services.virtual_account_cache import clear_user_virtual_account_cache
 
@@ -302,6 +303,11 @@ class TraderSchedulerService:
         error_count = 0
         error_messages: list[str] = []
         ledger = get_account_ledger_service()
+        profile_store = get_user_profile_store()
+        alert_watchlists = {
+            row.user_id: list(getattr(row, "alert_watchlist", None) or [])
+            for row in profile_store.list_alert_enabled_user_summaries()
+        }
 
         try:
             for user_id in users:
@@ -320,6 +326,17 @@ class TraderSchedulerService:
                         model_name=None,
                         max_attempts=2,
                     )
+                    try:
+                        scan_real_market_activity_alerts(
+                            user_id=clean_user_id,
+                            tickers=alert_watchlists.get(clean_user_id) or [],
+                        )
+                    except Exception as exc:  # pragma: no cover - monitoring should not break trading
+                        logger.warning(
+                            "Real market activity alert scan failed user_id=%s error=%s",
+                            clean_user_id,
+                            exc,
+                        )
                     # Live runs can mutate positions/cash; always clear read caches.
                     clear_user_virtual_account_cache(clean_user_id)
                     user_decisions = list(status.latest_decisions)
@@ -397,6 +414,19 @@ class TraderSchedulerService:
                 tickers=tickers,
                 max_attempts=2,
             )
+            try:
+                profile = get_user_profile_store().get_or_create_profile(clean_user_id)
+                alert_tickers = tickers or profile.alert_watchlist or profile.default_watchlist
+                scan_real_market_activity_alerts(
+                    user_id=clean_user_id,
+                    tickers=alert_tickers,
+                )
+            except Exception as exc:  # pragma: no cover - monitoring should not break manual runs
+                logger.warning(
+                    "Real market activity alert scan failed user_id=%s error=%s",
+                    clean_user_id,
+                    exc,
+                )
             clear_user_virtual_account_cache(clean_user_id)
             tickers_processed = int(status.tickers_evaluated)
             tickers_failed = int(status.tickers_failed)
