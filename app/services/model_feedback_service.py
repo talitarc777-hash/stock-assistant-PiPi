@@ -1,0 +1,570 @@
+"""Outcome feedback for live model decisions and contextual reasoning."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import json
+import logging
+import math
+from pathlib import Path
+import sqlite3
+from typing import Any, Callable
+
+import pandas as pd
+
+from app.core.settings import get_settings
+from app.services.account_ledger_service import TRADE_ADMIN_FEE_HKD
+from app.services.market_data import get_price_history
+
+logger = logging.getLogger(__name__)
+PriceLoader = Callable[[str, str], pd.DataFrame]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
+def _decision_date(payload: dict[str, Any]) -> str:
+    metadata = payload.get("metadata") or {}
+    value = metadata.get("price_date") or payload.get("timestamp") or _utc_now_iso()
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return datetime.now(UTC).date().isoformat()
+    return parsed.date().isoformat()
+
+
+def _clean_history(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "date" not in frame.columns or "close" not in frame.columns:
+        return pd.DataFrame()
+    result = frame[["date", "close"]].copy()
+    result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.date
+    result["close"] = pd.to_numeric(result["close"], errors="coerce")
+    return result.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+
+def _horizon_prices(
+    history: pd.DataFrame,
+    decision_date: str,
+    horizon_days: int,
+) -> tuple[str, float, float] | None:
+    frame = _clean_history(history)
+    if frame.empty:
+        return None
+    start_date = pd.to_datetime(decision_date, errors="coerce")
+    if pd.isna(start_date):
+        return None
+    matches = frame.index[frame["date"] >= start_date.date()].tolist()
+    if not matches:
+        return None
+    start_index = int(matches[0])
+    end_index = start_index + max(1, int(horizon_days))
+    if end_index >= len(frame):
+        return None
+    return (
+        frame.iloc[end_index]["date"].isoformat(),
+        float(frame.iloc[start_index]["close"]),
+        float(frame.iloc[end_index]["close"]),
+    )
+
+
+class ModelFeedbackService:
+    """SQLite-backed prediction feedback and adaptive context statistics."""
+
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = Path(db_path or get_settings().profile_db_path)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _initialize(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_decision_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_key TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    benchmark TEXT NOT NULL,
+                    decision_date TEXT NOT NULL,
+                    recorded_at_utc TEXT NOT NULL,
+                    horizon_days INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_period TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    decision_source TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    prediction_value REAL NOT NULL,
+                    confidence_score REAL,
+                    context_score REAL,
+                    decision_price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    context_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    evaluated_at_utc TEXT,
+                    outcome_date TEXT,
+                    outcome_price REAL,
+                    actual_return_pct REAL,
+                    benchmark_return_pct REAL,
+                    excess_return_pct REAL,
+                    strategy_net_return_pct REAL,
+                    estimated_cost_pct REAL,
+                    direction_correct INTEGER,
+                    profitable_after_cost INTEGER,
+                    outcome_score REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_feedback_lookup
+                ON model_decision_feedback(
+                    ticker, model_period, model_name, status, decision_date
+                )
+                """
+            )
+            conn.commit()
+
+    def record_decision(
+        self,
+        payload: dict[str, Any],
+        *,
+        benchmark: str = "VOO",
+    ) -> bool:
+        """Persist one daily observation for a model/version/ticker."""
+        if not get_settings().model_feedback_enabled:
+            return False
+        metadata = dict(payload.get("metadata") or {})
+        ticker = str(payload.get("ticker") or "").strip().upper()
+        model_name = str(payload.get("model_name") or "").strip().lower()
+        if not ticker or not model_name:
+            return False
+
+        date_value = _decision_date(payload)
+        model_period = str(metadata.get("model_period") or "unknown")
+        model_version = str(metadata.get("model_version") or "legacy")
+        source = str(metadata.get("decision_source") or "unknown")
+        decision_key = "|".join(
+            (ticker, model_period, model_name, model_version, date_value)
+        )
+        context = {
+            "context_score": metadata.get("context_score"),
+            "context_label": metadata.get("context_label"),
+            "context_factors": list(metadata.get("context_factors") or []),
+            "context_summary": metadata.get("context_summary"),
+            "headline_context": metadata.get("headline_context") or {},
+            "external_context": metadata.get("external_context") or {},
+            "pe_ratio": metadata.get("pe_ratio"),
+            "market_cap": metadata.get("market_cap"),
+            "sector": metadata.get("sector"),
+            "industry": metadata.get("industry"),
+            "volatility": metadata.get("volatility"),
+        }
+        prediction = _safe_float(metadata.get("prediction_value"))
+        price = _safe_float(payload.get("price"))
+        if prediction is None or price is None or price <= 0:
+            return False
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO model_decision_feedback (
+                    decision_key, user_id, ticker, benchmark, decision_date,
+                    recorded_at_utc, horizon_days, model_name, model_period,
+                    model_version, decision_source, action, prediction_value,
+                    confidence_score, context_score, decision_price, quantity,
+                    context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_key,
+                    str(payload.get("user_id") or "system"),
+                    ticker,
+                    str(benchmark or "VOO").strip().upper(),
+                    date_value,
+                    _utc_now_iso(),
+                    int(get_settings().model_feedback_horizon_days),
+                    model_name,
+                    model_period,
+                    model_version,
+                    source,
+                    str(payload.get("action") or "no_action").lower(),
+                    prediction,
+                    _safe_float(payload.get("confidence_score")),
+                    _safe_float(metadata.get("context_score")),
+                    price,
+                    float(_safe_float(payload.get("quantity")) or 0.0),
+                    json.dumps(context, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        return bool(cursor.rowcount)
+
+    def list_feedback(
+        self,
+        *,
+        ticker: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(str(ticker).strip().upper())
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status).strip().lower())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM model_decision_feedback
+                {where}
+                ORDER BY decision_date DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["context"] = json.loads(item.pop("context_json") or "{}")
+            except json.JSONDecodeError:
+                item["context"] = {}
+                item.pop("context_json", None)
+            output.append(item)
+        return output
+
+    @staticmethod
+    def _outcome_score(
+        *,
+        direction_correct: bool,
+        strategy_net_return_pct: float,
+        excess_return_pct: float,
+    ) -> float:
+        profitability = strategy_net_return_pct > 0
+        net_component = _clamp(0.5 + strategy_net_return_pct / 10.0, 0.0, 1.0)
+        excess_component = _clamp(0.5 + excess_return_pct / 10.0, 0.0, 1.0)
+        return _clamp(
+            (0.45 if direction_correct else 0.0)
+            + (0.25 if profitability else 0.0)
+            + 0.20 * net_component
+            + 0.10 * excess_component,
+            0.0,
+            1.0,
+        )
+
+    def evaluate_pending(
+        self,
+        *,
+        price_loader: PriceLoader = get_price_history,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Evaluate pending decisions once the future trading-day row exists."""
+        if not get_settings().model_feedback_enabled:
+            return {"evaluated": 0, "pending": 0, "errors": []}
+        pending = self.list_feedback(status="pending", limit=limit)
+        history_cache: dict[str, pd.DataFrame] = {}
+        evaluated = 0
+        errors: list[str] = []
+
+        for row in pending:
+            ticker = str(row["ticker"])
+            benchmark = str(row["benchmark"])
+            try:
+                if ticker not in history_cache:
+                    history_cache[ticker] = price_loader(ticker, "3mo")
+                if benchmark not in history_cache:
+                    history_cache[benchmark] = price_loader(benchmark, "3mo")
+                ticker_prices = _horizon_prices(
+                    history_cache[ticker],
+                    str(row["decision_date"]),
+                    int(row["horizon_days"]),
+                )
+                benchmark_prices = _horizon_prices(
+                    history_cache[benchmark],
+                    str(row["decision_date"]),
+                    int(row["horizon_days"]),
+                )
+                if ticker_prices is None or benchmark_prices is None:
+                    continue
+
+                outcome_date, market_start, outcome_price = ticker_prices
+                _, benchmark_start, benchmark_end = benchmark_prices
+                decision_price = float(row["decision_price"] or market_start)
+                actual_return = ((outcome_price / decision_price) - 1.0) * 100.0
+                benchmark_return = ((benchmark_end / benchmark_start) - 1.0) * 100.0
+                prediction = float(row["prediction_value"])
+                direction = 1.0 if prediction > 0 else -1.0 if prediction < 0 else 0.0
+                direction_correct = (
+                    (prediction > 0 and actual_return > 0)
+                    or (prediction < 0 and actual_return < 0)
+                    or (prediction == 0 and abs(actual_return) < 0.25)
+                )
+                notional = abs(float(row["quantity"]) * decision_price)
+                cost_pct = (
+                    (2.0 * TRADE_ADMIN_FEE_HKD / notional) * 100.0
+                    if row["action"] in {"buy", "sell"} and notional > 0
+                    else 0.0
+                )
+                strategy_net = direction * actual_return - cost_pct
+                excess = direction * (actual_return - benchmark_return)
+                outcome_score = self._outcome_score(
+                    direction_correct=direction_correct,
+                    strategy_net_return_pct=strategy_net,
+                    excess_return_pct=excess,
+                )
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE model_decision_feedback
+                        SET status = 'evaluated',
+                            evaluated_at_utc = ?,
+                            outcome_date = ?,
+                            outcome_price = ?,
+                            actual_return_pct = ?,
+                            benchmark_return_pct = ?,
+                            excess_return_pct = ?,
+                            strategy_net_return_pct = ?,
+                            estimated_cost_pct = ?,
+                            direction_correct = ?,
+                            profitable_after_cost = ?,
+                            outcome_score = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (
+                            _utc_now_iso(),
+                            outcome_date,
+                            outcome_price,
+                            actual_return,
+                            benchmark_return,
+                            excess,
+                            strategy_net,
+                            cost_pct,
+                            1 if direction_correct else 0,
+                            1 if strategy_net > 0 else 0,
+                            outcome_score,
+                            int(row["id"]),
+                        ),
+                    )
+                    conn.commit()
+                evaluated += 1
+            except Exception as exc:  # pragma: no cover - provider guard
+                errors.append(f"{ticker}:{exc}")
+                logger.warning(
+                    "Model feedback evaluation skipped ticker=%s error=%s",
+                    ticker,
+                    exc,
+                )
+
+        remaining = len(self.list_feedback(status="pending", limit=10000))
+        return {
+            "evaluated": evaluated,
+            "pending": remaining,
+            "errors": errors[:20],
+        }
+
+    def get_model_summary(
+        self,
+        *,
+        ticker: str,
+        model_period: str,
+        model_name: str,
+        model_version: str | None = None,
+    ) -> dict[str, Any]:
+        clauses = [
+            "ticker = ?",
+            "model_period = ?",
+            "model_name = ?",
+            "status = 'evaluated'",
+        ]
+        params: list[Any] = [
+            str(ticker).strip().upper(),
+            str(model_period),
+            str(model_name).strip().lower(),
+        ]
+        if model_version:
+            clauses.append("model_version = ?")
+            params.append(str(model_version))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT direction_correct, profitable_after_cost,
+                       actual_return_pct, strategy_net_return_pct,
+                       excess_return_pct, outcome_score
+                FROM model_decision_feedback
+                WHERE {' AND '.join(clauses)}
+                ORDER BY decision_date DESC
+                LIMIT 120
+                """,
+                tuple(params),
+            ).fetchall()
+
+        sample_count = len(rows)
+        if not rows:
+            return {
+                "sample_count": 0,
+                "direction_accuracy": None,
+                "profitable_rate": None,
+                "average_actual_return_pct": None,
+                "average_strategy_net_return_pct": None,
+                "average_excess_return_pct": None,
+                "raw_feedback_score": 0.5,
+                "feedback_score": 0.5,
+                "reliability": 0.0,
+            }
+
+        def average(column: str) -> float:
+            values = [
+                float(row[column])
+                for row in rows
+                if row[column] is not None
+            ]
+            return sum(values) / len(values) if values else 0.0
+
+        raw_score = average("outcome_score")
+        minimum = get_settings().model_feedback_min_samples
+        reliability = min(1.0, sample_count / float(minimum))
+        feedback_score = 0.5 + (raw_score - 0.5) * reliability
+        return {
+            "sample_count": sample_count,
+            "direction_accuracy": average("direction_correct"),
+            "profitable_rate": average("profitable_after_cost"),
+            "average_actual_return_pct": average("actual_return_pct"),
+            "average_strategy_net_return_pct": average(
+                "strategy_net_return_pct"
+            ),
+            "average_excess_return_pct": average("excess_return_pct"),
+            "raw_feedback_score": raw_score,
+            "feedback_score": _clamp(feedback_score, 0.0, 1.0),
+            "reliability": reliability,
+        }
+
+    def blend_validation_with_feedback(
+        self,
+        *,
+        validation_score: float,
+        feedback_summary: dict[str, Any],
+    ) -> float:
+        samples = int(feedback_summary.get("sample_count") or 0)
+        minimum = get_settings().model_feedback_min_samples
+        if samples < minimum:
+            return _clamp(validation_score, 0.0, 1.0)
+        weight = get_settings().model_feedback_promotion_weight
+        feedback_score = float(
+            feedback_summary.get("feedback_score") or 0.5
+        )
+        return _clamp(
+            (1.0 - weight) * float(validation_score)
+            + weight * feedback_score,
+            0.0,
+            1.0,
+        )
+
+    def get_context_adjustment(
+        self,
+        *,
+        factors: list[str],
+        ticker: str | None = None,
+    ) -> dict[str, Any]:
+        """Learn a small buy-context adjustment from past factor outcomes."""
+        clean_factors = [
+            str(item).strip()
+            for item in factors
+            if str(item).strip()
+        ]
+        if not clean_factors:
+            return {"adjustment": 0.0, "matched_factors": []}
+        clauses = [
+            "status = 'evaluated'",
+            "actual_return_pct IS NOT NULL",
+        ]
+        params: list[Any] = []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(str(ticker).strip().upper())
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT context_json, actual_return_pct
+                FROM model_decision_feedback
+                WHERE {' AND '.join(clauses)}
+                ORDER BY decision_date DESC
+                LIMIT 600
+                """,
+                tuple(params),
+            ).fetchall()
+
+        returns_by_factor: dict[str, list[float]] = {
+            factor: [] for factor in clean_factors
+        }
+        for row in rows:
+            try:
+                context = json.loads(row["context_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            historical = set(
+                str(item)
+                for item in context.get("context_factors") or []
+            )
+            for factor in clean_factors:
+                if factor in historical:
+                    returns_by_factor[factor].append(
+                        float(row["actual_return_pct"])
+                    )
+
+        matched: list[dict[str, Any]] = []
+        components: list[float] = []
+        for factor, values in returns_by_factor.items():
+            if len(values) < 3:
+                continue
+            average_return = sum(values) / len(values)
+            reliability = min(1.0, len(values) / 10.0)
+            component = (
+                _clamp(average_return / 2.0, -2.0, 2.0)
+                * reliability
+            )
+            components.append(component)
+            matched.append(
+                {
+                    "factor": factor,
+                    "samples": len(values),
+                    "average_5d_return_pct": average_return,
+                    "adjustment": component,
+                }
+            )
+        maximum = get_settings().context_feedback_max_adjustment
+        adjustment = _clamp(sum(components), -maximum, maximum)
+        return {
+            "adjustment": adjustment,
+            "matched_factors": matched,
+        }
+
+
+_SERVICE: ModelFeedbackService | None = None
+
+
+def get_model_feedback_service() -> ModelFeedbackService:
+    global _SERVICE
+    if _SERVICE is None:
+        _SERVICE = ModelFeedbackService()
+    return _SERVICE

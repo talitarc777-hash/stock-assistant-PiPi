@@ -19,6 +19,7 @@ from app.services.model_lifecycle_service import (
     ModelLifecycleError,
     get_model_lifecycle_service,
 )
+from app.services.model_feedback_service import get_model_feedback_service
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,19 @@ class ModelLifecycleSchedulerService:
 
         try:
             lifecycle.sync_registry_from_saved_artifacts(limit=400)
+            feedback_result = (
+                get_model_feedback_service().evaluate_pending(limit=300)
+            )
+            if int(feedback_result.get("evaluated") or 0) > 0:
+                refresh_result = lifecycle.refresh_feedback_scores(limit=400)
+                logger.info(
+                    "Model feedback settled evaluated=%d pending=%d "
+                    "registry_updated=%d promoted=%d",
+                    int(feedback_result.get("evaluated") or 0),
+                    int(feedback_result.get("pending") or 0),
+                    int(refresh_result.get("updated") or 0),
+                    int(refresh_result.get("promoted") or 0),
+                )
             now_utc = datetime.now(UTC)
             now_et = now_utc.astimezone(_EASTERN)
             due = self._due_workflow(now_et)
@@ -308,6 +322,8 @@ class ModelLifecycleSchedulerService:
             self._running = True
         try:
             lifecycle.sync_registry_from_saved_artifacts(limit=400)
+            get_model_feedback_service().evaluate_pending(limit=300)
+            lifecycle.refresh_feedback_scores(limit=400)
             lifecycle.run_training_workflow(
                 workflow_type=workflow_type,
                 trigger_reason=f"manual:{trigger_reason}",

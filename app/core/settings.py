@@ -119,6 +119,11 @@ class Settings(BaseModel):
     real_market_price_move_threshold_pct: float = 1.5
     real_market_min_window_volume: float = 100_000.0
     real_market_alert_ticker_limit: int = 40
+    model_feedback_enabled: bool = True
+    model_feedback_horizon_days: int = 5
+    model_feedback_min_samples: int = 8
+    model_feedback_promotion_weight: float = 0.35
+    context_feedback_max_adjustment: float = 8.0
 
 
 _CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
@@ -205,5 +210,22 @@ def get_settings() -> Settings:
         real_market_alert_ticker_limit=max(
             1,
             int(os.getenv("REAL_MARKET_ALERT_TICKER_LIMIT", "40")),
+        ),
+        model_feedback_enabled=_parse_bool_env(os.getenv("MODEL_FEEDBACK_ENABLED"), True),
+        model_feedback_horizon_days=max(
+            1,
+            int(os.getenv("MODEL_FEEDBACK_HORIZON_DAYS", "5")),
+        ),
+        model_feedback_min_samples=max(
+            3,
+            int(os.getenv("MODEL_FEEDBACK_MIN_SAMPLES", "8")),
+        ),
+        model_feedback_promotion_weight=max(
+            0.0,
+            min(0.5, float(os.getenv("MODEL_FEEDBACK_PROMOTION_WEIGHT", "0.35"))),
+        ),
+        context_feedback_max_adjustment=max(
+            0.0,
+            min(15.0, float(os.getenv("CONTEXT_FEEDBACK_MAX_ADJUSTMENT", "8"))),
         ),
     )

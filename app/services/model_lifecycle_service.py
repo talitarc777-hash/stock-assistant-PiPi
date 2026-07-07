@@ -23,6 +23,7 @@ from app.services.model_results import (
     load_model_accuracy_summary,
     load_virtual_trader_summary,
 )
+from app.services.model_feedback_service import ModelFeedbackService
 from app.services.model_training import TrainingRunResult, train_baseline_models_for_ticker
 from app.services.research_pipeline import build_feature_dataset
 from app.services.universe_service import get_active_universe
@@ -72,6 +73,9 @@ class ModelLifecycleService:
 
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = Path(db_path or get_settings().profile_db_path)
+        self.feedback_service = ModelFeedbackService(
+            db_path=str(self.db_path)
+        )
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -424,6 +428,20 @@ class ModelLifecycleService:
         if not should_promote:
             return False
 
+        candidate_rows = self.list_registry(
+            ticker=ticker,
+            period=period,
+            target_name=target_name,
+            limit=20,
+        )
+        candidate_row = next(
+            (
+                row
+                for row in candidate_rows
+                if row["model_name"] == str(model_name).lower()
+            ),
+            None,
+        )
         self._archive_other_production(
             ticker=ticker,
             period=period,
@@ -440,9 +458,14 @@ class ModelLifecycleService:
             validation_score=float(validation_score),
             stale_after_days=DEFAULT_STALE_DAYS,
             retrain_type="promotion",
-            metrics_summary={},
-            notes="Promoted by lifecycle validation rules.",
-            last_trained_at_utc=_utc_now_iso(),
+            metrics_summary=dict(
+                (candidate_row or {}).get("metrics_summary") or {}
+            ),
+            notes="Promoted by validation and observed outcome feedback.",
+            last_trained_at_utc=(
+                (candidate_row or {}).get("last_trained_at_utc")
+                or _utc_now_iso()
+            ),
             last_evaluated_at_utc=_utc_now_iso(),
             last_promoted_at_utc=_utc_now_iso(),
         )
@@ -460,11 +483,23 @@ class ModelLifecycleService:
         """Insert/refresh registry row for one training result and attempt promotion."""
         metrics_summary = dict(result.metrics or {})
         task_type = str(metrics_summary.get("task_type", result.task_type)).lower()
-        score = self._validation_score(
+        base_score = self._validation_score(
             metrics_summary=metrics_summary,
             task_type=task_type,
             target_name=result.target_name,
         )
+        feedback_summary = self.feedback_service.get_model_summary(
+            ticker=result.ticker,
+            model_period=result.period,
+            model_name=result.model_name,
+        )
+        score = self.feedback_service.blend_validation_with_feedback(
+            validation_score=base_score,
+            feedback_summary=feedback_summary,
+        )
+        metrics_summary["walk_forward_validation_score"] = base_score
+        metrics_summary["live_feedback"] = feedback_summary
+        metrics_summary["promotion_score"] = score
         validated = score >= PRODUCTION_MIN_SCORE
 
         self._upsert_registry(
@@ -498,6 +533,8 @@ class ModelLifecycleService:
             "period": result.period,
             "target_name": result.target_name,
             "model_name": result.model_name,
+            "walk_forward_validation_score": base_score,
+            "feedback_summary": feedback_summary,
             "validation_score": score,
             "validated": validated,
             "promoted": promoted,
@@ -517,24 +554,54 @@ class ModelLifecycleService:
                 ticker, period, target_name, model_name, _ = relative.parts
                 metrics_summary = _safe_json_load(metrics_path.read_text(encoding="utf-8"), {})
                 task_type = str(metrics_summary.get("task_type", "")).lower()
-                score = self._validation_score(
+                base_score = self._validation_score(
                     metrics_summary=metrics_summary,
                     task_type=task_type,
                     target_name=target_name,
                 )
+                feedback_summary = self.feedback_service.get_model_summary(
+                    ticker=ticker,
+                    model_period=period,
+                    model_name=model_name,
+                )
+                score = self.feedback_service.blend_validation_with_feedback(
+                    validation_score=base_score,
+                    feedback_summary=feedback_summary,
+                )
+                metrics_summary["walk_forward_validation_score"] = base_score
+                metrics_summary["live_feedback"] = feedback_summary
+                metrics_summary["promotion_score"] = score
                 validated = score >= PRODUCTION_MIN_SCORE
+                existing_rows = self.list_registry(
+                    ticker=ticker,
+                    period=period,
+                    target_name=target_name,
+                    limit=20,
+                )
+                existing = next(
+                    (
+                        row
+                        for row in existing_rows
+                        if row["model_name"] == str(model_name).lower()
+                    ),
+                    None,
+                )
                 self._upsert_registry(
                     ticker=ticker,
                     period=period,
                     target_name=target_name,
                     model_name=model_name,
-                    status="candidate",
+                    status=(
+                        "production"
+                        if existing and existing["status"] == "production"
+                        else "candidate"
+                    ),
                     is_validated=validated,
                     validation_score=score,
                     stale_after_days=DEFAULT_STALE_DAYS,
                     retrain_type="artifact_sync",
                     metrics_summary=metrics_summary,
-                    notes="Discovered from saved artifact folder.",
+                    notes="Synced from saved artifact with outcome feedback.",
                     last_trained_at_utc=metrics_summary.get("generated_at_utc"),
                     last_evaluated_at_utc=_utc_now_iso(),
                 )
@@ -787,6 +854,68 @@ class ModelLifecycleService:
             max_shift = max(max_shift, shift)
         return max_shift >= 2.5, max_shift
 
+    def refresh_feedback_scores(self, limit: int = 300) -> dict[str, int]:
+        """Refresh registry scores and promote reliable challengers."""
+        rows = [
+            row
+            for row in self.list_registry(
+                target_name=TRADING_TARGET_NAME,
+                limit=max(1, int(limit)),
+            )
+            if row["status"] in {"candidate", "production"}
+        ]
+        updated = 0
+        promoted = 0
+        for row in rows:
+            metrics_summary = dict(row.get("metrics_summary") or {})
+            base_score = float(
+                metrics_summary.get("walk_forward_validation_score")
+                or row.get("validation_score")
+                or 0.0
+            )
+            feedback_summary = self.feedback_service.get_model_summary(
+                ticker=row["ticker"],
+                model_period=row["period"],
+                model_name=row["model_name"],
+            )
+            combined_score = (
+                self.feedback_service.blend_validation_with_feedback(
+                    validation_score=base_score,
+                    feedback_summary=feedback_summary,
+                )
+            )
+            metrics_summary["walk_forward_validation_score"] = base_score
+            metrics_summary["live_feedback"] = feedback_summary
+            metrics_summary["promotion_score"] = combined_score
+            validated = combined_score >= PRODUCTION_MIN_SCORE
+            self._upsert_registry(
+                ticker=row["ticker"],
+                period=row["period"],
+                target_name=row["target_name"],
+                model_name=row["model_name"],
+                status=row["status"],
+                is_validated=validated,
+                validation_score=combined_score,
+                stale_after_days=int(row["stale_after_days"]),
+                retrain_type=row.get("retrain_type"),
+                metrics_summary=metrics_summary,
+                notes="Score refreshed from walk-forward and live outcomes.",
+                last_trained_at_utc=row.get("last_trained_at_utc"),
+                last_evaluated_at_utc=_utc_now_iso(),
+                last_promoted_at_utc=row.get("last_promoted_at_utc"),
+            )
+            updated += 1
+            if row["status"] == "candidate" and validated:
+                if self._promote_candidate_if_eligible(
+                    ticker=row["ticker"],
+                    period=row["period"],
+                    target_name=row["target_name"],
+                    model_name=row["model_name"],
+                    validation_score=combined_score,
+                ):
+                    promoted += 1
+        return {"updated": updated, "promoted": promoted}
+
     def detect_retrain_triggers(self, max_models: int = 6) -> list[str]:
         """Evaluate rolling-performance and drift triggers."""
         production_rows = [
@@ -801,6 +930,22 @@ class ModelLifecycleService:
             period = row["period"]
             model_name = row["model_name"]
             target_name = row["target_name"]
+
+            feedback_summary = self.feedback_service.get_model_summary(
+                ticker=ticker,
+                model_period=period,
+                model_name=model_name,
+            )
+            if (
+                int(feedback_summary.get("sample_count") or 0)
+                >= get_settings().model_feedback_min_samples
+                and float(feedback_summary.get("feedback_score") or 0.5) < 0.45
+            ):
+                triggers.append(
+                    "live_feedback_weakened:"
+                    f"{ticker}:{model_name}:"
+                    f"{float(feedback_summary['feedback_score']):.3f}"
+                )
 
             try:
                 accuracy_payload = load_model_accuracy_summary(
@@ -876,11 +1021,30 @@ class ModelLifecycleService:
             and row["status"] in {"production", "candidate"}
             and bool(row["is_validated"])
         ]
+        for row in eligible_rows:
+            feedback_summary = self.feedback_service.get_model_summary(
+                ticker=row["ticker"],
+                model_period=row["period"],
+                model_name=row["model_name"],
+            )
+            metrics_summary = dict(row.get("metrics_summary") or {})
+            base_score = float(
+                metrics_summary.get("walk_forward_validation_score")
+                or row.get("validation_score")
+                or 0.0
+            )
+            row["feedback_summary"] = feedback_summary
+            row["runtime_score"] = (
+                self.feedback_service.blend_validation_with_feedback(
+                    validation_score=base_score,
+                    feedback_summary=feedback_summary,
+                )
+            )
         eligible_rows.sort(
             key=lambda row: (
                 0 if row["ticker"] == clean_ticker else 1,
                 bool(row.get("is_stale")),
-                -(float(row.get("validation_score") or 0.0)),
+                -(float(row.get("runtime_score") or 0.0)),
                 0 if row["status"] == "production" else 1,
                 requested_periods.index(row["period"]),
             )
@@ -911,6 +1075,9 @@ class ModelLifecycleService:
                     "status": row["status"],
                     "is_stale": bool(row.get("is_stale", False)),
                     "validation_score": row.get("validation_score"),
+                    "runtime_score": row.get("runtime_score"),
+                    "feedback_summary": row.get("feedback_summary") or {},
+                    "model_version": row.get("last_trained_at_utc") or "legacy",
                 }
             )
 

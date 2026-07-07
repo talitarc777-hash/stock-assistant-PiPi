@@ -23,6 +23,7 @@ from app.services.model_lifecycle_service import (
     ModelLifecycleError,
     get_model_lifecycle_service,
 )
+from app.services.model_feedback_service import get_model_feedback_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,51 @@ class ModelLifecycleHealthResponse(BaseModel):
     next_run_time_utc: str | None = None
     consecutive_failures: int
     last_error: str | None = None
+
+
+@router.get("/model-lifecycle/feedback")
+def get_model_feedback(
+    ticker: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=15,
+        pattern=TICKER_PATTERN,
+    ),
+    model_period: str | None = Query(default=None, pattern=PERIOD_PATTERN),
+    model_name: str | None = Query(default=None, min_length=1, max_length=50),
+    status: str | None = Query(default=None, pattern="^(pending|evaluated)$"),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    """Return auditable model predictions, outcomes, and summary scores."""
+    service = get_model_feedback_service()
+    rows = service.list_feedback(
+        ticker=ticker,
+        status=status,
+        limit=limit,
+    )
+    summary = None
+    if ticker and model_period and model_name:
+        summary = service.get_model_summary(
+            ticker=ticker,
+            model_period=model_period,
+            model_name=model_name,
+        )
+    return {
+        "count": len(rows),
+        "summary": summary,
+        "feedback": rows,
+    }
+
+
+@router.post("/model-lifecycle/feedback/evaluate")
+def evaluate_model_feedback() -> dict:
+    """Manually settle feedback whose future five-day outcome is available."""
+    service = get_model_feedback_service()
+    result = service.evaluate_pending(limit=500)
+    refresh = get_model_lifecycle_service().refresh_feedback_scores(
+        limit=500
+    )
+    return {**result, "registry_refresh": refresh}
 
 
 @router.get("/model-lifecycle/status", response_model=ModelLifecycleStatusResponse)

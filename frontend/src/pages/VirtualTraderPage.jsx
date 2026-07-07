@@ -655,6 +655,18 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
                   {selectedLiveTrade.metadata.context_label ? ` (${selectedLiveTrade.metadata.context_label})` : ""}
                 </p>
                 <p>{selectedLiveTrade.metadata.context_summary}</p>
+                {selectedLiveTrade.metadata.feedback_summary ? (
+                  <p>
+                    <strong>{labelByMode(languageMode, "Model learning", "\u6a21\u578b\u5b78\u7fd2")}:</strong>{" "}
+                    {Number(selectedLiveTrade.metadata.feedback_summary.sample_count || 0)}{" "}
+                    {labelByMode(languageMode, "evaluated outcomes", "\u500b\u5df2\u8a55\u4f30\u7d50\u679c")}
+                    {Number.isFinite(Number(selectedLiveTrade.metadata.feedback_summary.direction_accuracy))
+                      ? ", " + labelByMode(languageMode, "direction accuracy", "\u65b9\u5411\u6e96\u78ba\u7387") + " " + (
+                        Number(selectedLiveTrade.metadata.feedback_summary.direction_accuracy) * 100
+                      ).toFixed(0) + "%"
+                      : ""}
+                  </p>
+                ) : null}
                 {selectedLiveTrade.metadata.external_context?.sources_available?.length ? (
                   <p>
                     <strong>{labelByMode(languageMode, "Extra feeds used", "已使用額外資料")}:</strong>{" "}

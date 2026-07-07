@@ -31,6 +31,7 @@ from app.services.equity_curve_service import build_live_equity_curve
 from app.services.external_market_context_service import build_external_market_context
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
+from app.services.model_feedback_service import get_model_feedback_service
 from app.services.model_lifecycle_service import (
     TRADING_MODEL_PERIODS,
     get_model_lifecycle_service,
@@ -337,7 +338,10 @@ def _resolve_user_tickers(user_id: str, tickers: list[str] | None) -> list[str]:
 
 
 def _confidence_ok(confidence_score: float | None, threshold: float) -> bool:
-    return confidence_score is None or float(confidence_score) >= float(threshold)
+    return (
+        confidence_score is not None
+        and float(confidence_score) >= float(threshold)
+    )
 
 
 def _derive_signal_flags(predicted_value: float, task_type: str, min_return: float) -> tuple[bool, bool]:
@@ -824,6 +828,9 @@ def run_live_virtual_trader_now(
 
             decision_model_period = period
             decision_validation_score: float | None = None
+            decision_runtime_score: float | None = None
+            decision_model_version = "fallback"
+            decision_feedback_summary: dict[str, Any] = {}
             for candidate in runtime_candidates:
                 candidate_ticker = str(candidate.get("ticker", symbol)).strip().upper()
                 candidate_period = str(candidate.get("period", period)).strip()
@@ -853,6 +860,18 @@ def run_live_virtual_trader_now(
                     score_value = candidate.get("validation_score")
                     decision_validation_score = (
                         float(score_value) if isinstance(score_value, (int, float)) else None
+                    )
+                    runtime_score = candidate.get("runtime_score")
+                    decision_runtime_score = (
+                        float(runtime_score)
+                        if isinstance(runtime_score, (int, float))
+                        else decision_validation_score
+                    )
+                    decision_model_version = str(
+                        candidate.get("model_version") or "legacy"
+                    )
+                    decision_feedback_summary = dict(
+                        candidate.get("feedback_summary") or {}
                     )
                     model_loaded = True
                     logger.info(
@@ -890,6 +909,11 @@ def run_live_virtual_trader_now(
                     "Model missing -> using fallback%s",
                     " -> training scheduled" if _AUTO_TRAIN_ON_MODEL_MISS else "",
                 )
+            elif confidence_score is None and decision_runtime_score is not None:
+                # Regression estimators do not expose predict_proba. Use the
+                # validated, feedback-adjusted model reliability instead of
+                # treating missing confidence as an automatic pass.
+                confidence_score = decision_runtime_score
 
             explanation = build_prediction_explanation(
                 feature_row=latest_row,
@@ -920,6 +944,55 @@ def run_live_virtual_trader_now(
                 latest_row=latest_row,
                 snapshot=snapshot,
                 external_context=external_context,
+            )
+            try:
+                learned_context = (
+                    get_model_feedback_service().get_context_adjustment(
+                        factors=list(context_score["factors"]),
+                        ticker=symbol,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - feedback guard
+                logger.warning(
+                    "Context feedback skipped ticker=%s error=%s",
+                    symbol,
+                    exc,
+                )
+                learned_context = {
+                    "adjustment": 0.0,
+                    "matched_factors": [],
+                }
+            feedback_adjustment = float(
+                learned_context.get("adjustment") or 0.0
+            )
+            if abs(feedback_adjustment) >= 0.05:
+                context_score["score"] = max(
+                    0.0,
+                    min(
+                        100.0,
+                        float(context_score["score"])
+                        + feedback_adjustment,
+                    ),
+                )
+                context_score["factors"].append(
+                    "historical outcome feedback adjusted context "
+                    f"{feedback_adjustment:+.1f}"
+                )
+                context_score["label"] = (
+                    "supportive"
+                    if context_score["score"] >= MIN_CONTEXT_SCORE_FOR_BUY
+                    else "cautious"
+                    if context_score["score"] >= 40
+                    else "weak"
+                )
+                context_score["summary"] = (
+                    f"Context score {context_score['score']:.0f}/100: "
+                    + "; ".join(context_score["factors"][:4])
+                    + "."
+                )
+            context_score["feedback_adjustment"] = feedback_adjustment
+            context_score["feedback_evidence"] = list(
+                learned_context.get("matched_factors") or []
             )
             action = "no_action"
             reason = model_fallback_reason if decision_source == "fallback_rule" else "model_not_bullish"
@@ -1114,11 +1187,20 @@ def run_live_virtual_trader_now(
                     "volatility": volatility,
                     "decision_source": decision_source,
                     "model_period": decision_model_period,
+                    "model_version": decision_model_version,
                     "validation_score": decision_validation_score,
+                    "runtime_score": decision_runtime_score,
+                    "feedback_summary": decision_feedback_summary,
                     "context_score": context_score["score"],
                     "context_label": context_score["label"],
                     "context_summary": context_score["summary"],
                     "context_factors": context_score["factors"],
+                    "context_feedback_adjustment": context_score[
+                        "feedback_adjustment"
+                    ],
+                    "context_feedback_evidence": context_score[
+                        "feedback_evidence"
+                    ],
                     "external_context": external_context or {},
                     "headline_context": {
                         "political_risk_ratio_recent_7d": _safe_float(
@@ -1145,6 +1227,17 @@ def run_live_virtual_trader_now(
                 },
             }
             store.append_trade(trade_payload)
+            try:
+                get_model_feedback_service().record_decision(
+                    trade_payload,
+                    benchmark=benchmark,
+                )
+            except Exception as exc:  # pragma: no cover - feedback guard
+                logger.warning(
+                    "Model feedback recording skipped ticker=%s error=%s",
+                    symbol,
+                    exc,
+                )
             if action in {"buy", "sell"} and quantity > 0:
                 recent_symbol_trades = store.list_trades(clean_user_id, limit=100, ticker=symbol)
                 maybe_send_virtual_trade_discord_alert(
