@@ -204,6 +204,26 @@ class VirtualAccountResetResponse(BaseModel):
     message: str
 
 
+class VirtualTradingActivityResetRequest(BaseModel):
+    """Request payload for removing trades while preserving account funding."""
+
+    user_id: str = Field(min_length=1, max_length=120)
+    confirm_reset: bool = False
+
+
+class VirtualTradingActivityResetResponse(BaseModel):
+    """Response after clearing one profile's simulated trades and holdings."""
+
+    user_id: str
+    reset_completed: bool
+    deleted_ledger_trade_rows: int
+    deleted_live_trade_rows: int
+    deleted_live_position_rows: int
+    deleted_feedback_rows: int
+    preserved_funding_event_rows: int
+    message: str
+
+
 class VirtualAccountDiagnosticsResponse(BaseModel):
     """Profile-scoped persistence diagnostics snapshot."""
 

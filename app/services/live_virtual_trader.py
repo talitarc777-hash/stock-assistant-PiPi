@@ -25,6 +25,7 @@ from app.services.account_ledger_service import (
     AccountLedgerError,
     MIN_TRADE_QUANTITY,
     TRADE_ADMIN_FEE_HKD,
+    get_trade_admin_fee_usd,
     get_account_ledger_service,
 )
 from app.services.equity_curve_service import build_live_equity_curve
@@ -1032,8 +1033,9 @@ def run_live_virtual_trader_now(
                     valuation_ok = pe_ratio is None or float(pe_ratio) <= 85
                     volatility_ok = volatility <= 55
                     allocation = min(cash_available, float(equity * max_position_size_pct))
+                    trade_admin_fee_usd = get_trade_admin_fee_usd()
                     affordable_quantity = math.floor(
-                        (allocation - TRADE_ADMIN_FEE_HKD) / current_price
+                        (allocation - trade_admin_fee_usd) / current_price
                         if current_price > 0
                         else 0.0
                     )
@@ -1058,7 +1060,7 @@ def run_live_virtual_trader_now(
                 f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
                 f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                 f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
-                f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
+                f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f} (~USD {get_trade_admin_fee_usd():.2f}); "
                 f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
                 f"context score {context_score['score']:.0f}/100."
                 if confidence_score is not None
@@ -1067,7 +1069,7 @@ def run_live_virtual_trader_now(
                     f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
                     f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                     f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
-                    f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}; "
+                    f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f} (~USD {get_trade_admin_fee_usd():.2f}); "
                     f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
                     f"context score {context_score['score']:.0f}/100."
                 )

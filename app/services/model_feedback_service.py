@@ -13,7 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.core.settings import get_settings
-from app.services.account_ledger_service import TRADE_ADMIN_FEE_HKD
+from app.services.account_ledger_service import get_trade_admin_fee_usd
 from app.services.market_data import get_price_history
 
 logger = logging.getLogger(__name__)
@@ -322,7 +322,7 @@ class ModelFeedbackService:
                 )
                 notional = abs(float(row["quantity"]) * decision_price)
                 cost_pct = (
-                    (2.0 * TRADE_ADMIN_FEE_HKD / notional) * 100.0
+                    (2.0 * get_trade_admin_fee_usd() / notional) * 100.0
                     if row["action"] in {"buy", "sell"} and notional > 0
                     else 0.0
                 )

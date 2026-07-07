@@ -33,6 +33,11 @@ MIN_TRADE_QUANTITY = 1
 TRADE_ADMIN_FEE_HKD = 50.0
 
 
+def get_trade_admin_fee_usd() -> float:
+    """Convert the fixed HKD administrative fee into the USD account currency."""
+    return TRADE_ADMIN_FEE_HKD / float(get_settings().hkd_per_usd_rate)
+
+
 class AccountLedgerError(Exception):
     """Raised when immutable ledger operations fail validation."""
 
@@ -489,7 +494,8 @@ class AccountLedgerService:
             raise AccountLedgerError("price must be greater than 0.")
 
         gross_amount = numeric_quantity * numeric_price
-        fee_amount = TRADE_ADMIN_FEE_HKD
+        hkd_per_usd_rate = float(get_settings().hkd_per_usd_rate)
+        fee_amount = get_trade_admin_fee_usd()
         if normalized_action == "buy":
             total_cost = gross_amount + fee_amount
             clean_user_id = _clean_user_id(user_id)
@@ -505,7 +511,7 @@ class AccountLedgerService:
             cash_available = float(row["cash"] if row is not None else 0.0)
             if cash_available < total_cost:
                 raise AccountLedgerError(
-                    "Insufficient cash for trade value and HKD 50 administrative cost."
+                    "Insufficient USD cash for the trade value and converted HKD 50 administrative cost."
                 )
             amount = -total_cost
         else:
@@ -520,6 +526,10 @@ class AccountLedgerService:
         event_metadata.update(
             {
                 "fee_amount": fee_amount,
+                "fee_amount_hkd": TRADE_ADMIN_FEE_HKD,
+                "fee_currency": "USD",
+                "fee_original_currency": "HKD",
+                "hkd_per_usd_rate": hkd_per_usd_rate,
                 "gross_amount": gross_amount,
                 "minimum_trade_quantity": MIN_TRADE_QUANTITY,
             }
@@ -1005,6 +1015,79 @@ class AccountLedgerService:
             "deleted_monthly_store_rows": deleted_monthly_store_rows,
             "deleted_monthly_input_rows": deleted_monthly_input_rows,
             "message": "Reset completed for this profile.",
+        }
+
+    def reset_profile_trading_activity(self, user_id: str) -> dict[str, Any]:
+        """Remove simulated trades/holdings while preserving profile funding."""
+        clean_user_id = _clean_user_id(user_id)
+        deleted_ledger_trade_rows = 0
+        deleted_live_trade_rows = 0
+        deleted_live_position_rows = 0
+        deleted_feedback_rows = 0
+        preserved_funding_event_rows = 0
+
+        with self._connect() as conn:
+            funding_row = conn.execute(
+                """
+                SELECT COUNT(1) AS cnt
+                FROM account_ledger_events
+                WHERE user_id = ?
+                  AND event_type IN ('monthly_contribution', 'manual_deposit', 'withdrawal')
+                """,
+                (clean_user_id,),
+            ).fetchone()
+            preserved_funding_event_rows = (
+                0 if funding_row is None else int(funding_row["cnt"] or 0)
+            )
+
+            cursor = conn.execute(
+                """
+                DELETE FROM account_ledger_events
+                WHERE user_id = ? AND event_type IN ('buy_trade', 'sell_trade', 'fee')
+                """,
+                (clean_user_id,),
+            )
+            deleted_ledger_trade_rows = int(cursor.rowcount or 0)
+
+            if self._table_exists(conn, "live_trader_trade_log"):
+                cursor = conn.execute(
+                    "DELETE FROM live_trader_trade_log WHERE user_id = ?",
+                    (clean_user_id,),
+                )
+                deleted_live_trade_rows = int(cursor.rowcount or 0)
+            if self._table_exists(conn, "live_trader_positions"):
+                cursor = conn.execute(
+                    "DELETE FROM live_trader_positions WHERE user_id = ?",
+                    (clean_user_id,),
+                )
+                deleted_live_position_rows = int(cursor.rowcount or 0)
+            if self._table_exists(conn, "model_decision_feedback"):
+                cursor = conn.execute(
+                    "DELETE FROM model_decision_feedback WHERE user_id = ?",
+                    (clean_user_id,),
+                )
+                deleted_feedback_rows = int(cursor.rowcount or 0)
+            conn.commit()
+
+        logger.warning(
+            "Virtual trading activity reset user_id=%s ledger_trades=%d live_trades=%d "
+            "live_positions=%d feedback=%d preserved_funding=%d",
+            clean_user_id,
+            deleted_ledger_trade_rows,
+            deleted_live_trade_rows,
+            deleted_live_position_rows,
+            deleted_feedback_rows,
+            preserved_funding_event_rows,
+        )
+        return {
+            "user_id": clean_user_id,
+            "reset_completed": True,
+            "deleted_ledger_trade_rows": deleted_ledger_trade_rows,
+            "deleted_live_trade_rows": deleted_live_trade_rows,
+            "deleted_live_position_rows": deleted_live_position_rows,
+            "deleted_feedback_rows": deleted_feedback_rows,
+            "preserved_funding_event_rows": preserved_funding_event_rows,
+            "message": "Trades and holdings cleared; deposits and contribution settings were preserved.",
         }
 
     def get_profile_diagnostics(self, user_id: str) -> dict[str, Any]:

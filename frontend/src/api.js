@@ -153,6 +153,13 @@ export async function postVirtualAccountReset(userId, resetMonthlyContributions 
   });
 }
 
+export async function postVirtualTradingActivityReset(userId) {
+  return postJson("/virtual-account/reset-trading-activity", {
+    user_id: userId,
+    confirm_reset: true,
+  });
+}
+
 export async function fetchModelLifecycleStatus(
   ticker = "VOO",
   period = "5y",

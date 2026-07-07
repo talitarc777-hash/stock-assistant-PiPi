@@ -19,6 +19,8 @@ from app.models.account_ledger import (
     VirtualAccountResetResponse,
     VirtualAccountSummaryResponse,
     VirtualAccountWithdrawalRequest,
+    VirtualTradingActivityResetRequest,
+    VirtualTradingActivityResetResponse,
 )
 from app.models.monthly_contribution import (
     MonthlyContributionInputResponse,
@@ -351,4 +353,30 @@ def virtual_account_reset(request: VirtualAccountResetRequest) -> VirtualAccount
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         logger.exception("Unexpected virtual-account reset error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
+
+
+@router.post(
+    "/virtual-account/reset-trading-activity",
+    response_model=VirtualTradingActivityResetResponse,
+)
+def virtual_trading_activity_reset(
+    request: VirtualTradingActivityResetRequest,
+) -> VirtualTradingActivityResetResponse:
+    """Clear simulated trades and holdings without deleting profile funding."""
+    if not bool(request.confirm_reset):
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_reset must be true to clear trading activity.",
+        )
+    try:
+        payload = get_account_ledger_service().reset_profile_trading_activity(
+            user_id=request.user_id,
+        )
+        clear_user_virtual_account_cache(request.user_id)
+        return VirtualTradingActivityResetResponse(**payload)
+    except AccountLedgerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Unexpected virtual trading activity reset error")
         raise HTTPException(status_code=500, detail="Unexpected server error.") from exc

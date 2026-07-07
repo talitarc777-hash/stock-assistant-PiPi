@@ -8,7 +8,12 @@ from uuid import uuid4
 import sqlite3
 from unittest.mock import patch
 
-from app.services.account_ledger_service import AccountLedgerError, AccountLedgerService
+from app.services.account_ledger_service import (
+    AccountLedgerError,
+    AccountLedgerService,
+    TRADE_ADMIN_FEE_HKD,
+    get_trade_admin_fee_usd,
+)
 from app.services.monthly_contribution_service import MonthlyContributionStore
 
 
@@ -40,10 +45,11 @@ class AccountLedgerServiceTests(unittest.TestCase):
             price=100.0,
         )
         summary = self.service.build_account_summary("u1", latest_prices={"VOO": 110.0})
-        self.assertAlmostEqual(summary["cash"], 1150.0, places=6)
+        fee_usd = get_trade_admin_fee_usd()
+        self.assertAlmostEqual(summary["cash"], 1200.0 - fee_usd, places=6)
         self.assertAlmostEqual(summary["holdings_value"], 330.0, places=6)
-        self.assertAlmostEqual(summary["total_account_value"], 1480.0, places=6)
-        self.assertAlmostEqual(summary["unrealized_pnl"], -20.0, places=6)
+        self.assertAlmostEqual(summary["total_account_value"], 1530.0 - fee_usd, places=6)
+        self.assertAlmostEqual(summary["unrealized_pnl"], 30.0 - fee_usd, places=6)
         self.assertEqual(len(summary["holdings"]), 1)
 
     def test_apply_recurring_monthly_contribution_if_due(self) -> None:
@@ -100,6 +106,26 @@ class AccountLedgerServiceTests(unittest.TestCase):
         self.assertEqual(u1_count, 0)
         self.assertGreater(u2_count, 0)
 
+    def test_reset_profile_trading_activity_preserves_funding(self) -> None:
+        self.service.create_monthly_contribution("u1", "2026-04", 1000.0)
+        self.service.create_manual_deposit("u1", 200.0)
+        self.service.create_trade_event(
+            user_id="u1",
+            action="buy",
+            ticker="VOO",
+            quantity=2.0,
+            price=100.0,
+        )
+
+        result = self.service.reset_profile_trading_activity("u1")
+
+        self.assertTrue(result["reset_completed"])
+        self.assertEqual(result["deleted_ledger_trade_rows"], 1)
+        self.assertEqual(result["preserved_funding_event_rows"], 2)
+        summary = self.service.build_account_summary("u1", latest_prices={"VOO": 100.0})
+        self.assertAlmostEqual(summary["cash"], 1200.0, places=6)
+        self.assertEqual(summary["holdings"], [])
+
     def test_profile_diagnostics_counts_rows(self) -> None:
         self.service.create_monthly_contribution("u1", "2026-04", 1000.0)
         self.service.create_manual_deposit("u1", 100.0)
@@ -123,8 +149,13 @@ class AccountLedgerServiceTests(unittest.TestCase):
         newest = history[0]
         oldest = history[-1]
         self.assertEqual(newest["event_type"], "buy_trade")
-        self.assertAlmostEqual(newest["cash_balance_after"], 1000.0, places=6)
-        self.assertAlmostEqual(newest["fee_amount"], 50.0, places=6)
+        self.assertAlmostEqual(
+            newest["cash_balance_after"],
+            1050.0 - get_trade_admin_fee_usd(),
+            places=6,
+        )
+        self.assertAlmostEqual(newest["fee_amount"], get_trade_admin_fee_usd(), places=6)
+        self.assertAlmostEqual(newest["metadata"]["fee_amount_hkd"], 50.0, places=6)
         self.assertEqual(oldest["event_type"], "monthly_contribution")
         self.assertAlmostEqual(oldest["cash_balance_after"], 1000.0, places=6)
 
@@ -148,8 +179,12 @@ class AccountLedgerServiceTests(unittest.TestCase):
         self.assertEqual(len(trades), 2)
         self.assertEqual(trades[0]["event_type"], "sell_trade")
         self.assertEqual(trades[1]["event_type"], "buy_trade")
-        self.assertAlmostEqual(trades[0]["cash_balance_after"], 810.0, places=6)
-        self.assertAlmostEqual(trades[0]["fee_amount"], 50.0, places=6)
+        self.assertAlmostEqual(
+            trades[0]["cash_balance_after"],
+            910.0 - (2.0 * get_trade_admin_fee_usd()),
+            places=6,
+        )
+        self.assertAlmostEqual(trades[0]["fee_amount"], get_trade_admin_fee_usd(), places=6)
 
     def test_current_holdings_include_unrealized_percent(self) -> None:
         self.service.create_monthly_contribution("u1", "2026-04", 1000.0)
@@ -162,9 +197,20 @@ class AccountLedgerServiceTests(unittest.TestCase):
         )
         holdings = self.service.list_current_holdings("u1", latest_prices={"VOO": 110.0})
         self.assertEqual(len(holdings), 1)
-        self.assertAlmostEqual(holdings[0]["avg_entry_price"], 125.0, places=6)
-        self.assertAlmostEqual(holdings[0]["unrealized_pnl"], -30.0, places=6)
-        self.assertAlmostEqual(holdings[0]["unrealized_pnl_pct"], -12.0, places=6)
+        fee_usd = get_trade_admin_fee_usd()
+        expected_cost = 200.0 + fee_usd
+        expected_unrealized = 220.0 - expected_cost
+        self.assertAlmostEqual(
+            holdings[0]["avg_entry_price"],
+            expected_cost / 2.0,
+            places=6,
+        )
+        self.assertAlmostEqual(holdings[0]["unrealized_pnl"], expected_unrealized, places=6)
+        self.assertAlmostEqual(
+            holdings[0]["unrealized_pnl_pct"],
+            (expected_unrealized / expected_cost) * 100.0,
+            places=6,
+        )
 
     def test_trade_quantity_must_be_at_least_one(self) -> None:
         self.service.create_manual_deposit("u1", 1000.0)
@@ -188,8 +234,9 @@ class AccountLedgerServiceTests(unittest.TestCase):
                 price=100.0,
             )
 
-    def test_buy_and_sell_each_charge_hkd_50_and_reduce_profit(self) -> None:
+    def test_buy_and_sell_convert_hkd_50_fee_to_usd(self) -> None:
         self.service.create_manual_deposit("u1", 1000.0)
+        fee_usd = get_trade_admin_fee_usd()
         buy = self.service.create_trade_event(
             user_id="u1",
             action="buy",
@@ -197,8 +244,15 @@ class AccountLedgerServiceTests(unittest.TestCase):
             quantity=2.0,
             price=100.0,
         )
-        self.assertAlmostEqual(buy["amount"], -250.0, places=6)
-        self.assertAlmostEqual(buy["metadata"]["fee_amount"], 50.0, places=6)
+        self.assertAlmostEqual(buy["amount"], -(200.0 + fee_usd), places=6)
+        self.assertAlmostEqual(buy["metadata"]["fee_amount"], fee_usd, places=6)
+        self.assertAlmostEqual(
+            buy["metadata"]["fee_amount_hkd"],
+            TRADE_ADMIN_FEE_HKD,
+            places=6,
+        )
+        self.assertEqual(buy["metadata"]["fee_currency"], "USD")
+        self.assertEqual(buy["metadata"]["fee_original_currency"], "HKD")
 
         sell = self.service.create_trade_event(
             user_id="u1",
@@ -207,12 +261,12 @@ class AccountLedgerServiceTests(unittest.TestCase):
             quantity=2.0,
             price=150.0,
         )
-        self.assertAlmostEqual(sell["amount"], 250.0, places=6)
-        self.assertAlmostEqual(sell["metadata"]["fee_amount"], 50.0, places=6)
+        self.assertAlmostEqual(sell["amount"], 300.0 - fee_usd, places=6)
+        self.assertAlmostEqual(sell["metadata"]["fee_amount"], fee_usd, places=6)
 
         summary = self.service.build_account_summary("u1")
-        self.assertAlmostEqual(summary["cash"], 1000.0, places=6)
-        self.assertAlmostEqual(summary["realized_pnl"], 0.0, places=6)
+        self.assertAlmostEqual(summary["cash"], 1100.0 - (2.0 * fee_usd), places=6)
+        self.assertAlmostEqual(summary["realized_pnl"], 100.0 - (2.0 * fee_usd), places=6)
 
     def test_partial_integer_sell_preserves_remaining_holding(self) -> None:
         self.service.create_manual_deposit("u1", 2000.0)

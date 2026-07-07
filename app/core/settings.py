@@ -124,6 +124,7 @@ class Settings(BaseModel):
     model_feedback_min_samples: int = 8
     model_feedback_promotion_weight: float = 0.35
     context_feedback_max_adjustment: float = 8.0
+    hkd_per_usd_rate: float = 7.8
 
 
 _CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
@@ -227,5 +228,9 @@ def get_settings() -> Settings:
         context_feedback_max_adjustment=max(
             0.0,
             min(15.0, float(os.getenv("CONTEXT_FEEDBACK_MAX_ADJUSTMENT", "8"))),
+        ),
+        hkd_per_usd_rate=max(
+            0.0001,
+            float(os.getenv("HKD_PER_USD_RATE", "7.8")),
         ),
     )
