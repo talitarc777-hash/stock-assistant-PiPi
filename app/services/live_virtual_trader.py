@@ -350,8 +350,8 @@ def _derive_signal_flags(predicted_value: float, task_type: str, min_return: flo
         bullish = int(round(predicted_value)) == 1
         bearish = int(round(predicted_value)) == 0
     else:
-        bullish = predicted_value >= min_return
-        bearish = predicted_value <= 0.0
+        bullish = predicted_value > min_return
+        bearish = predicted_value < 0.0
     return bullish, bearish
 
 
