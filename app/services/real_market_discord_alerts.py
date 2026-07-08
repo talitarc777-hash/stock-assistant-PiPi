@@ -11,7 +11,7 @@ It does not claim to know exact buyer-initiated or seller-initiated order flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 import math
 from typing import Any, Callable
@@ -34,6 +34,7 @@ class RealMarketActivityAlert:
 
     user_id: str
     ticker: str
+    alert_type: str
     pressure: str
     window_minutes: int
     price_change_pct: float
@@ -43,6 +44,7 @@ class RealMarketActivityAlert:
     volume_spike_ratio: float
     traded_value: float
     threshold_value: float
+    price_threshold_pct: float
     state_key: str
     message: str
 
@@ -122,13 +124,77 @@ def _build_state_key(*, alert: RealMarketActivityAlert, now_utc: datetime) -> st
     bucket_minutes = max(1, int(alert.window_minutes))
     minute_bucket = (now_utc.minute // bucket_minutes) * bucket_minutes
     bucket = now_utc.replace(minute=minute_bucket, second=0, microsecond=0)
-    value_bucket = int(alert.traded_value // max(1.0, alert.threshold_value))
+    severity_bucket = int(
+        abs(alert.price_change_pct) // max(0.1, alert.price_threshold_pct)
+    )
     return (
-        f"{alert.pressure}:"
+        f"{alert.alert_type}:{alert.pressure}:"
         f"{bucket.strftime('%Y%m%d%H%M')}:"
-        f"{value_bucket}:"
+        f"{severity_bucket}:"
         f"{int(alert.volume_spike_ratio * 10)}"
     )
+
+
+def _build_alert_message(alert: RealMarketActivityAlert, language: str) -> str:
+    """Build English, Traditional Chinese, or bilingual Discord content."""
+    is_rise = alert.price_change_pct > 0
+    direction_en = "rise" if is_rise else "fall"
+    pressure_en = "buying pressure" if is_rise else "selling pressure"
+    if alert.alert_type == "sudden_price_move":
+        title_en = (
+            f"Sudden market price alert: {alert.ticker} has a sharp {direction_en}."
+        )
+        trigger_en = (
+            f"Price moved at least {alert.price_threshold_pct:.2f}% "
+            f"within {alert.window_minutes} minutes"
+        )
+    else:
+        title_en = (
+            f"Real market activity alert: {alert.ticker} shows unusual {pressure_en}."
+        )
+        trigger_en = "Price, traded value, and volume spike thresholds were reached"
+    english = (
+        f"{title_en}\n"
+        f"- Window: {alert.window_minutes} minutes\n"
+        f"- Price move: {alert.price_change_pct:+.2f}%\n"
+        f"- Latest price: {alert.latest_close:,.2f}\n"
+        f"- Window volume: {alert.window_volume:,.0f} shares\n"
+        f"- Volume versus recent normal: {alert.volume_spike_ratio:.1f}x\n"
+        f"- Estimated traded value: {alert.traded_value:,.0f} quote-currency units\n"
+        f"- Trigger: {trigger_en}\n"
+        "This delayed market-data alert is for simulation and educational monitoring only, "
+        "not financial advice."
+    )
+
+    direction_zh = "急升" if is_rise else "急跌"
+    pressure_zh = "買盤壓力" if is_rise else "賣盤壓力"
+    if alert.alert_type == "sudden_price_move":
+        title_zh = f"市場價格急變警報：{alert.ticker} 出現{direction_zh}。"
+        trigger_zh = (
+            f"{alert.window_minutes} 分鐘內的價格變動達 "
+            f"{alert.price_threshold_pct:.2f}%"
+        )
+    else:
+        title_zh = f"市場異常活動警報：{alert.ticker} 顯示異常{pressure_zh}。"
+        trigger_zh = "價格、估算成交金額及成交量升幅均達到警報門檻"
+    traditional_chinese = (
+        f"{title_zh}\n"
+        f"- 監察時段：{alert.window_minutes} 分鐘\n"
+        f"- 價格變動：{alert.price_change_pct:+.2f}%\n"
+        f"- 最新價格：{alert.latest_close:,.2f}\n"
+        f"- 時段成交量：{alert.window_volume:,.0f} 股\n"
+        f"- 相對近期正常成交量：{alert.volume_spike_ratio:.1f} 倍\n"
+        f"- 估算成交金額：{alert.traded_value:,.0f} 報價貨幣單位\n"
+        f"- 觸發原因：{trigger_zh}\n"
+        "此警報使用延遲市場數據，僅供模擬交易、教育及監察用途，並非投資建議。"
+    )
+
+    normalized_language = str(language or "en").strip().lower()
+    if normalized_language == "zh":
+        return traditional_chinese
+    if normalized_language == "bilingual":
+        return f"{english}\n\n{traditional_chinese}"
+    return english
 
 
 def build_real_market_activity_alert(
@@ -141,6 +207,8 @@ def build_real_market_activity_alert(
     volume_spike_multiplier: float,
     price_move_threshold_pct: float,
     min_window_volume: float,
+    sudden_move_threshold_pct: float = 10.0,
+    language: str = "en",
     now_utc: datetime | None = None,
 ) -> RealMarketActivityAlert | None:
     """Return an alert when recent candles show unusual directional pressure."""
@@ -154,12 +222,19 @@ def build_real_market_activity_alert(
         return None
 
     window = max(5, int(window_minutes))
-    now = now_utc or _utc_now()
     latest_ts = frame.iloc[-1]["timestamp"].to_pydatetime()
     if latest_ts.tzinfo is None:
         latest_ts = latest_ts.replace(tzinfo=UTC)
     else:
         latest_ts = latest_ts.astimezone(UTC)
+    observed_at = now_utc or _utc_now()
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+    else:
+        observed_at = observed_at.astimezone(UTC)
+    maximum_age = timedelta(minutes=max(30, window * 2))
+    if latest_ts > observed_at + timedelta(minutes=5) or observed_at - latest_ts > maximum_age:
+        return None
 
     window_start = latest_ts - pd.Timedelta(minutes=window)
     recent = frame[frame["timestamp"] >= window_start]
@@ -175,28 +250,34 @@ def build_real_market_activity_alert(
     price_change_pct = ((latest_close / start_close) - 1.0) * 100.0
     window_volume = float(recent["volume"].sum())
     average_window_volume = float(prior["volume"].mean() * max(1, len(recent)))
-    if average_window_volume <= 0:
-        return None
-
-    volume_spike_ratio = window_volume / average_window_volume
+    volume_spike_ratio = (
+        window_volume / average_window_volume
+        if average_window_volume > 0
+        else 0.0
+    )
     traded_value = window_volume * latest_close
     if not math.isfinite(traded_value) or not math.isfinite(volume_spike_ratio):
         return None
 
-    if window_volume < min_window_volume:
-        return None
-    if traded_value < large_value_threshold:
-        return None
-    if volume_spike_ratio < volume_spike_multiplier:
-        return None
-    if abs(price_change_pct) < price_move_threshold_pct:
+    unusual_activity = (
+        window_volume >= min_window_volume
+        and traded_value >= large_value_threshold
+        and volume_spike_ratio >= volume_spike_multiplier
+        and abs(price_change_pct) >= price_move_threshold_pct
+    )
+    sudden_price_move = abs(price_change_pct) >= max(
+        0.1,
+        float(sudden_move_threshold_pct),
+    )
+    if not unusual_activity and not sudden_price_move:
         return None
 
     pressure = "buying_pressure" if price_change_pct > 0 else "selling_pressure"
-    direction_label = "buying pressure" if pressure == "buying_pressure" else "selling pressure"
+    alert_type = "sudden_price_move" if sudden_price_move else "unusual_activity"
     placeholder = RealMarketActivityAlert(
         user_id=clean_user_id,
         ticker=symbol,
+        alert_type=alert_type,
         pressure=pressure,
         window_minutes=window,
         price_change_pct=price_change_pct,
@@ -206,21 +287,18 @@ def build_real_market_activity_alert(
         volume_spike_ratio=volume_spike_ratio,
         traded_value=traded_value,
         threshold_value=large_value_threshold,
+        price_threshold_pct=(
+            float(sudden_move_threshold_pct)
+            if sudden_price_move
+            else float(price_move_threshold_pct)
+        ),
         state_key="",
         message="",
     )
-    state_key = _build_state_key(alert=placeholder, now_utc=now)
-    message = (
-        f"Real market activity alert: {symbol} shows unusual {direction_label}.\n"
-        f"- Window: {window} minutes\n"
-        f"- Price move: {price_change_pct:+.2f}%\n"
-        f"- Latest price: {latest_close:,.2f}\n"
-        f"- Window volume: {window_volume:,.0f} shares\n"
-        f"- Volume spike: {volume_spike_ratio:.1f}x recent normal\n"
-        f"- Estimated traded value: {traded_value:,.0f} quote-currency units\n"
-        f"- Alert threshold: {large_value_threshold:,.0f}\n"
-        "This is a delayed market-data alert for monitoring only, not financial advice."
-    )
+    # Key deduplication to the latest market candle, not wall-clock time. This
+    # prevents a closed market's final sharp move from being resent every cycle.
+    state_key = _build_state_key(alert=placeholder, now_utc=latest_ts)
+    message = _build_alert_message(placeholder, language)
     return RealMarketActivityAlert(
         **{**placeholder.__dict__, "state_key": state_key, "message": message}
     )
@@ -244,6 +322,8 @@ def scan_real_market_activity_alerts(
     downloader = download_fn or _default_download_intraday
     alerts: list[RealMarketActivityAlert] = []
     store = get_user_profile_store()
+    profile = store.get_or_create_profile(user_id)
+    language = str(profile.preferred_language or "en")
     for symbol in symbols:
         try:
             raw_df = downloader(symbol, "5d", "5m")
@@ -256,6 +336,8 @@ def scan_real_market_activity_alerts(
                 volume_spike_multiplier=settings.real_market_volume_spike_multiplier,
                 price_move_threshold_pct=settings.real_market_price_move_threshold_pct,
                 min_window_volume=settings.real_market_min_window_volume,
+                sudden_move_threshold_pct=settings.real_market_sudden_move_threshold_pct,
+                language=language,
             )
         except Exception as exc:  # pragma: no cover - defensive provider guard
             logger.warning("Real market activity scan skipped ticker=%s error=%s", symbol, exc)
@@ -266,7 +348,7 @@ def scan_real_market_activity_alerts(
         should_send = store.should_send_alert(
             alert.user_id,
             alert.ticker,
-            f"real_market_{alert.pressure}",
+            f"real_market_{alert.alert_type}_{alert.pressure}",
             alert.state_key,
         )
         if not should_send:

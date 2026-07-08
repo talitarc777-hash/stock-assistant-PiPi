@@ -39,12 +39,14 @@ class RealMarketDiscordAlertsTests(unittest.TestCase):
             volume_spike_multiplier=3.0,
             price_move_threshold_pct=1.5,
             min_window_volume=50_000,
+            sudden_move_threshold_pct=4.0,
             now_utc=datetime(2026, 6, 29, 14, 50, tzinfo=UTC),
         )
 
         self.assertIsNotNone(alert)
         assert alert is not None
         self.assertEqual(alert.pressure, "buying_pressure")
+        self.assertEqual(alert.alert_type, "unusual_activity")
         self.assertGreater(alert.traded_value, 1_000_000)
         self.assertIn("unusual buying pressure", alert.message)
 
@@ -76,10 +78,61 @@ class RealMarketDiscordAlertsTests(unittest.TestCase):
             volume_spike_multiplier=3.0,
             price_move_threshold_pct=1.5,
             min_window_volume=50_000,
+            sudden_move_threshold_pct=4.0,
             now_utc=datetime(2026, 6, 29, 14, 50, tzinfo=UTC),
         )
 
         self.assertIsNone(alert)
+
+    def test_sudden_price_move_alert_does_not_require_volume_spike(self) -> None:
+        alert = build_real_market_activity_alert(
+            user_id="u1",
+            ticker="NVDA",
+            intraday_df=_intraday_frame(
+                prior_volume=40_000,
+                recent_volume=45_000,
+                recent_prices=[100.0, 101.0, 102.0, 104.0],
+            ),
+            window_minutes=15,
+            large_value_threshold=100_000_000,
+            volume_spike_multiplier=5.0,
+            price_move_threshold_pct=1.5,
+            min_window_volume=1_000_000,
+            sudden_move_threshold_pct=3.0,
+            now_utc=datetime(2026, 6, 29, 14, 50, tzinfo=UTC),
+        )
+
+        self.assertIsNotNone(alert)
+        assert alert is not None
+        self.assertEqual(alert.alert_type, "sudden_price_move")
+        self.assertIn("sharp rise", alert.message)
+
+    def test_chinese_alert_is_traditional_chinese_only(self) -> None:
+        alert = build_real_market_activity_alert(
+            user_id="u1",
+            ticker="TSLA",
+            intraday_df=_intraday_frame(
+                prior_volume=40_000,
+                recent_volume=45_000,
+                recent_prices=[104.0, 102.0, 101.0, 99.0],
+            ),
+            window_minutes=15,
+            large_value_threshold=100_000_000,
+            volume_spike_multiplier=5.0,
+            price_move_threshold_pct=1.5,
+            min_window_volume=1_000_000,
+            sudden_move_threshold_pct=3.0,
+            language="zh",
+            now_utc=datetime(2026, 6, 29, 14, 50, tzinfo=UTC),
+        )
+
+        self.assertIsNotNone(alert)
+        assert alert is not None
+        self.assertIn("市場價格急變警報", alert.message)
+        self.assertIn("急跌", alert.message)
+        self.assertIn("監察時段", alert.message)
+        self.assertNotIn("Sudden market", alert.message)
+        self.assertNotIn("Window", alert.message)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,7 @@ class Settings(BaseModel):
     real_market_large_value_threshold: float = 10_000_000.0
     real_market_volume_spike_multiplier: float = 3.0
     real_market_price_move_threshold_pct: float = 1.5
+    real_market_sudden_move_threshold_pct: float = 10.0
     real_market_min_window_volume: float = 100_000.0
     real_market_alert_ticker_limit: int = 40
     model_feedback_enabled: bool = True
@@ -203,6 +204,10 @@ def get_settings() -> Settings:
         real_market_price_move_threshold_pct=max(
             0.0,
             float(os.getenv("REAL_MARKET_PRICE_MOVE_THRESHOLD_PCT", "1.5")),
+        ),
+        real_market_sudden_move_threshold_pct=max(
+            0.1,
+            float(os.getenv("REAL_MARKET_SUDDEN_MOVE_THRESHOLD_PCT", "10.0")),
         ),
         real_market_min_window_volume=max(
             0.0,
