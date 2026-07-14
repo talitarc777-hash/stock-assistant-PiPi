@@ -17,6 +17,8 @@ from app.services.news_sentiment import build_daily_news_features
 
 logger = logging.getLogger(__name__)
 
+OUTPERFORMANCE_ROUND_TRIP_COST_PCT = 0.10
+
 
 @dataclass(frozen=True)
 class ResearchDatasetArtifact:
@@ -86,6 +88,10 @@ def _add_target_columns(df: pd.DataFrame) -> pd.DataFrame:
     future_close_20d = result["close"].shift(-20)
 
     result["target_5d_return"] = ((future_close_5d / result["close"]) - 1) * 100
+    future_benchmark_return_5d = result["benchmark_return_5d_pct"].shift(-5)
+    result["target_5d_excess_return"] = (
+        result["target_5d_return"] - future_benchmark_return_5d
+    )
 
     target_updown = np.where(
         result["target_5d_return"].isna(),
@@ -93,6 +99,21 @@ def _add_target_columns(df: pd.DataFrame) -> pd.DataFrame:
         np.where(result["target_5d_return"] > 0, 1, 0),
     )
     result["target_5d_updown"] = pd.Series(target_updown, index=result.index, dtype="Int64")
+
+    target_outperform = np.where(
+        result["target_5d_excess_return"].isna(),
+        pd.NA,
+        np.where(
+            result["target_5d_excess_return"] > OUTPERFORMANCE_ROUND_TRIP_COST_PCT,
+            1,
+            0,
+        ),
+    )
+    result["target_5d_outperform"] = pd.Series(
+        target_outperform,
+        index=result.index,
+        dtype="Int64",
+    )
 
     future_20d_return = ((future_close_20d / result["close"]) - 1) * 100
     regime = np.where(

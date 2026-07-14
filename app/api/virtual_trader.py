@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,8 +11,10 @@ from fastapi import APIRouter, HTTPException, Query
 from app.models.live_virtual_trader import (
     LiveTraderRunRequest,
     LiveTraderStatusResponse,
+    LiveTraderSyncResponse,
     LiveTraderTradesResponse,
 )
+from app.services.account_ledger_service import AccountLedgerError, get_account_ledger_service
 from app.services.live_virtual_trader import (
     AUTO_TRADING_MODEL_NAME,
     LiveVirtualTraderError,
@@ -23,10 +26,60 @@ from app.services.trader_scheduler import (
     get_trader_scheduler_service,
 )
 from app.services.virtual_account_cache import clear_user_virtual_account_cache
+from app.services.watchlist_service import get_user_watchlist
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["virtual-trader-live"])
+
+
+@router.get("/virtual-trader/live-sync", response_model=LiveTraderSyncResponse)
+def get_virtual_trader_live_sync(
+    user_id: str = Query(..., min_length=1, max_length=120),
+    recent_trade_limit: int = Query(20, ge=1, le=100),
+    decision_limit: int = Query(100, ge=1, le=200),
+) -> LiveTraderSyncResponse:
+    """Return all frequently refreshed trader data without executing a model."""
+    started = perf_counter()
+    try:
+        status = get_live_virtual_trader_status(
+            user_id=user_id,
+            tickers=None,
+            model_name=AUTO_TRADING_MODEL_NAME,
+            auto_run=False,
+        )
+        recent_trades = get_account_ledger_service().list_recent_trade_events(
+            user_id=user_id,
+            limit=recent_trade_limit,
+        )
+        decisions_payload = list_live_virtual_trader_trades(
+            user_id=user_id,
+            limit=decision_limit,
+            ticker=None,
+        )
+        watchlist, using_system_default, _profile = get_user_watchlist(user_id=user_id)
+        payload = LiveTraderSyncResponse(
+            user_id=user_id,
+            synced_at_utc=datetime.now(UTC).replace(microsecond=0).isoformat(),
+            watchlist=watchlist,
+            using_system_default_watchlist=using_system_default,
+            status=LiveTraderStatusResponse(**status.__dict__),
+            recent_trades=recent_trades,
+            decisions=decisions_payload.get("trades", []),
+        )
+        logger.info(
+            "virtual-trader live-sync user_id=%s decisions=%d recent_trades=%d elapsed_ms=%.1f",
+            user_id,
+            len(payload.decisions),
+            len(payload.recent_trades),
+            (perf_counter() - started) * 1000.0,
+        )
+        return payload
+    except (LiveVirtualTraderError, AccountLedgerError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected live-sync error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
 
 
 @router.get("/virtual-trader/live-status", response_model=LiveTraderStatusResponse)

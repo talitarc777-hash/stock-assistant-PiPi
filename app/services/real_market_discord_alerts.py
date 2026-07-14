@@ -323,6 +323,14 @@ def scan_real_market_activity_alerts(
     alerts: list[RealMarketActivityAlert] = []
     store = get_user_profile_store()
     profile = store.get_or_create_profile(user_id)
+    if not bool(profile.alert_enabled) or str(profile.preferred_delivery_source) != "discord":
+        logger.info(
+            "Real market Discord scan skipped by shared preference user_id=%s enabled=%s delivery=%s",
+            user_id,
+            profile.alert_enabled,
+            profile.preferred_delivery_source,
+        )
+        return []
     language = str(profile.preferred_language or "en")
     for symbol in symbols:
         try:
@@ -345,10 +353,11 @@ def scan_real_market_activity_alerts(
         if alert is None:
             continue
 
-        should_send = store.should_send_alert(
+        rule = f"real_market_{alert.alert_type}_{alert.pressure}"
+        should_send = store.is_alert_state_new(
             alert.user_id,
             alert.ticker,
-            f"real_market_{alert.alert_type}_{alert.pressure}",
+            rule,
             alert.state_key,
         )
         if not should_send:
@@ -371,6 +380,12 @@ def scan_real_market_activity_alerts(
 
         try:
             send_discord_webhook_message(settings.discord_webhook_url, alert.message)
+            store.record_alert_dispatched(
+                alert.user_id,
+                alert.ticker,
+                rule,
+                alert.state_key,
+            )
             logger.info(
                 "Real market Discord alert sent user_id=%s ticker=%s pressure=%s value=%.2f",
                 alert.user_id,

@@ -18,6 +18,9 @@ class ModelRegistryItemResponse(BaseModel):
     model_name: str
     status: str
     is_validated: bool
+    stored_is_validated: bool = False
+    validation_gate_version: int = 0
+    validation_evidence_current: bool = False
     validation_score: float | None = None
     stale_after_days: int
     is_stale: bool

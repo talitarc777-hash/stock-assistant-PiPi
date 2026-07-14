@@ -18,6 +18,7 @@ class ParsedIntent:
     intent: str | None
     language: str | None = None
     compact_mode: bool | None = None
+    amount: float | None = None
     tickers: list[str] = field(default_factory=list)
     needs_help_hint: bool = False
     message: str | None = None
@@ -135,6 +136,36 @@ def parse_natural_language_message(message_text: str) -> ParsedIntent:
     if not text:
         return ParsedIntent(intent=None)
 
+    amount_match = re.search(r"\$?([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text)
+    amount = float(amount_match.group(1).replace(",", "")) if amount_match else None
+    if _contains_any(
+        text,
+        ["set monthly contribution", "set my monthly contribution", "monthly deposit"],
+    ):
+        if amount is not None:
+            return ParsedIntent(intent="set_monthly_virtual_cash", amount=amount)
+        return ParsedIntent(
+            intent=None,
+            needs_help_hint=True,
+            message="Please include an amount, for example `set monthly contribution to 500`.",
+        )
+    if text.startswith(("deposit ", "add virtual cash ", "add cash ")):
+        if amount is not None:
+            return ParsedIntent(intent="virtual_cash_deposit", amount=amount)
+        return ParsedIntent(
+            intent=None,
+            needs_help_hint=True,
+            message="Please include an amount, for example `deposit 1000`.",
+        )
+    if text.startswith(("withdraw ", "withdraw virtual cash ")):
+        if amount is not None:
+            return ParsedIntent(intent="virtual_cash_withdraw", amount=amount)
+        return ParsedIntent(
+            intent=None,
+            needs_help_hint=True,
+            message="Please include an amount, for example `withdraw 100`.",
+        )
+
     if _contains_any(
         text,
         ["show my settings", "what are my settings", "what language am i using", "show settings", "my settings"],
@@ -208,6 +239,23 @@ def parse_natural_language_message(message_text: str) -> ParsedIntent:
         if ticker_match.tickers:
             return ParsedIntent(intent="forecast", tickers=ticker_match.tickers[:1])
         return ParsedIntent(intent=None, needs_help_hint=True, message=_ticker_help("forecast"))
+
+    if _contains_any(
+        text,
+        [
+            "shadow model status",
+            "forward model status",
+            "model promotion status",
+            "live model evidence",
+            "is the model ready",
+        ],
+    ):
+        ticker_match = extract_tickers_from_text(text)
+        if ticker_match.ambiguous:
+            return ParsedIntent(intent=None, needs_help_hint=True, message=ticker_match.message)
+        if ticker_match.tickers:
+            return ParsedIntent(intent="benchmark_shadow", tickers=ticker_match.tickers[:1])
+        return ParsedIntent(intent=None, needs_help_hint=True, message=_ticker_help("model_status"))
 
     if _contains_any(
         text,

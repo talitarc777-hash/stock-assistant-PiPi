@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.api.analyze import router as analyze_router
 from app.api.backtest import router as backtest_router
 from app.api.dashboard import router as dashboard_router
+from app.api.discord_link import router as discord_link_router
 from app.api.forecast import router as forecast_router
 from app.api.market_data import router as market_data_router
 from app.api.model_lifecycle import router as model_lifecycle_router
@@ -111,6 +112,7 @@ app.include_router(market_data_router)
 app.include_router(analyze_router)
 app.include_router(backtest_router)
 app.include_router(dashboard_router)
+app.include_router(discord_link_router)
 app.include_router(forecast_router)
 app.include_router(paper_router)
 app.include_router(models_router)

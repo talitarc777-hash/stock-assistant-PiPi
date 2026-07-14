@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchAnalyze, fetchChartData, fetchForecast, fetchWatchlistAnalyze } from "./api";
 import LineChart from "./components/LineChart";
@@ -28,6 +28,7 @@ const GLOSSARY_PATH = "/glossary";
 const MODEL_LIFECYCLE_PATH = "/model-lifecycle";
 const SETTINGS_PATH = "/settings";
 const VIRTUAL_TRADER_PATH = "/virtual-trader";
+const SHARED_PROFILE_REFRESH_MS = 5000;
 const LANGUAGE_STORAGE_KEY = "stock-assistant-language-mode";
 
 const ZH = {
@@ -588,6 +589,7 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [currentWatchlist, setCurrentWatchlist] = useState([]);
   const [profileError, setProfileError] = useState("");
+  const sharedProfileRefreshInFlight = useRef(false);
 
   useEffect(() => {
     const onPopState = () => setRoutePath(normalizePath(window.location.pathname));
@@ -603,23 +605,54 @@ export default function App() {
     setStoredProfileId(profileId);
   }, [profileId]);
 
-  async function loadSharedProfile(nextProfileId = profileId) {
-    setProfileError("");
+  async function loadSharedProfile(
+    nextProfileId = profileId,
+    { quiet = false, source = "dashboard" } = {}
+  ) {
+    if (!quiet) setProfileError("");
     try {
       const [nextProfile, watchlistResponse] = await Promise.all([
-        fetchUserProfile(nextProfileId),
+        fetchUserProfile(nextProfileId, source),
         fetchUserWatchlist(nextProfileId),
       ]);
-      setProfile(nextProfile);
-      setCurrentWatchlist(watchlistResponse.watchlist || []);
+      setProfile((current) => (
+        current?.updated_at === nextProfile.updated_at ? current : nextProfile
+      ));
+      const nextWatchlist = watchlistResponse.watchlist || [];
+      setCurrentWatchlist((current) => (
+        current.join(",") === nextWatchlist.join(",") ? current : nextWatchlist
+      ));
       setLanguageMode(profileLanguageToMode(nextProfile.preferred_language));
     } catch (requestError) {
-      setProfileError(requestError.message || "Failed to load shared profile.");
+      if (!quiet) {
+        setProfileError(requestError.message || "Failed to load shared profile.");
+      }
     }
   }
 
   useEffect(() => {
     loadSharedProfile(profileId);
+  }, [profileId]);
+
+  useEffect(() => {
+    if (!profileId) return undefined;
+    const refreshWhenVisible = async () => {
+      if (document.hidden || sharedProfileRefreshInFlight.current) return;
+      sharedProfileRefreshInFlight.current = true;
+      try {
+        await loadSharedProfile(profileId, { quiet: true, source: null });
+      } finally {
+        sharedProfileRefreshInFlight.current = false;
+      }
+    };
+    const timer = window.setInterval(refreshWhenVisible, SHARED_PROFILE_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+    };
   }, [profileId]);
 
   async function handleProfileIdChange(nextProfileId) {
@@ -715,6 +748,7 @@ export default function App() {
           languageMode={languageMode}
           currentWatchlist={currentWatchlist}
           profileId={profileId}
+          onWatchlistSynced={setCurrentWatchlist}
         />
       ) : (
         <DashboardPage

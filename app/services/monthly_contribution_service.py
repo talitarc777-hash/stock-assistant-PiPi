@@ -12,7 +12,7 @@ from app.models.monthly_contribution import (
     MonthlyContributionInputResponse,
     MonthlyContributionRecordResponse,
 )
-from app.services.user_profile_service import get_user_profile_store
+from app.services.user_profile_service import UserProfileStore, get_user_profile_store
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,11 @@ class MonthlyContributionStore:
 
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = Path(db_path or get_settings().profile_db_path)
+        self.profile_store = (
+            UserProfileStore(db_path=str(self.db_path))
+            if db_path is not None
+            else get_user_profile_store()
+        )
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -87,6 +92,7 @@ class MonthlyContributionStore:
                     month TEXT NOT NULL,
                     amount REAL NOT NULL,
                     locked INTEGER NOT NULL DEFAULT 0,
+                    manually_edited INTEGER NOT NULL DEFAULT 0,
                     confirmed_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -116,6 +122,10 @@ class MonthlyContributionStore:
                 )
             if "confirmed_at" not in columns:
                 connection.execute("ALTER TABLE monthly_contributions ADD COLUMN confirmed_at TEXT")
+            if "manually_edited" not in columns:
+                connection.execute(
+                    "ALTER TABLE monthly_contributions ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0"
+                )
             connection.commit()
 
     @staticmethod
@@ -162,7 +172,7 @@ class MonthlyContributionStore:
         clean_user_id = str(user_id).strip()
         if not clean_user_id:
             raise ValueError("user_id is required.")
-        get_user_profile_store().get_or_create_profile(clean_user_id)
+        self.profile_store.get_or_create_profile(clean_user_id)
         now = _utc_now()
         current_month = _current_month_key()
         with self._connect() as connection:
@@ -206,7 +216,7 @@ class MonthlyContributionStore:
         if numeric_amount < 0:
             raise ValueError("amount must be non-negative.")
 
-        get_user_profile_store().get_or_create_profile(clean_user_id)
+        self.profile_store.get_or_create_profile(clean_user_id)
         now = _utc_now()
         current_month = _current_month_key()
         next_month = _next_month_key(current_month)
@@ -288,7 +298,7 @@ class MonthlyContributionStore:
         clean_user_id = str(user_id).strip()
         if not clean_user_id:
             raise ValueError("user_id is required.")
-        get_user_profile_store().get_or_create_profile(clean_user_id)
+        self.profile_store.get_or_create_profile(clean_user_id)
 
         all_months = _month_range(START_MONTH, _current_month_key())
         now = _utc_now()
@@ -356,7 +366,7 @@ class MonthlyContributionStore:
             connection.execute(
                 """
                 UPDATE monthly_contributions
-                SET amount = ?, updated_at = ?
+                SET amount = ?, manually_edited = 1, updated_at = ?
                 WHERE user_id = ? AND month = ?
                 """,
                 (numeric_amount, now, clean_user_id, clean_month),
@@ -443,7 +453,7 @@ class MonthlyContributionStore:
         clean_user_id = str(user_id).strip()
         if not clean_user_id:
             raise ValueError("user_id is required.")
-        get_user_profile_store().get_or_create_profile(clean_user_id)
+        self.profile_store.get_or_create_profile(clean_user_id)
 
         current_month = _current_month_key()
         month_map: dict[str, float] = {}
@@ -452,13 +462,16 @@ class MonthlyContributionStore:
             month_map[month] = float(recurring.amount) if month >= recurring.effective_from_month else 0.0
 
         with self._connect() as connection:
-            # Legacy locked monthly plans (old workflow).
+            # Legacy monthly plans (old workflow). Generated placeholder rows
+            # have identical create/update timestamps; explicitly edited rows
+            # must override the recurring input even when they were not locked.
             if self._table_exists(connection, "monthly_contributions"):
                 locked_rows = connection.execute(
                     """
                     SELECT month, amount
                     FROM monthly_contributions
-                    WHERE user_id = ? AND locked = 1
+                    WHERE user_id = ?
+                      AND (locked = 1 OR manually_edited = 1)
                     """,
                     (clean_user_id,),
                 ).fetchall()

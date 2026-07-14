@@ -71,6 +71,10 @@ class LiveTraderAccountResponse(BaseModel):
     total_equity: float
     unrealized_pnl: float | None = None
     net_deposits: float | None = None
+    portfolio_risk_level: str = "unavailable"
+    performance_vs_contributions_pct: float | None = None
+    buying_paused: bool = False
+    position_size_multiplier: float = 1.0
 
 
 class LiveTraderEquityPointResponse(BaseModel):
@@ -102,3 +106,15 @@ class LiveTraderTradesResponse(BaseModel):
     count: int
     trades: list[LiveTraderDecisionResponse]
     contribution_application_history: list[dict]
+
+
+class LiveTraderSyncResponse(BaseModel):
+    """One lightweight, read-only snapshot used for web/Discord synchronization."""
+
+    user_id: str
+    synced_at_utc: str
+    watchlist: list[str] = Field(default_factory=list)
+    using_system_default_watchlist: bool = False
+    status: LiveTraderStatusResponse
+    recent_trades: list[dict] = Field(default_factory=list)
+    decisions: list[LiveTraderDecisionResponse] = Field(default_factory=list)

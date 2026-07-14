@@ -21,13 +21,37 @@ model and trading date.
 
 ## Promotion rules
 
-Walk-forward validation remains the main promotion evidence.
+Purged expanding-window validation remains the main promotion evidence. For the
+five-day trading target, each fold leaves a five-row gap between its training and
+test windows so a training label cannot use a future price from the test window.
+Legacy validation flags are not accepted as current promotion evidence.
+Five-day return regressors must also declare the current scale-independent
+feature schema. Raw price-level regressors are legacy evidence because price
+trends can produce unstable extrapolation even when directional results appear
+plausible.
+Regression candidates also calibrate an abstention threshold on an inner,
+time-ordered holdout. Predictions smaller than that known-in-advance uncertainty
+are treated as `no_action`, rather than being counted as trades after the fact.
+The evaluation then applies the same fixed market-regime policy used by the live
+trader. Caution regimes use half-size exposure; stress regimes block new
+positions. Every regime input comes from the prediction date, never its outcome.
+For a schema-marked pooled GLOBAL model, live inference applies the same
+scale-independent feature transformation used during training. Legacy global
+models retain their original raw representation for backward compatibility.
 
 - Before the minimum live sample count, feedback cannot change promotion score.
 - After the minimum sample count, live feedback receives at most 35% weight.
 - Weak live feedback can trigger retraining.
 - Runtime model candidates are ranked using the same blended score.
 - A candidate must still meet the minimum production score before promotion.
+- Direction accuracy must beat the period's naive majority direction, remain
+  stable across folds, and retain its edge across non-overlapping five-day paths.
+- Validation gate version 8 also requires at least 55% balanced direction
+  accuracy and 20% recall for the harder class. This prevents a rare-event
+  target from looking strong merely because the model usually predicts the
+  common outcome.
+- Simulated returns must remain positive after configured execution costs across
+  enough non-overlapping paths without breaching the drawdown limit.
 
 This is a champion/challenger-style safeguard. A small number of lucky outcomes
 cannot immediately replace the validated model.

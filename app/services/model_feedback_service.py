@@ -18,6 +18,7 @@ from app.services.market_data import get_price_history
 
 logger = logging.getLogger(__name__)
 PriceLoader = Callable[[str, str], pd.DataFrame]
+BENCHMARK_SHADOW_ROUND_TRIP_COST_PCT = 0.10
 
 
 def _utc_now_iso() -> str:
@@ -139,7 +140,136 @@ class ModelFeedbackService:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS benchmark_shadow_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    observation_key TEXT NOT NULL UNIQUE,
+                    ticker TEXT NOT NULL,
+                    benchmark TEXT NOT NULL,
+                    decision_date TEXT NOT NULL,
+                    recorded_at_utc TEXT NOT NULL,
+                    horizon_days INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_period TEXT NOT NULL,
+                    prediction INTEGER NOT NULL,
+                    outperform_probability REAL,
+                    decision_price REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    evaluated_at_utc TEXT,
+                    outcome_date TEXT,
+                    stock_return_pct REAL,
+                    benchmark_return_pct REAL,
+                    excess_return_pct REAL,
+                    active_net_return_pct REAL,
+                    direction_correct INTEGER,
+                    profitable_after_cost INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_benchmark_shadow_lookup
+                ON benchmark_shadow_feedback(
+                    ticker, model_period, model_name, status, decision_date
+                )
+                """
+            )
             conn.commit()
+
+    def record_benchmark_shadow(
+        self,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Record one non-executing benchmark-relative observation per date."""
+        if not get_settings().model_feedback_enabled:
+            return False
+        metadata = dict(payload.get("metadata") or {})
+        shadow = dict(metadata.get("benchmark_shadow") or {})
+        if shadow.get("status") != "available" or shadow.get("execution_enabled"):
+            return False
+        ticker = str(payload.get("ticker") or "").strip().upper()
+        benchmark = str(shadow.get("benchmark") or "VOO").strip().upper()
+        model_name = str(shadow.get("model_name") or "").strip().lower()
+        model_period = str(shadow.get("model_period") or "").strip()
+        prediction = int(shadow.get("prediction"))
+        price = _safe_float(payload.get("price"))
+        if (
+            not ticker
+            or ticker == benchmark
+            or not model_name
+            or not model_period
+            or prediction not in {0, 1}
+            or price is None
+            or price <= 0
+        ):
+            return False
+        decision_date = _decision_date(payload)
+        observation_key = "|".join(
+            (ticker, benchmark, model_period, model_name, decision_date)
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO benchmark_shadow_feedback (
+                    observation_key, ticker, benchmark, decision_date,
+                    recorded_at_utc, horizon_days, model_name, model_period,
+                    prediction, outperform_probability, decision_price
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    observation_key,
+                    ticker,
+                    benchmark,
+                    decision_date,
+                    _utc_now_iso(),
+                    int(get_settings().model_feedback_horizon_days),
+                    model_name,
+                    model_period,
+                    prediction,
+                    _safe_float(shadow.get("outperform_probability")),
+                    price,
+                ),
+            )
+            conn.commit()
+        return bool(cursor.rowcount)
+
+    def list_benchmark_shadow_feedback(
+        self,
+        *,
+        ticker: str | None = None,
+        model_period: str | None = None,
+        model_name: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(str(ticker).strip().upper())
+        if model_period:
+            clauses.append("model_period = ?")
+            params.append(str(model_period).strip())
+        if model_name:
+            clauses.append("model_name = ?")
+            params.append(str(model_name).strip().lower())
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status).strip().lower())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM benchmark_shadow_feedback
+                {where}
+                ORDER BY decision_date DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def record_decision(
         self,
@@ -377,10 +507,208 @@ class ModelFeedbackService:
                 )
 
         remaining = len(self.list_feedback(status="pending", limit=10000))
+        shadow_result = self.evaluate_pending_benchmark_shadows(
+            price_loader=price_loader,
+            limit=limit,
+        )
         return {
             "evaluated": evaluated,
             "pending": remaining,
             "errors": errors[:20],
+            "shadow_evaluated": shadow_result["evaluated"],
+            "shadow_pending": shadow_result["pending"],
+            "shadow_errors": shadow_result["errors"],
+        }
+
+    def evaluate_pending_benchmark_shadows(
+        self,
+        *,
+        price_loader: PriceLoader = get_price_history,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Settle shadow observations only after the future row exists."""
+        pending = self.list_benchmark_shadow_feedback(
+            status="pending",
+            limit=limit,
+        )
+        history_cache: dict[str, pd.DataFrame] = {}
+        evaluated = 0
+        errors: list[str] = []
+        for row in pending:
+            ticker = str(row["ticker"])
+            benchmark = str(row["benchmark"])
+            try:
+                if ticker not in history_cache:
+                    history_cache[ticker] = price_loader(ticker, "3mo")
+                if benchmark not in history_cache:
+                    history_cache[benchmark] = price_loader(benchmark, "3mo")
+                ticker_prices = _horizon_prices(
+                    history_cache[ticker],
+                    str(row["decision_date"]),
+                    int(row["horizon_days"]),
+                )
+                benchmark_prices = _horizon_prices(
+                    history_cache[benchmark],
+                    str(row["decision_date"]),
+                    int(row["horizon_days"]),
+                )
+                if ticker_prices is None or benchmark_prices is None:
+                    continue
+                outcome_date, stock_start, stock_end = ticker_prices
+                _, benchmark_start, benchmark_end = benchmark_prices
+                stock_return = (stock_end / stock_start - 1.0) * 100.0
+                benchmark_return = (
+                    benchmark_end / benchmark_start - 1.0
+                ) * 100.0
+                excess_return = stock_return - benchmark_return
+                prediction = int(row["prediction"])
+                actual_outperform = (
+                    excess_return > BENCHMARK_SHADOW_ROUND_TRIP_COST_PCT
+                )
+                direction_correct = prediction == int(actual_outperform)
+                active_net_return = (
+                    stock_return - BENCHMARK_SHADOW_ROUND_TRIP_COST_PCT
+                    if prediction == 1
+                    else None
+                )
+                profitable = (
+                    int(active_net_return > 0)
+                    if active_net_return is not None
+                    else None
+                )
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE benchmark_shadow_feedback
+                        SET status = 'evaluated', evaluated_at_utc = ?,
+                            outcome_date = ?, stock_return_pct = ?,
+                            benchmark_return_pct = ?, excess_return_pct = ?,
+                            active_net_return_pct = ?, direction_correct = ?,
+                            profitable_after_cost = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (
+                            _utc_now_iso(),
+                            outcome_date,
+                            stock_return,
+                            benchmark_return,
+                            excess_return,
+                            active_net_return,
+                            1 if direction_correct else 0,
+                            profitable,
+                            int(row["id"]),
+                        ),
+                    )
+                    conn.commit()
+                evaluated += 1
+            except Exception as exc:  # pragma: no cover - provider guard
+                errors.append(f"{ticker}:{exc}")
+                logger.warning(
+                    "Benchmark shadow evaluation skipped ticker=%s error=%s",
+                    ticker,
+                    exc,
+                )
+        remaining = len(
+            self.list_benchmark_shadow_feedback(status="pending", limit=10000)
+        )
+        return {
+            "evaluated": evaluated,
+            "pending": remaining,
+            "errors": errors[:20],
+        }
+
+    def get_benchmark_shadow_summary(
+        self,
+        *,
+        ticker: str,
+        model_period: str,
+        model_name: str,
+    ) -> dict[str, Any]:
+        """Return genuinely forward benchmark-relative evidence."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT prediction, direction_correct, excess_return_pct,
+                       active_net_return_pct, profitable_after_cost
+                FROM benchmark_shadow_feedback
+                WHERE ticker = ? AND model_period = ? AND model_name = ?
+                  AND status = 'evaluated'
+                ORDER BY decision_date DESC
+                LIMIT 120
+                """,
+                (
+                    str(ticker).strip().upper(),
+                    str(model_period),
+                    str(model_name).strip().lower(),
+                ),
+            ).fetchall()
+            observation = conn.execute(
+                """
+                SELECT COUNT(*) AS total_count,
+                       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                FROM benchmark_shadow_feedback
+                WHERE ticker = ? AND model_period = ? AND model_name = ?
+                """,
+                (str(ticker).strip().upper(), str(model_period), str(model_name).strip().lower()),
+            ).fetchone()
+            latest = conn.execute(
+                """
+                SELECT decision_date, status, outcome_date
+                FROM benchmark_shadow_feedback
+                WHERE ticker = ? AND model_period = ? AND model_name = ?
+                ORDER BY decision_date DESC, id DESC LIMIT 1
+                """,
+                (str(ticker).strip().upper(), str(model_period), str(model_name).strip().lower()),
+            ).fetchone()
+            next_pending = conn.execute(
+                """
+                SELECT decision_date, horizon_days
+                FROM benchmark_shadow_feedback
+                WHERE ticker = ? AND model_period = ? AND model_name = ?
+                  AND status = 'pending'
+                ORDER BY decision_date ASC, id ASC LIMIT 1
+                """,
+                (str(ticker).strip().upper(), str(model_period), str(model_name).strip().lower()),
+            ).fetchone()
+        active = [row for row in rows if int(row["prediction"]) == 1]
+
+        def average(items: list[sqlite3.Row], column: str) -> float | None:
+            values = [float(row[column]) for row in items if row[column] is not None]
+            return sum(values) / len(values) if values else None
+
+        estimated_maturity_date = None
+        if next_pending:
+            try:
+                estimated_maturity_date = str(
+                    (
+                        pd.Timestamp(next_pending["decision_date"])
+                        + pd.offsets.BDay(int(next_pending["horizon_days"] or 5))
+                    ).date()
+                )
+            except (TypeError, ValueError):
+                estimated_maturity_date = None
+
+        return {
+            "sample_count": len(rows),
+            "pending_count": int(observation["pending_count"] or 0),
+            "total_observation_count": int(observation["total_count"] or 0),
+            "latest_observation_date": latest["decision_date"] if latest else None,
+            "latest_observation_status": latest["status"] if latest else None,
+            "latest_outcome_date": latest["outcome_date"] if latest else None,
+            "next_pending_observation_date": next_pending["decision_date"] if next_pending else None,
+            "estimated_next_maturity_date": estimated_maturity_date,
+            "maturity_horizon_trading_days": int(next_pending["horizon_days"] or 5) if next_pending else None,
+            "active_signal_count": len(active),
+            "direction_accuracy": average(rows, "direction_correct"),
+            "average_excess_return_pct": average(rows, "excess_return_pct"),
+            "average_active_net_return_pct": average(
+                active,
+                "active_net_return_pct",
+            ),
+            "active_profitable_rate": average(active, "profitable_after_cost"),
+            "minimum_samples_for_promotion": int(
+                get_settings().model_feedback_min_samples
+            ),
         }
 
     def get_model_summary(

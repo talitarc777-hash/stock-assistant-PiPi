@@ -3,7 +3,11 @@ import React, { useEffect, useState } from "react";
 import WatchlistManager from "../components/WatchlistManager";
 import { labelByMode } from "../i18n/bilingualUiLabels";
 import {
+  createDiscordLinkCode,
+  fetchDiscordReadiness,
+  fetchDiscordLinkStatus,
   fetchUserAlertSettings,
+  unlinkDiscordProfile,
   updateUserAlertSettings,
   updateUserProfileSettings,
 } from "../services/userProfileApi";
@@ -60,6 +64,11 @@ export default function SettingsPage({
   const [remoteLoadError, setRemoteLoadError] = useState("");
   const [remoteRefreshToken, setRemoteRefreshToken] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
+  const [discordLink, setDiscordLink] = useState(null);
+  const [discordReadiness, setDiscordReadiness] = useState(null);
+  const [discordCode, setDiscordCode] = useState(null);
+  const [discordLinkBusy, setDiscordLinkBusy] = useState(false);
+  const [discordLinkError, setDiscordLinkError] = useState("");
 
   useEffect(() => {
     setLocalProfileId(profileId);
@@ -99,6 +108,57 @@ export default function SettingsPage({
       isActive = false;
     };
   }, [profileId]);
+
+  useEffect(() => {
+    let isActive = true;
+    async function loadDiscordLink() {
+      setDiscordLinkError("");
+      setDiscordCode(null);
+      const [linkResult, readinessResult] = await Promise.allSettled([
+        fetchDiscordLinkStatus(profileId),
+        fetchDiscordReadiness(),
+      ]);
+      if (!isActive) return;
+      if (linkResult.status === "fulfilled") {
+        setDiscordLink(linkResult.value);
+      } else {
+        setDiscordLinkError(linkResult.reason?.message || "Discord link status could not be loaded.");
+      }
+      if (readinessResult.status === "fulfilled") {
+        setDiscordReadiness(readinessResult.value);
+      }
+    }
+    if (profileId) loadDiscordLink();
+    return () => {
+      isActive = false;
+    };
+  }, [profileId]);
+
+  async function handleCreateDiscordCode() {
+    setDiscordLinkBusy(true);
+    setDiscordLinkError("");
+    try {
+      setDiscordCode(await createDiscordLinkCode(profileId));
+    } catch (requestError) {
+      setDiscordLinkError(requestError.message || "Could not create a Discord link code.");
+    } finally {
+      setDiscordLinkBusy(false);
+    }
+  }
+
+  async function handleUnlinkDiscord() {
+    setDiscordLinkBusy(true);
+    setDiscordLinkError("");
+    try {
+      const status = await unlinkDiscordProfile(profileId);
+      setDiscordLink(status);
+      setDiscordCode(null);
+    } catch (requestError) {
+      setDiscordLinkError(requestError.message || "Could not unlink Discord.");
+    } finally {
+      setDiscordLinkBusy(false);
+    }
+  }
 
   async function handleSave(event) {
     event.preventDefault();
@@ -248,6 +308,97 @@ export default function SettingsPage({
         </form>
         {message ? <p className="success-box">{message}</p> : null}
         {error ? <p className="error-box">{error}</p> : null}
+      </section>
+
+      <section className="panel discord-link-card">
+        <div className="discord-link-heading">
+          <div>
+            <h2>{labelByMode(languageMode, "Connect Discord", "連接 Discord")}</h2>
+            <p className="helper-text">
+              {labelByMode(
+                languageMode,
+                "Link once so Discord commands use this web profile's virtual account, watchlist, settings, and alerts.",
+                "連接一次後，Discord 指令會使用此網頁帳戶的模擬交易帳戶、觀察名單、設定及提示。"
+              )}
+            </p>
+          </div>
+          <span className={`discord-link-status ${discordLink?.linked ? "linked" : ""}`}>
+            {discordLink?.linked
+              ? labelByMode(languageMode, "Connected", "已連接")
+              : labelByMode(languageMode, "Not connected", "未連接")}
+          </span>
+        </div>
+
+        {discordReadiness ? (
+          <div className={discordReadiness.fully_configured ? "success-box" : "warning-box"} role="status">
+            <strong>
+              {discordReadiness.fully_configured
+                ? labelByMode(languageMode, "Discord service is ready", "Discord 服務已準備就緒")
+                : labelByMode(languageMode, "Discord service needs administrator setup", "Discord 服務需要管理員設定")}
+            </strong>
+            <p>
+              {labelByMode(languageMode, "Bot commands", "機械人指令")}: {discordReadiness.bot_commands_configured
+                ? labelByMode(languageMode, "ready", "已準備")
+                : labelByMode(languageMode, "not configured", "尚未設定")}
+              {" · "}
+              {labelByMode(languageMode, "Automatic alerts", "自動提示")}: {discordReadiness.proactive_alerts_configured
+                ? labelByMode(languageMode, "ready", "已準備")
+                : labelByMode(languageMode, "not configured", "尚未設定")}
+            </p>
+            {!discordReadiness.fully_configured ? (
+              <small>
+                {labelByMode(
+                  languageMode,
+                  `Administrator: add ${discordReadiness.missing_environment_variables.join(" and ")} to the server's private .env file, then restart the affected service. Never paste these secrets into this page or Discord chat.`,
+                  `管理員：請在伺服器的私人 .env 檔案加入 ${discordReadiness.missing_environment_variables.join(" 及 ")}，然後重新啟動相關服務。切勿將密鑰貼在此頁或 Discord 對話。`
+                )}
+              </small>
+            ) : (
+              <small>{labelByMode(languageMode, "You can now link an account and verify shared data with !syncstatus.", "現在可以連接帳戶，並使用 !syncstatus 核對共享資料。")}</small>
+            )}
+          </div>
+        ) : null}
+
+        {discordLink?.linked ? (
+          <>
+            <p>
+              {labelByMode(languageMode, "Discord account", "Discord 帳戶")}:{" "}
+              <strong>{discordLink.discord_display_name || discordLink.discord_user_id}</strong>
+            </p>
+            <p className="helper-text">
+              {labelByMode(
+                languageMode,
+                "Verify the shared web data anytime in Discord with !syncstatus.",
+                "可隨時在 Discord 輸入 !syncstatus，核對網頁共享資料。"
+              )}
+            </p>
+            <button type="button" className="secondary-button" onClick={handleUnlinkDiscord} disabled={discordLinkBusy}>
+              {labelByMode(languageMode, "Disconnect Discord", "中斷 Discord 連接")}
+            </button>
+          </>
+        ) : (
+          <>
+            <ol className="discord-link-steps">
+              <li>{labelByMode(languageMode, "Generate a private one-time code below.", "在下方產生私人一次性代碼。")}</li>
+              <li>{labelByMode(languageMode, "Send the shown command to the Discord bot within 10 minutes.", "在 10 分鐘內將顯示的指令傳送給 Discord 機械人。")}</li>
+              <li>{labelByMode(languageMode, "Refresh this page to confirm the connection.", "重新載入此頁以確認連接。")}</li>
+            </ol>
+            <button type="button" onClick={handleCreateDiscordCode} disabled={discordLinkBusy}>
+              {discordLinkBusy
+                ? labelByMode(languageMode, "Generating...", "產生中...")
+                : labelByMode(languageMode, "Generate link code", "產生連接代碼")}
+            </button>
+          </>
+        )}
+
+        {discordCode ? (
+          <div className="discord-link-command" role="status">
+            <span>{labelByMode(languageMode, "Send this command privately to the bot:", "將此指令私下傳送給機械人：")}</span>
+            <code>!link {discordCode.code}</code>
+            <small>{labelByMode(languageMode, "Expires in 10 minutes and works once.", "代碼在 10 分鐘後失效，而且只可使用一次。")}</small>
+          </div>
+        ) : null}
+        {discordLinkError ? <p className="error-box">{discordLinkError}</p> : null}
       </section>
 
       <WatchlistManager

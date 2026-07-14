@@ -17,6 +17,7 @@ from app.services.model_lifecycle_service import (
     DEFAULT_PERIOD,
     DEFAULT_TARGET_NAME,
     ModelLifecycleError,
+    OUTPERFORMANCE_TARGET_NAME,
     get_model_lifecycle_service,
 )
 from app.services.model_feedback_service import get_model_feedback_service
@@ -226,6 +227,75 @@ class ModelLifecycleSchedulerService:
         parsed = _to_utc(datetime.fromisoformat(last))
         return (now_utc - parsed).total_seconds() >= 8 * 3600
 
+    def _collect_benchmark_shadows(
+        self,
+        *,
+        lifecycle,
+        now_et: datetime,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Collect each eligible shadow candidate once after a market close."""
+        day_key = now_et.date().isoformat()
+        if not force and (
+            not _is_business_day(now_et.date())
+            or now_et.time() < _DAILY_AFTER_CLOSE
+            or lifecycle.get_state("shadow_collection_done_key") == day_key
+        ):
+            return {"attempted": 0, "recorded": 0, "errors": [], "skipped": True}
+
+        # Lazy import avoids coupling model-training scheduler startup to the
+        # live account/trader runtime. This collector never mutates an account.
+        from app.services.live_virtual_trader import (  # pylint: disable=import-outside-toplevel
+            collect_benchmark_shadow_observation,
+        )
+
+        rows = lifecycle.list_registry(
+            target_name=OUTPERFORMANCE_TARGET_NAME,
+            limit=200,
+        )
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            ticker = str(row.get("ticker") or "").strip().upper()
+            if (
+                not ticker
+                or ticker == "GLOBAL"
+                or ticker in seen
+                or row.get("status") not in {"candidate", "production"}
+                or not bool(row.get("is_validated"))
+            ):
+                continue
+            seen.add(ticker)
+            candidates.append(ticker)
+
+        recorded = 0
+        errors: list[str] = []
+        results: list[dict[str, Any]] = []
+        for ticker in candidates:
+            try:
+                result = collect_benchmark_shadow_observation(
+                    ticker=ticker,
+                    benchmark="VOO",
+                )
+                results.append(result)
+                recorded += int(bool(result.get("recorded")))
+            except Exception as exc:  # pragma: no cover - provider guard
+                errors.append(f"{ticker}:{exc}")
+                logger.warning(
+                    "Scheduled benchmark shadow collection failed ticker=%s error=%s",
+                    ticker,
+                    exc,
+                )
+        if not errors:
+            lifecycle.set_state("shadow_collection_done_key", day_key)
+        return {
+            "attempted": len(candidates),
+            "recorded": recorded,
+            "errors": errors[:20],
+            "results": results,
+            "skipped": False,
+        }
+
     def run_cycle(
         self,
         *,
@@ -246,10 +316,19 @@ class ModelLifecycleSchedulerService:
 
         try:
             lifecycle.sync_registry_from_saved_artifacts(limit=400)
+            now_utc = datetime.now(UTC)
+            now_et = now_utc.astimezone(_EASTERN)
+            shadow_collection = self._collect_benchmark_shadows(
+                lifecycle=lifecycle,
+                now_et=now_et,
+            )
             feedback_result = (
                 get_model_feedback_service().evaluate_pending(limit=300)
             )
-            if int(feedback_result.get("evaluated") or 0) > 0:
+            if (
+                int(feedback_result.get("evaluated") or 0) > 0
+                or int(feedback_result.get("shadow_evaluated") or 0) > 0
+            ):
                 refresh_result = lifecycle.refresh_feedback_scores(limit=400)
                 logger.info(
                     "Model feedback settled evaluated=%d pending=%d "
@@ -259,8 +338,13 @@ class ModelLifecycleSchedulerService:
                     int(refresh_result.get("updated") or 0),
                     int(refresh_result.get("promoted") or 0),
                 )
-            now_utc = datetime.now(UTC)
-            now_et = now_utc.astimezone(_EASTERN)
+            if int(shadow_collection.get("attempted") or 0) > 0:
+                logger.info(
+                    "Benchmark shadow collection attempted=%d recorded=%d errors=%d",
+                    int(shadow_collection.get("attempted") or 0),
+                    int(shadow_collection.get("recorded") or 0),
+                    len(shadow_collection.get("errors") or []),
+                )
             due = self._due_workflow(now_et)
 
             if due:
@@ -322,6 +406,11 @@ class ModelLifecycleSchedulerService:
             self._running = True
         try:
             lifecycle.sync_registry_from_saved_artifacts(limit=400)
+            self._collect_benchmark_shadows(
+                lifecycle=lifecycle,
+                now_et=datetime.now(UTC).astimezone(_EASTERN),
+                force=True,
+            )
             get_model_feedback_service().evaluate_pending(limit=300)
             lifecycle.refresh_feedback_scores(limit=400)
             lifecycle.run_training_workflow(

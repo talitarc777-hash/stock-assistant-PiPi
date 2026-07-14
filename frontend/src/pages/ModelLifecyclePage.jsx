@@ -68,7 +68,7 @@ export default function ModelLifecyclePage({ languageMode }) {
     setError("");
     const results = await Promise.allSettled([
       fetchModelLifecycleStatus("VOO", "2y", "target_5d_return", 6),
-      fetchModelLifecycleRegistry(1000, { targetName: "target_5d_return" }),
+      fetchModelLifecycleRegistry(1000),
       fetchModelLifecycleRuns(8),
     ]);
 
@@ -133,6 +133,49 @@ export default function ModelLifecyclePage({ languageMode }) {
   );
 
   const preferredModel = rankedForVoo[0] || null;
+  const legacyValidationCount = tradingRegistry.filter(
+    (item) => item.stored_is_validated && !item.validation_evidence_current
+  ).length;
+  const currentValidationCount = tradingRegistry.filter((item) => item.is_validated).length;
+  const pooledRecordCount = tradingRegistry.filter(
+    (item) => item.ticker === "GLOBAL" || item.metrics_summary?.pooled_training
+  ).length;
+  const outperformanceRegistry = registry.filter(
+    (item) => item.target_name === "target_5d_outperform"
+  );
+  const economicsPassedCount = outperformanceRegistry.filter(
+    (item) => item.metrics_summary?.outperformance_economics_gate?.passed
+  ).length;
+  const validatedOutperformanceTickers = Array.from(new Set(
+    outperformanceRegistry
+      .filter(
+        (item) =>
+          item.is_validated &&
+          !item.is_stale &&
+          ["production", "candidate"].includes(item.status) &&
+          item.ticker !== "GLOBAL"
+      )
+      .map((item) => item.ticker)
+  )).sort();
+  const leadingValidatedOutperformance = outperformanceRegistry
+    .filter((item) => item.is_validated && !item.is_stale)
+    .slice()
+    .sort((left, right) => Number(right.validation_score || 0) - Number(left.validation_score || 0))[0];
+  const leadingImbalanceGate =
+    leadingValidatedOutperformance?.metrics_summary?.walk_forward_quality_gate || null;
+  const forwardGateRecords = outperformanceRegistry.filter(
+    (item) => item.metrics_summary?.benchmark_forward_promotion_gate
+  );
+  const forwardReadyCount = forwardGateRecords.filter(
+    (item) => item.metrics_summary.benchmark_forward_promotion_gate.passed
+  ).length;
+  const leadingForwardGate = forwardGateRecords
+    .slice()
+    .sort(
+      (left, right) =>
+        Number(right.metrics_summary.benchmark_forward_promotion_gate.sample_count || 0)
+        - Number(left.metrics_summary.benchmark_forward_promotion_gate.sample_count || 0)
+    )[0]?.metrics_summary?.benchmark_forward_promotion_gate;
   const periodRows = TRADING_PERIODS.map((period) => {
     const rows = tradingRegistry
       .filter(
@@ -175,6 +218,84 @@ export default function ModelLifecyclePage({ languageMode }) {
       </header>
 
       {error ? <div className="error-box"><p>{error}</p></div> : null}
+
+      <section className={`panel ${currentValidationCount ? "" : "model-evidence-warning"}`}>
+        <h3>{labelByMode(languageMode, "Can the models be trusted now?", "目前可以信任模型嗎？")}</h3>
+        <p>
+          {currentValidationCount
+            ? labelByMode(
+              languageMode,
+              `${currentValidationCount} model records passed the current non-overlapping accuracy, cost, stability, and drawdown checks. This is evidence, not a profit guarantee.`,
+              `${currentValidationCount} 個模型記錄通過目前的非重疊準確率、成本、穩定性及回撤檢查。這是證據，並非獲利保證。`
+            )
+            : labelByMode(
+              languageMode,
+              "No loaded model has current validation evidence. The Virtual Trader will use its safety fallback instead of trusting an old score.",
+              "目前沒有已載入模型具備最新驗證證據。虛擬交易員會使用安全後備規則，不會信任舊分數。"
+            )}
+        </p>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "A prediction is eligible for validation as a trade only when it was larger than a separately calibrated uncertainty level. Smaller predictions become no action before the result is known.",
+            "只有當預測幅度高於獨立校準的不確定性水平時，才會以交易訊號進行驗證。較小的預測會在結果公布前列為不行動。"
+          )}
+        </p>
+        {leadingImbalanceGate ? (
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              `Best benchmark model (${leadingValidatedOutperformance.ticker}) in context: ${scoreText(leadingImbalanceGate.direction_accuracy)} raw accuracy versus ${scoreText(leadingImbalanceGate.naive_majority_accuracy)} from always choosing the common result. Its real lift is ${scoreText(leadingImbalanceGate.direction_edge)}, balanced accuracy is ${scoreText(leadingImbalanceGate.balanced_direction_accuracy)}, and worst-class recall is ${scoreText(leadingImbalanceGate.worst_class_recall)}.`,
+              `最佳基準模型（${leadingValidatedOutperformance.ticker}）的背景：原始準確率 ${scoreText(leadingImbalanceGate.direction_accuracy)}，而總是選擇常見結果已有 ${scoreText(leadingImbalanceGate.naive_majority_accuracy)}。真正提升為 ${scoreText(leadingImbalanceGate.direction_edge)}，平衡準確率為 ${scoreText(leadingImbalanceGate.balanced_direction_accuracy)}，較難辨認類別的召回率為 ${scoreText(leadingImbalanceGate.worst_class_recall)}。`
+            )}
+          </p>
+        ) : null}
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            forwardReadyCount
+              ? `${forwardReadyCount} benchmark-relative model has enough profitable forward evidence for promotion review.`
+              : `Live promotion check: ${leadingForwardGate?.sample_count || 0}/${leadingForwardGate?.required_sample_count || 20} matured predictions, ${leadingForwardGate?.pending_count || 0} waiting for five-day outcomes${leadingForwardGate?.estimated_next_maturity_date ? ` (earliest estimate ${leadingForwardGate.estimated_next_maturity_date})` : ""}, and ${leadingForwardGate?.active_signal_count || 0}/${leadingForwardGate?.required_active_signal_count || 5} active signals. Promotion stays locked until forward accuracy and after-cost profit checks also pass.`,
+            forwardReadyCount
+              ? `${forwardReadyCount} \u500b\u57fa\u6e96\u76f8\u5c0d\u6a21\u578b\u5df2\u6709\u8db3\u5920\u7684\u524d\u77bb\u7372\u5229\u8b49\u64da\u4f9b\u6649\u7d1a\u5be9\u6838\u3002`
+              : `\u5be6\u6642\u6649\u7d1a\u6aa2\u67e5\uff1a${leadingForwardGate?.sample_count || 0}/${leadingForwardGate?.required_sample_count || 20} \u500b\u5df2\u5230\u671f\u9810\u6e2c\uff0c${leadingForwardGate?.pending_count || 0} \u500b\u7b49\u5f85\u4e94\u500b\u4ea4\u6613\u65e5\u7d50\u679c${leadingForwardGate?.estimated_next_maturity_date ? `\uff08\u6700\u65e9\u4f30\u8a08 ${leadingForwardGate.estimated_next_maturity_date}\uff09` : ""}\uff0c${leadingForwardGate?.active_signal_count || 0}/${leadingForwardGate?.required_active_signal_count || 5} \u500b\u4e3b\u52d5\u8a0a\u865f\u3002\u5728\u524d\u77bb\u6b63\u78ba\u7387\u53ca\u6263\u9664\u6210\u672c\u5f8c\u7684\u7372\u5229\u6aa2\u67e5\u540c\u6642\u901a\u904e\u524d\uff0c\u6649\u7d1a\u6703\u4fdd\u6301\u9396\u5b9a\u3002`
+          )}
+        </p>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            `Accuracy versus profit: ${outperformanceRegistry.length} benchmark-relative experiments are recorded; ${economicsPassedCount} passed actual after-cost stock-return checks. A high hit rate alone is never treated as profit evidence.`,
+            `準確率與盈利：現有 ${outperformanceRegistry.length} 個相對基準實驗；其中 ${economicsPassedCount} 個通過實際扣除估算成本後的股票回報檢查。只有高命中率，絕不會被視為盈利證據。`
+          )}
+        </p>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            validatedOutperformanceTickers.length
+              ? `Exact-ticker benchmark coverage: ${validatedOutperformanceTickers.join(", ")}. Other tickers do not borrow this evidence and continue using the safety fallback until their own model passes every gate.`
+              : "Exact-ticker benchmark coverage: none. Every ticker continues using the safety fallback until its own model passes every gate.",
+            validatedOutperformanceTickers.length
+              ? `個別股票基準模型覆蓋：${validatedOutperformanceTickers.join("、")}。其他股票不會借用這些證據；在其本身模型通過所有檢查前，會繼續使用安全後備規則。`
+              : "個別股票基準模型覆蓋：暫時沒有。每隻股票在其本身模型通過所有檢查前，都會繼續使用安全後備規則。"
+          )}
+        </p>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            `Shared market models loaded: ${pooledRecordCount}. They use scale-independent percentage and ratio inputs. A shared model enters automatic selection only when at least 60% of its individual tickers pass prediction and after-cost trading checks; a good combined headline is not enough.`,
+            `已載入共享市場模型：${pooledRecordCount}。模型使用不受價格尺度影響的百分比及比率輸入。只有至少 60% 個別股票通過預測及扣除成本後的交易檢查，才可加入自動選擇；整體數字理想並不足夠。`
+          )}
+        </p>
+        {legacyValidationCount ? (
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              `${legacyValidationCount} older records were marked validated under previous rules and now require re-evaluation.`,
+              `${legacyValidationCount} 個舊記錄曾按舊規則標示為已驗證，現時需要重新評估。`
+            )}
+          </p>
+        ) : null}
+      </section>
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Automatic Selection", "\u81ea\u52d5\u9078\u64c7")}</h3>

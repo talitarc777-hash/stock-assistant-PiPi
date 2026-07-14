@@ -145,6 +145,11 @@ Available Discord commands:
 
 - `!help`
 - `!settings`
+- `!link CODE`
+- `!syncstatus` (verify the linked profile, shared watchlist, virtual equity, and snapshot time)
+- `!deposit 1000` (add simulation cash to the linked web account)
+- `!withdraw 100` (withdraw simulation cash from the linked web account)
+- `!setmonthly 500` (set the shared recurring monthly simulation contribution; use `0` to disable)
 - `!setlang en`
 - `!setlang zh`
 - `!setlang bilingual`
@@ -169,6 +174,9 @@ Natural-language examples:
 - `add AAPL and NVDA to my watchlist`
 - `remove TSLA from my watchlist`
 - `show my watchlist`
+- `deposit 1,000`
+- `withdraw 100`
+- `set my monthly contribution to 500`
 - `analyze VOO`
 - `check Apple`
 - `what do you think about NVDA`
@@ -222,15 +230,24 @@ Alert sync:
 
 - Alert preferences are stored with the shared user profile
 - Shared alert fields include `alert_enabled`, `alert_threshold_high`, `alert_threshold_low`, and `alert_watchlist`
-- Discord `!alerts` now tries the shared backend alert scan first, then falls back to local alert logic if needed
+- Discord `!alerts` uses the shared backend alert scan; if that source is unavailable, it reports an error instead of calculating a potentially unsynchronized local result
 - Duplicate alert spam is reduced by storing the last triggered state per user/ticker/rule in SQLite
+- Proactive virtual-trade and unusual-market Discord alerts honor the same web `alert_enabled` and delivery-source settings
+- Webhook deduplication is committed only after Discord confirms delivery; missing configuration and transient failures remain retryable
 
-Current local-user limitation:
+Web and Discord account linking:
 
-- There is no full authentication layer yet
-- Discord uses the real Discord user ID as `user_id`
-- The dashboard uses a profile ID you can edit in the Settings page
-- To make dashboard and Discord share the exact same profile, use the same profile ID in both places
+- Open the dashboard Settings page and choose **Generate link code**
+- Send `!link CODE` to the Discord bot within 10 minutes
+- The code is stored as a hash, expires after 10 minutes, and can be used only once
+- After linking, Discord uses the same profile, watchlist, alerts, settings, and virtual account as the web
+- Disconnecting or relinking on the web is detected by the bot without a restart
+- Discord resolves the current web link for every command rather than caching profile ownership, so unlink/relink changes also apply immediately to read-only account views
+- Every Discord write re-checks the authoritative link first, so unlink/relink changes take effect immediately and a backend outage cannot be mistaken for a synchronized save
+- If the shared backend is unavailable, Discord reports an error instead of silently showing or changing an unsynchronized local copy
+- The web Settings page uses `GET /discord-link/readiness` to show whether bot commands and proactive alerts are configured; the response exposes only booleans and missing variable names, never tokens or webhook URLs
+- The Virtual Trader page performs one consolidated, read-only shared-state refresh every 5 seconds while visible and immediately when the tab regains focus; these refreshes never execute the trading model
+- The local dashboard still uses a profile ID rather than a full login/authentication system
 
 ## Daily Scan + OpenClaw Placeholder
 
@@ -681,8 +698,10 @@ The project now supports two different trader views:
 - Historical replay mode:
   uses saved walk-forward evaluation history for research comparison
 - Live virtual trader mode:
-  uses latest available market data and the selected saved model to decide
-  simulated `buy`, `sell`, `hold`, or `no_action` now
+  uses latest available market data and an automatically selected lifecycle-validated model to decide
+  simulated `buy`, `sell`, `hold`, or `no_action` now. Weak legacy saved models are not used
+  automatically; when no model passes every validation gate, the decision is clearly marked as a
+  safety fallback instead
 
 Monthly contribution behavior in live mode:
 
@@ -695,6 +714,7 @@ Monthly contribution behavior in live mode:
 Live virtual trader endpoints:
 
 - `GET /virtual-trader/live-status?user_id=...`
+- `GET /virtual-trader/live-sync?user_id=...` (consolidated read-only web/Discord refresh)
 - `POST /virtual-trader/run-now`
 - `GET /virtual-trader/live-trades?user_id=...`
 
@@ -704,6 +724,28 @@ Live account consistency note:
 - The live equity curve is rebuilt from immutable ledger events, then the latest point is appended from the current account snapshot
 - The latest live equity-curve point should match the latest account summary for the same profile
 - Historical replay charts are shown separately and should not be compared directly with the live account summary
+
+Model evidence audit:
+
+- New training uses purged, expanding-window validation. The five-row gap prevents a five-day target from
+  leaking prices from the test window into the training labels.
+- Regression models calibrate an uncertainty threshold on a separate trailing training slice. Validation
+  scores only signals that were large enough to be actionable before their outcomes were known.
+- The same prediction-time market-regime policy is used in validation and live trading: caution halves
+  new position size, while severe benchmark weakness, ticker drawdown, or volatility blocks new buys.
+- Models trained with an older validation scheme are shown as legacy evidence and cannot be selected for
+  automatic live trading until they are retrained and pass the current gates.
+- Return-regression models now remove raw price and volume levels for both individual tickers and pooled
+  research. This prevents trending dollar prices from causing unstable extrapolation; live inference
+  rebuilds the identical scale-independent schema. Legacy price-level regressors cannot be promoted.
+- Run `python scripts/audit_model_quality.py --tickers VOO,SPY,QQQ,AAPL,MSFT,NVDA` for a read-only report.
+  The report includes both passing models and the strongest failed models with their rejection reasons.
+- A positive historical result or high confidence is evidence, not a promise of future profit.
+- Advanced pooled research is available with `python scripts/cli.py train-models --watchlist-config <file> --pooled`.
+  Pooled models replace raw dollar/volume levels with scale-independent percentage and ratio features,
+  folds split entire market dates, and a GLOBAL candidate must pass the gates across at least 60% of its
+  constituent tickers; aggregate performance alone cannot promote it. Live inference rebuilds that exact
+  transformed schema from the ticker's full price history, preventing training/serving feature skew.
 
 Virtual Trader page workflow (top-to-bottom):
 

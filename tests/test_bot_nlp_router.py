@@ -81,6 +81,11 @@ class NaturalLanguageRouterTests(unittest.TestCase):
         self.assertEqual(parsed.intent, "model_accuracy")
         self.assertEqual(parsed.tickers, ["VOO"])
 
+    def test_forward_model_status_routes_to_shadow_evidence(self) -> None:
+        parsed = parse_natural_language_message("show forward model status for SPY")
+        self.assertEqual(parsed.intent, "benchmark_shadow")
+        self.assertEqual(parsed.tickers, ["SPY"])
+
     def test_show_virtual_trader_summary_without_ticker(self) -> None:
         parsed = parse_natural_language_message("show virtual trader summary")
         self.assertEqual(parsed.intent, "virtual_trader_summary")
@@ -145,6 +150,21 @@ class NaturalLanguageRouterTests(unittest.TestCase):
     def test_show_settings(self) -> None:
         parsed = parse_natural_language_message("what are my settings")
         self.assertEqual(parsed.intent, "show_settings")
+
+    def test_deposit_virtual_cash(self) -> None:
+        parsed = parse_natural_language_message("deposit 1,000")
+        self.assertEqual(parsed.intent, "virtual_cash_deposit")
+        self.assertEqual(parsed.amount, 1000.0)
+
+    def test_withdraw_virtual_cash(self) -> None:
+        parsed = parse_natural_language_message("withdraw 125.50")
+        self.assertEqual(parsed.intent, "virtual_cash_withdraw")
+        self.assertEqual(parsed.amount, 125.5)
+
+    def test_set_monthly_virtual_cash(self) -> None:
+        parsed = parse_natural_language_message("set my monthly contribution to 500")
+        self.assertEqual(parsed.intent, "set_monthly_virtual_cash")
+        self.assertEqual(parsed.amount, 500.0)
 
     def test_unclear_stock_related_message_returns_hint(self) -> None:
         parsed = parse_natural_language_message("can you help with my watchlist thing")

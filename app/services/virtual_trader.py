@@ -146,6 +146,80 @@ def _prepare_price_frame(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _calculate_risk_metrics(
+    equity_curve: list[EquityCurvePoint],
+    contribution_history: list[MonthlyContributionRecord],
+    equity_field: str,
+) -> dict[str, float | int | None]:
+    """Calculate cash-flow-adjusted daily risk and return diagnostics."""
+    contributions_by_date: dict[str, float] = {}
+    for item in contribution_history:
+        contributions_by_date[item.date] = (
+            contributions_by_date.get(item.date, 0.0) + float(item.amount)
+        )
+
+    returns: list[float] = []
+    wealth = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    previous_equity: float | None = None
+    for point in equity_curve:
+        current_equity = float(getattr(point, equity_field))
+        if previous_equity is not None and previous_equity > 0:
+            external_flow = contributions_by_date.get(point.date, 0.0)
+            daily_return = (
+                current_equity - external_flow - previous_equity
+            ) / previous_equity
+            daily_return = max(-1.0, min(10.0, float(daily_return)))
+            returns.append(daily_return)
+            wealth *= 1.0 + daily_return
+            peak = max(peak, wealth)
+            if peak > 0:
+                max_drawdown = min(max_drawdown, wealth / peak - 1.0)
+        previous_equity = current_equity
+
+    if not returns:
+        return {
+            "annualized_return_pct": None,
+            "annualized_volatility_pct": None,
+            "sharpe_ratio": None,
+            "downside_deviation_pct": None,
+            "max_drawdown_pct": None,
+            "risk_observation_count": 0,
+        }
+
+    series = pd.Series(returns, dtype=float)
+    mean_daily = float(series.mean())
+    daily_volatility = float(series.std(ddof=1)) if len(series) > 1 else 0.0
+    downside = series[series < 0]
+    downside_daily = (
+        float((downside.pow(2).mean()) ** 0.5)
+        if not downside.empty
+        else 0.0
+    )
+    annualized_return = (
+        (wealth ** (252.0 / len(series))) - 1.0
+        if wealth > 0
+        else -1.0
+    )
+    annualized_volatility = daily_volatility * (252.0 ** 0.5)
+    sharpe_ratio = (
+        mean_daily / daily_volatility * (252.0 ** 0.5)
+        if daily_volatility > 1e-12
+        else None
+    )
+    return {
+        "annualized_return_pct": float(annualized_return * 100.0),
+        "annualized_volatility_pct": float(annualized_volatility * 100.0),
+        "sharpe_ratio": float(sharpe_ratio) if sharpe_ratio is not None else None,
+        "downside_deviation_pct": float(
+            downside_daily * (252.0 ** 0.5) * 100.0
+        ),
+        "max_drawdown_pct": float(max_drawdown * 100.0),
+        "risk_observation_count": int(len(series)),
+    }
+
+
 def _prepare_evaluation_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize the walk-forward evaluation table used as trading signals."""
     _validate_evaluation_columns(df)
@@ -607,6 +681,16 @@ def simulate_virtual_trader(
     final_equity = equity_curve[-1].total_equity
     benchmark_final_equity = equity_curve[-1].benchmark_equity
     unrealized_pnl = equity_curve[-1].unrealized_pnl
+    strategy_risk = _calculate_risk_metrics(
+        equity_curve,
+        contribution_history,
+        "total_equity",
+    )
+    benchmark_risk = _calculate_risk_metrics(
+        equity_curve,
+        contribution_history,
+        "benchmark_equity",
+    )
 
     benchmark_comparison = {
         "benchmark": benchmark_symbol,
@@ -615,6 +699,7 @@ def simulate_virtual_trader(
         "return_on_contributions_pct": (
             float((benchmark_final_equity / total_contributions - 1) * 100) if total_contributions > 0 else 0.0
         ),
+        **benchmark_risk,
     }
 
     summary = {
@@ -652,6 +737,16 @@ def simulate_virtual_trader(
             if total_contributions > 0
             else 0.0
         ),
+        "annualized_return_pct": strategy_risk["annualized_return_pct"],
+        "annualized_volatility_pct": strategy_risk["annualized_volatility_pct"],
+        "sharpe_ratio": strategy_risk["sharpe_ratio"],
+        "downside_deviation_pct": strategy_risk["downside_deviation_pct"],
+        "max_drawdown_pct": strategy_risk["max_drawdown_pct"],
+        "risk_observation_count": strategy_risk["risk_observation_count"],
+        "benchmark_annualized_return_pct": benchmark_risk["annualized_return_pct"],
+        "benchmark_annualized_volatility_pct": benchmark_risk["annualized_volatility_pct"],
+        "benchmark_sharpe_ratio": benchmark_risk["sharpe_ratio"],
+        "benchmark_max_drawdown_pct": benchmark_risk["max_drawdown_pct"],
     }
 
     artifact = _save_virtual_trader_artifacts(

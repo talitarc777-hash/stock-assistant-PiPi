@@ -2,6 +2,62 @@ import React, { useMemo, useState } from "react";
 
 const GLOSSARY_ITEMS = [
   {
+    key: "Paper trading",
+    english: "Paper trading",
+    chinese: "模擬交易",
+    explanationEn: "Practising trades with virtual money. It cannot prove the same result will happen with real money.",
+    explanationZh: "使用虛擬資金練習交易；不能證明真實資金會有相同結果。",
+  },
+  {
+    key: "Equity",
+    english: "Account equity",
+    chinese: "帳戶資產淨值",
+    explanationEn: "Current cash plus the market value of all holdings.",
+    explanationZh: "目前現金加上所有持倉的市值。",
+  },
+  {
+    key: "PnL",
+    english: "Profit and loss (PnL)",
+    chinese: "損益",
+    explanationEn: "How much the account gained or lost from trading, separate from cash deposits.",
+    explanationZh: "帳戶因交易賺取或虧損的金額，與現金入金分開計算。",
+  },
+  {
+    key: "Model confidence",
+    english: "Model confidence",
+    chinese: "模型信心",
+    explanationEn: "How strongly the model supports its signal. It is not the probability of making money.",
+    explanationZh: "模型支持訊號的程度，並不是賺錢的機率。",
+  },
+  {
+    key: "Position size",
+    english: "Position size",
+    chinese: "倉位大小",
+    explanationEn: "How much of the account is invested in one ticker. Smaller positions reduce concentration risk.",
+    explanationZh: "帳戶投資於單一股票的比例；較小倉位可降低集中風險。",
+  },
+  {
+    key: "Market regime",
+    english: "Market regime protection",
+    chinese: "市場狀況保護",
+    explanationEn: "A risk rule based on benchmark weakness, recent drawdown, and volatility. Normal uses full configured size, caution halves new positions, and stress blocks new buys.",
+    explanationZh: "根據大市弱勢、近期回撤及波動程度作出的風險規則。正常時使用完整設定倉位，謹慎時新倉減半，壓力時暫停新買入。",
+  },
+  {
+    key: "Stop loss",
+    english: "Stop loss",
+    chinese: "止蝕",
+    explanationEn: "A rule that exits a losing position after it falls by a set amount.",
+    explanationZh: "持倉下跌至指定幅度後離場的風險規則。",
+  },
+  {
+    key: "Sharpe ratio",
+    english: "Sharpe ratio",
+    chinese: "夏普比率",
+    explanationEn: "Return compared with volatility. Higher is generally better; a negative value indicates poor risk-adjusted results.",
+    explanationZh: "回報相對波動的比率；通常越高越好，負數表示風險調整後表現欠佳。",
+  },
+  {
     key: "SMA",
     english: "Simple Moving Average",
     chinese: "簡單移動平均線",

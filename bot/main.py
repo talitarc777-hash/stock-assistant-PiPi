@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import math
 
 try:
     from .config import (
@@ -13,10 +14,12 @@ try:
         format_forecast_message,
         format_help_message,
         format_model_accuracy_message,
+        format_benchmark_shadow_message,
         format_model_status_message,
         format_live_virtual_trader_status_message,
         format_live_virtual_trader_trades_message,
         format_settings_message,
+        format_sync_status_message,
         format_trader_scheduler_status_message,
         format_trade_reason_message,
         format_virtual_account_ledger_message,
@@ -26,26 +29,20 @@ try:
         format_virtual_trader_trades_message,
         format_watchlist_message,
     )
-    from .alert_engine import build_ticker_alerts, format_alert_for_discord
     from .nlp_router import parse_natural_language_message
     from .profile_client import (
         add_user_watchlist_ticker as backend_add_user_watchlist_ticker,
+        consume_discord_link,
         fetch_user_profile,
         fetch_user_watchlist,
         remove_user_watchlist_ticker as backend_remove_user_watchlist_ticker,
         reset_user_profile as backend_reset_user_profile,
+        resolve_discord_profile,
         scan_user_alerts as backend_scan_user_alerts,
         update_user_profile_settings,
     )
     from .settings_store import (
-        add_user_ticker as fallback_add_user_ticker,
-        get_effective_watchlist as fallback_get_effective_watchlist,
-        get_user_settings as fallback_get_user_settings,
         parse_watchlist_input,
-        remove_user_ticker as fallback_remove_user_ticker,
-        set_user_compact_mode as fallback_set_user_compact_mode,
-        set_user_language as fallback_set_user_language,
-        set_user_watchlist as fallback_set_user_watchlist,
     )
     from .stock_api_client import (
         ApiClientError,
@@ -53,13 +50,17 @@ try:
         BackendUnavailableError,
         InvalidTickerApiError,
         analyze,
-        chart_data,
+        benchmark_shadow_feedback,
         forecast,
         model_accuracy,
         model_latest,
         virtual_account_ledger,
+        virtual_account_deposit,
+        virtual_account_set_monthly_contribution,
         virtual_account_summary,
+        virtual_account_withdraw,
         virtual_trader_live_status,
+        virtual_trader_live_sync,
         virtual_trader_live_trades,
         virtual_trader_run_now,
         virtual_trader_summary,
@@ -79,10 +80,12 @@ except ImportError:  # pragma: no cover - script execution fallback
         format_forecast_message,
         format_help_message,
         format_model_accuracy_message,
+        format_benchmark_shadow_message,
         format_model_status_message,
         format_live_virtual_trader_status_message,
         format_live_virtual_trader_trades_message,
         format_settings_message,
+        format_sync_status_message,
         format_trader_scheduler_status_message,
         format_trade_reason_message,
         format_virtual_account_ledger_message,
@@ -92,26 +95,20 @@ except ImportError:  # pragma: no cover - script execution fallback
         format_virtual_trader_trades_message,
         format_watchlist_message,
     )
-    from alert_engine import build_ticker_alerts, format_alert_for_discord
     from nlp_router import parse_natural_language_message
     from profile_client import (
         add_user_watchlist_ticker as backend_add_user_watchlist_ticker,
+        consume_discord_link,
         fetch_user_profile,
         fetch_user_watchlist,
         remove_user_watchlist_ticker as backend_remove_user_watchlist_ticker,
         reset_user_profile as backend_reset_user_profile,
+        resolve_discord_profile,
         scan_user_alerts as backend_scan_user_alerts,
         update_user_profile_settings,
     )
     from settings_store import (
-        add_user_ticker as fallback_add_user_ticker,
-        get_effective_watchlist as fallback_get_effective_watchlist,
-        get_user_settings as fallback_get_user_settings,
         parse_watchlist_input,
-        remove_user_ticker as fallback_remove_user_ticker,
-        set_user_compact_mode as fallback_set_user_compact_mode,
-        set_user_language as fallback_set_user_language,
-        set_user_watchlist as fallback_set_user_watchlist,
     )
     from stock_api_client import (
         ApiClientError,
@@ -119,13 +116,17 @@ except ImportError:  # pragma: no cover - script execution fallback
         BackendUnavailableError,
         InvalidTickerApiError,
         analyze,
-        chart_data,
+        benchmark_shadow_feedback,
         forecast,
         model_accuracy,
         model_latest,
         virtual_account_ledger,
+        virtual_account_deposit,
+        virtual_account_set_monthly_contribution,
         virtual_account_summary,
+        virtual_account_withdraw,
         virtual_trader_live_status,
+        virtual_trader_live_sync,
         virtual_trader_live_trades,
         virtual_trader_run_now,
         virtual_trader_summary,
@@ -205,33 +206,31 @@ def _language_label(language: str) -> str:
 
 
 def _discord_user_id(ctx) -> str:
-    """Return the shared profile ID used for Discord-backed profiles."""
-    return str(ctx.author.id)
+    """Resolve the current dashboard link for every Discord command."""
+    discord_user_id = str(ctx.author.id)
+    resolved = resolve_discord_profile(discord_user_id)
+    return str(resolved.get("profile_user_id") or discord_user_id)
 
 
-def _language_label(language: str) -> str:
-    """Render a short human-friendly language label."""
-    labels = {
-        "en": "English",
-        "zh": "中文",
-        "bilingual": "English + 中文",
-    }
-    return labels.get(str(language).lower(), str(language))
+def _require_linked_profile_id(ctx) -> str:
+    """Resolve the authoritative web link before any Discord mutation.
+
+    Read-only commands may use the short cache, but writes always re-check the
+    backend so an unlink or relink takes effect immediately.
+    """
+    discord_user_id = str(ctx.author.id)
+    resolved = resolve_discord_profile(discord_user_id)
+    if not resolved.get("linked"):
+        raise ValueError(
+            f"Link the web profile first with `{COMMAND_PREFIX}link CODE`, then retry."
+        )
+    profile_user_id = str(resolved.get("profile_user_id") or ctx.author.id)
+    return profile_user_id
 
 
 def _discord_display_name(ctx) -> str:
     """Return the best display name available from Discord context."""
     return getattr(ctx.author, "display_name", None) or getattr(ctx.author, "name", "")
-
-
-def _language_label(language: str) -> str:
-    """Render a short human-friendly language label."""
-    labels = {
-        "en": "English",
-        "zh": "中文",
-        "bilingual": "English + 中文",
-    }
-    return labels.get(str(language).lower(), str(language))
 
 
 def _normalize_profile_settings(profile: dict) -> dict:
@@ -249,63 +248,47 @@ def _normalize_profile_settings(profile: dict) -> dict:
 
 
 def _get_shared_user_settings(ctx) -> dict:
-    """Read settings from the shared backend profile, falling back to local storage if needed."""
+    """Read settings only from the shared backend profile."""
     user_id = _discord_user_id(ctx)
     display_name = _discord_display_name(ctx)
-    try:
-        profile = fetch_user_profile(user_id=user_id, display_name=display_name, source="discord")
-        return _normalize_profile_settings(profile)
-    except Exception as exc:
-        print("PROFILE FALLBACK get settings:", repr(exc))
-        return fallback_get_user_settings(ctx.author.id)
+    profile = fetch_user_profile(user_id=user_id, display_name=display_name, source="discord")
+    return _normalize_profile_settings(profile)
 
 
 def _set_shared_language(ctx, language: str) -> dict:
-    """Persist language to shared backend profile with local fallback."""
+    """Persist language to the currently linked web profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "preferred_language": language,
         "last_active_source": "discord",
     }
-    try:
-        profile = update_user_profile_settings(payload)
-        return _normalize_profile_settings(profile)
-    except Exception as exc:
-        print("PROFILE FALLBACK set language:", repr(exc))
-        return fallback_set_user_language(ctx.author.id, language)
+    profile = update_user_profile_settings(payload)
+    return _normalize_profile_settings(profile)
 
 
 def _set_shared_compact_mode(ctx, compact_mode: bool) -> dict:
-    """Persist compact mode to shared backend profile with local fallback."""
+    """Persist compact mode to the currently linked web profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "compact_mode": compact_mode,
         "last_active_source": "discord",
     }
-    try:
-        profile = update_user_profile_settings(payload)
-        return _normalize_profile_settings(profile)
-    except Exception as exc:
-        print("PROFILE FALLBACK set compact:", repr(exc))
-        return fallback_set_user_compact_mode(ctx.author.id, compact_mode)
+    profile = update_user_profile_settings(payload)
+    return _normalize_profile_settings(profile)
 
 
 def _set_shared_watchlist(ctx, tickers: list[str]) -> dict:
-    """Persist the full shared watchlist with local fallback."""
+    """Persist the full watchlist to the currently linked web profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "default_watchlist": tickers,
         "last_active_source": "discord",
     }
-    try:
-        profile = update_user_profile_settings(payload)
-        return _normalize_profile_settings(profile)
-    except Exception as exc:
-        print("PROFILE FALLBACK set watchlist:", repr(exc))
-        return fallback_set_user_watchlist(ctx.author.id, tickers)
+    profile = update_user_profile_settings(payload)
+    return _normalize_profile_settings(profile)
 
 
 def _merge_watchlist_response_with_settings(ctx, response: dict) -> dict:
@@ -320,45 +303,33 @@ def _merge_watchlist_response_with_settings(ctx, response: dict) -> dict:
 
 
 def _add_shared_watchlist_ticker(ctx, ticker: str) -> dict:
-    """Add one ticker through the shared backend profile with local fallback."""
+    """Add one ticker to the currently linked web profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "ticker": ticker,
         "last_active_source": "discord",
     }
-    try:
-        response = backend_add_user_watchlist_ticker(payload)
-        return _merge_watchlist_response_with_settings(ctx, response)
-    except Exception as exc:
-        print("PROFILE FALLBACK add ticker:", repr(exc))
-        return fallback_add_user_ticker(ctx.author.id, ticker)
+    response = backend_add_user_watchlist_ticker(payload)
+    return _merge_watchlist_response_with_settings(ctx, response)
 
 
 def _remove_shared_watchlist_ticker(ctx, ticker: str) -> dict:
-    """Remove one ticker through the shared backend profile with local fallback."""
+    """Remove one ticker from the currently linked web profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "ticker": ticker,
         "last_active_source": "discord",
     }
-    try:
-        response = backend_remove_user_watchlist_ticker(payload)
-        return _merge_watchlist_response_with_settings(ctx, response)
-    except Exception as exc:
-        print("PROFILE FALLBACK remove ticker:", repr(exc))
-        return fallback_remove_user_ticker(ctx.author.id, ticker)
+    response = backend_remove_user_watchlist_ticker(payload)
+    return _merge_watchlist_response_with_settings(ctx, response)
 
 
 def _get_shared_effective_watchlist(ctx) -> list[str]:
-    """Read the shared effective watchlist with system-default fallback behavior."""
-    try:
-        response = fetch_user_watchlist(_discord_user_id(ctx))
-        return list(response.get("watchlist", []))
-    except Exception as exc:
-        print("PROFILE FALLBACK get watchlist:", repr(exc))
-        return fallback_get_effective_watchlist(ctx.author.id)
+    """Read the effective watchlist only from the shared backend profile."""
+    response = fetch_user_watchlist(_discord_user_id(ctx))
+    return list(response.get("watchlist", []))
 
 
 def _resolve_reporting_ticker(ctx, requested_ticker: str | None = None) -> str:
@@ -380,7 +351,7 @@ def _resolve_reporting_ticker(ctx, requested_ticker: str | None = None) -> str:
 def _reset_shared_settings(ctx) -> dict:
     """Reset Discord-visible settings via the shared backend profile."""
     payload = {
-        "user_id": _discord_user_id(ctx),
+        "user_id": _require_linked_profile_id(ctx),
         "display_name": _discord_display_name(ctx),
         "last_active_source": "discord",
     }
@@ -393,6 +364,37 @@ async def _send_settings(ctx) -> None:
     user_settings = _get_shared_user_settings(ctx)
     print(f"SETTINGS user={ctx.author.id} settings={user_settings}")
     await ctx.send(format_settings_message(ctx.author.id, user_settings))
+
+
+async def _send_sync_status(ctx) -> None:
+    """Verify that Discord can read the linked web profile's shared state."""
+    discord_user_id = str(ctx.author.id)
+    resolved = resolve_discord_profile(discord_user_id)
+    if not resolved.get("linked"):
+        await ctx.send(format_sync_status_message(resolved, COMMAND_PREFIX))
+        return
+    profile_user_id = str(resolved.get("profile_user_id") or discord_user_id)
+    sync_payload = virtual_trader_live_sync(profile_user_id)
+    status = sync_payload.get("status") if isinstance(sync_payload, dict) else {}
+    account = status.get("account") if isinstance(status, dict) else {}
+    recent_trades = sync_payload.get("recent_trades") if isinstance(sync_payload, dict) else []
+    await ctx.send(
+        format_sync_status_message(
+            {
+                **resolved,
+                "discord_display_name": resolved.get("discord_display_name")
+                or _discord_display_name(ctx),
+                "profile_user_id": profile_user_id,
+                "watchlist": sync_payload.get("watchlist") or [],
+                "account": account,
+                "recent_trade_count": len(recent_trades or []),
+                "generated_at_utc": status.get("generated_at_utc")
+                if isinstance(status, dict)
+                else None,
+            },
+            COMMAND_PREFIX,
+        )
+    )
 
 
 async def _apply_language_setting(ctx, language: str) -> None:
@@ -501,6 +503,17 @@ async def _send_model_accuracy(ctx, requested_ticker: str | None = None) -> None
     await ctx.send(format_model_accuracy_message(symbol, data, user_settings))
 
 
+async def _send_benchmark_shadow(ctx, requested_ticker: str | None = None) -> None:
+    """Send forward promotion evidence from the shared backend ledger."""
+    user_settings = _get_shared_user_settings(ctx)
+    symbol = _resolve_reporting_ticker(ctx, requested_ticker)
+    data = benchmark_shadow_feedback(symbol, period="10y", limit=20)
+    data = _require_dict(data, "benchmark shadow response")
+    _require_dict(data.get("summary", {}), "benchmark shadow summary")
+    _require_list(data.get("feedback", []), "benchmark shadow feedback")
+    await ctx.send(format_benchmark_shadow_message(symbol, data, user_settings))
+
+
 async def _send_virtual_trader_summary(ctx, requested_ticker: str | None = None) -> None:
     """Fetch and send live virtual trader status for one ticker."""
     user_settings = _get_shared_user_settings(ctx)
@@ -539,10 +552,11 @@ async def _send_why_trade(ctx, requested_ticker: str | None = None) -> None:
 
 async def _run_virtual_trader_now(ctx, requested_ticker: str | None = None) -> None:
     """Trigger one live simulation cycle now and return updated status."""
+    user_id = _require_linked_profile_id(ctx)
     user_settings = _get_shared_user_settings(ctx)
     symbol = _resolve_reporting_ticker(ctx, requested_ticker)
     data = virtual_trader_run_now(
-        user_id=_discord_user_id(ctx),
+        user_id=user_id,
         tickers=[symbol],
     )
     print("RUN VIRTUAL TRADER NOW RAW RESPONSE:", data)
@@ -564,7 +578,7 @@ async def _send_virtual_trader_compare(ctx, requested_ticker: str | None = None)
 
 async def _send_virtual_account_summary(ctx) -> None:
     """Fetch and send immutable virtual account summary."""
-    user_settings = _effective_user_settings(ctx)
+    user_settings = _get_shared_user_settings(ctx)
     data = virtual_account_summary(user_id=_discord_user_id(ctx))
     data = _require_dict(data, "virtual account summary response")
     await ctx.send(format_virtual_account_summary_message(data, user_settings))
@@ -572,10 +586,48 @@ async def _send_virtual_account_summary(ctx) -> None:
 
 async def _send_virtual_account_ledger(ctx, limit: int = 10) -> None:
     """Fetch and send recent immutable ledger events."""
-    user_settings = _effective_user_settings(ctx)
+    user_settings = _get_shared_user_settings(ctx)
     data = virtual_account_ledger(user_id=_discord_user_id(ctx), limit=max(limit, 1))
     data = _require_dict(data, "virtual account ledger response")
     await ctx.send(format_virtual_account_ledger_message(data, user_settings, limit=limit))
+
+
+async def _change_virtual_cash(ctx, amount: float, action: str) -> None:
+    """Apply one simulation-only cash change through the shared ledger."""
+    numeric_amount = float(amount)
+    if not math.isfinite(numeric_amount) or numeric_amount <= 0:
+        raise ValueError("Amount must be a positive number, for example `!deposit 1000`.")
+    user_id = _require_linked_profile_id(ctx)
+    if action == "deposit":
+        data = virtual_account_deposit(user_id, numeric_amount)
+        heading = f"Simulation deposit added: ${numeric_amount:,.2f}. Deposits are not profit."
+    elif action == "withdraw":
+        data = virtual_account_withdraw(user_id, numeric_amount)
+        heading = f"Simulation withdrawal added: ${numeric_amount:,.2f}."
+    else:
+        raise ValueError("Unsupported virtual cash action.")
+    data = _require_dict(data, "virtual account summary response")
+    user_settings = _get_shared_user_settings(ctx)
+    await ctx.send(
+        heading + "\n\n" + format_virtual_account_summary_message(data, user_settings)
+    )
+
+
+async def _set_monthly_virtual_cash(ctx, amount: float) -> None:
+    """Set the recurring monthly simulation contribution shared with the web."""
+    numeric_amount = float(amount)
+    if not math.isfinite(numeric_amount) or numeric_amount < 0:
+        raise ValueError("Monthly amount must be zero or more, for example `!setmonthly 500`.")
+    data = virtual_account_set_monthly_contribution(
+        _require_linked_profile_id(ctx),
+        numeric_amount,
+    )
+    data = _require_dict(data, "monthly contribution response")
+    await ctx.send(
+        f"Shared monthly simulation contribution: ${float(data.get('amount', 0)):,.2f}\n"
+        f"Effective from: {data.get('effective_from_month', 'next applicable month')}\n"
+        "The web dashboard will show the same setting. Use zero to turn it off."
+    )
 
 
 async def _send_alerts(ctx) -> None:
@@ -585,45 +637,17 @@ async def _send_alerts(ctx) -> None:
     if not effective_watchlist:
         raise ValueError("Watchlist cannot be empty. Add one with `!setwatchlist VOO,QQQ,AAPL`.")
 
-    try:
-        alert_payload = backend_scan_user_alerts(_discord_user_id(ctx))
-        print("ALERTS PROFILE RAW RESPONSE:", alert_payload)
-        alert_lines = []
-        for item in alert_payload.get("alerts", []):
-            message = item.get("message_zh", "")
-            if str(user_settings.get("language")) == "en":
-                message = item.get("message_en", message)
-            elif str(user_settings.get("language")) == "bilingual":
-                message = f"{item.get('message_en', '')} / {item.get('message_zh', '')}"
-            icon = "🚨" if item.get("severity") == "high" else "⚠️"
-            alert_lines.append(f"{icon} {message}")
-        await ctx.send(format_alerts_message(alert_lines, user_settings))
-        return
-    except Exception as exc:
-        print("ALERTS PROFILE FALLBACK:", repr(exc))
-
-    watchlist_payload = watchlist(",".join(effective_watchlist), period="5y")
-    print("ALERTS WATCHLIST RAW RESPONSE:", watchlist_payload)
-    watchlist_payload = _require_dict(watchlist_payload, "watchlist response")
-    ranked = _require_list(watchlist_payload.get("ranked_results", []), "ranked_results")
-    ranked_map = {str(item.get("ticker", "")).upper(): item for item in ranked}
-
-    alert_lines: list[str] = []
-    for ticker in effective_watchlist:
-        summary_row = ranked_map.get(ticker, {})
-        chart_payload = chart_data(ticker, period="6mo")
-        print(f"ALERTS CHART RAW RESPONSE {ticker}:", chart_payload)
-        chart_payload = _require_dict(chart_payload, "chart_data response")
-        series = _require_list(chart_payload.get("series", []), "series")
-        alerts = build_ticker_alerts(ticker=ticker, summary_row=summary_row, series=series)
-        alert_lines.extend(
-            format_alert_for_discord(
-                alert,
-                language=str(user_settings.get("language", "zh")),
-            )
-            for alert in alerts
-        )
-
+    alert_payload = backend_scan_user_alerts(_discord_user_id(ctx))
+    print("ALERTS PROFILE RAW RESPONSE:", alert_payload)
+    alert_lines = []
+    for item in alert_payload.get("alerts", []):
+        message = item.get("message_zh", "")
+        if str(user_settings.get("language")) == "en":
+            message = item.get("message_en", message)
+        elif str(user_settings.get("language")) == "bilingual":
+            message = f"{item.get('message_en', '')} / {item.get('message_zh', '')}"
+        icon = "🚨" if item.get("severity") == "high" else "⚠️"
+        alert_lines.append(f"{icon} {message}")
     await ctx.send(format_alerts_message(alert_lines, user_settings))
 
 
@@ -696,6 +720,7 @@ async def on_message(message):
             "tickers": parsed.tickers,
             "language": parsed.language,
             "compact_mode": parsed.compact_mode,
+            "amount": parsed.amount,
             "needs_help_hint": parsed.needs_help_hint,
         },
     )
@@ -727,6 +752,8 @@ async def on_message(message):
             await _send_model_status(ctx, parsed.tickers[0].upper() if parsed.tickers else None)
         elif parsed.intent == "model_accuracy":
             await _send_model_accuracy(ctx, parsed.tickers[0].upper() if parsed.tickers else None)
+        elif parsed.intent == "benchmark_shadow":
+            await _send_benchmark_shadow(ctx, parsed.tickers[0].upper() if parsed.tickers else None)
         elif parsed.intent == "virtual_trader_summary":
             await _send_virtual_trader_summary(ctx, parsed.tickers[0].upper() if parsed.tickers else None)
         elif parsed.intent == "run_virtual_trader_now":
@@ -741,6 +768,12 @@ async def on_message(message):
             await _send_virtual_account_summary(ctx)
         elif parsed.intent == "virtual_account_ledger":
             await _send_virtual_account_ledger(ctx, limit=10)
+        elif parsed.intent == "virtual_cash_deposit" and parsed.amount is not None:
+            await _change_virtual_cash(ctx, parsed.amount, "deposit")
+        elif parsed.intent == "virtual_cash_withdraw" and parsed.amount is not None:
+            await _change_virtual_cash(ctx, parsed.amount, "withdraw")
+        elif parsed.intent == "set_monthly_virtual_cash" and parsed.amount is not None:
+            await _set_monthly_virtual_cash(ctx, parsed.amount)
         elif parsed.intent == "trader_scheduler_status":
             await _send_trader_scheduler_status(ctx)
         elif parsed.intent == "trader_scheduler_last_run":
@@ -800,6 +833,46 @@ async def settings_cmd(ctx):
         return
 
     await _send_settings(ctx)
+
+
+@bot.command(name="link")
+async def link_cmd(ctx, code: str = ""):
+    """Link this Discord account to a web profile using a one-time code."""
+    if not is_allowed(ctx):
+        return
+    clean_code = str(code).strip().upper()
+    if not clean_code:
+        await ctx.send(
+            "Open Settings on the web, select **Link Discord**, then run "
+            f"`{COMMAND_PREFIX}link YOUR-CODE` here."
+        )
+        return
+    try:
+        consume_discord_link(
+            {
+                "code": clean_code,
+                "discord_user_id": str(ctx.author.id),
+                "discord_display_name": _discord_display_name(ctx),
+            }
+        )
+    except Exception as exc:
+        await ctx.send(_friendly_error_message(exc))
+        return
+    await ctx.send(
+        "Linked successfully. Your Discord commands now use the same "
+        "watchlist, settings, alerts, and virtual account as the web."
+    )
+
+
+@bot.command(name="syncstatus")
+async def syncstatus_cmd(ctx):
+    """Show evidence that web and Discord are reading the same profile."""
+    if not is_allowed(ctx):
+        return
+    try:
+        await _send_sync_status(ctx)
+    except Exception as exc:
+        await ctx.send(_friendly_error_message(exc))
 
 
 @bot.command(name="setlang")
@@ -1077,4 +1150,52 @@ async def cashledger_cmd(ctx):
         await ctx.send(_friendly_error_message(exc))
 
 
-bot.run(DISCORD_BOT_TOKEN)
+@bot.command(name="shadowstatus")
+async def shadowstatus_cmd(ctx, ticker: str | None = None):
+    if not is_allowed(ctx):
+        return
+
+    try:
+        await _send_benchmark_shadow(ctx, ticker.upper() if ticker else None)
+    except Exception as exc:
+        print("SHADOWSTATUS ERROR:", repr(exc))
+        await ctx.send(_friendly_error_message(exc))
+
+
+@bot.command(name="deposit")
+async def deposit_cmd(ctx, amount: float):
+    """Add simulation-only cash to the linked virtual account."""
+    if not is_allowed(ctx):
+        return
+    try:
+        await _change_virtual_cash(ctx, amount, "deposit")
+    except Exception as exc:
+        await ctx.send(_friendly_error_message(exc))
+
+
+@bot.command(name="withdraw")
+async def withdraw_cmd(ctx, amount: float):
+    """Withdraw simulation-only cash from the linked virtual account."""
+    if not is_allowed(ctx):
+        return
+    try:
+        await _change_virtual_cash(ctx, amount, "withdraw")
+    except Exception as exc:
+        await ctx.send(_friendly_error_message(exc))
+
+
+@bot.command(name="setmonthly")
+async def setmonthly_cmd(ctx, amount: float):
+    """Set recurring monthly simulation cash for the linked account."""
+    if not is_allowed(ctx):
+        return
+    try:
+        await _set_monthly_virtual_cash(ctx, amount)
+    except Exception as exc:
+        await ctx.send(_friendly_error_message(exc))
+
+
+if __name__ == "__main__":
+    if not DISCORD_BOT_TOKEN:
+        raise RuntimeError("DISCORD_BOT_TOKEN is required to start the Discord bot.")
+    bot.run(DISCORD_BOT_TOKEN)

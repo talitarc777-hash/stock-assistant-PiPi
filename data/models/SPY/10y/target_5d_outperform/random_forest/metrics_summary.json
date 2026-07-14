@@ -1,0 +1,125 @@
+{
+  "generated_at_utc": "2026-07-14T03:50:12.887776+00:00",
+  "ticker": "SPY",
+  "period": "10y",
+  "target_name": "target_5d_outperform",
+  "task_type": "classification",
+  "model_name": "random_forest",
+  "row_count": 2507,
+  "feature_count": 38,
+  "time_series_splits": 5,
+  "validation_method": "purged_walk_forward_with_calibrated_abstention_and_regime_filter",
+  "validation_scheme_version": 4,
+  "validation_gap_rows": 5,
+  "validation_note": "Random train/test shuffling is avoided because time-series evaluation must preserve time order and keep future data out of the training window. A target-horizon gap purges training labels whose future price window would overlap the test fold. Regression trade eligibility is calibrated on a trailing inner holdout, also separated by the target-horizon gap. A fixed prediction-time stress policy blocks new positions during severe selloffs, drawdowns, or volatility.",
+  "fold_sizes": [
+    {
+      "fold": 1,
+      "train_rows": 417,
+      "test_rows": 417,
+      "training_class_count": 2,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": null
+    },
+    {
+      "fold": 2,
+      "train_rows": 834,
+      "test_rows": 417,
+      "training_class_count": 2,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": null
+    },
+    {
+      "fold": 3,
+      "train_rows": 1251,
+      "test_rows": 417,
+      "training_class_count": 2,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": null
+    },
+    {
+      "fold": 4,
+      "train_rows": 1668,
+      "test_rows": 417,
+      "training_class_count": 2,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": null
+    },
+    {
+      "fold": 5,
+      "train_rows": 2085,
+      "test_rows": 417,
+      "training_class_count": 2,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": null
+    }
+  ],
+  "metrics": {
+    "accuracy": 0.9721822541966427,
+    "precision": 0.8405797101449275,
+    "recall": 0.7631578947368421,
+    "f1": 0.8,
+    "positive_rate_actual": 0.07290167865707434,
+    "positive_rate_predicted": 0.06618705035971223
+  },
+  "feature_schema_version": 2,
+  "stationary_features": true,
+  "benchmark_relative_target": true,
+  "outperformance_economics_gate": {
+    "passed": true,
+    "reasons": [],
+    "evaluation_rows": 2085,
+    "active_signal_count": 120,
+    "round_trip_cost_pct": 0.1,
+    "average_net_stock_return_pct": 0.08745307744541429,
+    "median_net_stock_return_pct": 0.24254118291967564,
+    "profitable_stock_signal_rate": 0.5416666666666666,
+    "average_excess_return_pct": 0.3144928483722124,
+    "profitable_non_overlapping_path_rate": 0.6,
+    "worst_path_drawdown_pct": -7.738911263772774,
+    "regime_filter_applied": true,
+    "position_multiplier_applied": true,
+    "paths": [
+      {
+        "offset": 0,
+        "signal_count": 24,
+        "average_net_return_pct": -0.04079793582642612,
+        "profitable_signal_rate": 0.375,
+        "cumulative_return_pct": -1.3009933000838303,
+        "max_drawdown_pct": -6.247719599297374
+      },
+      {
+        "offset": 1,
+        "signal_count": 24,
+        "average_net_return_pct": 0.25752315948727644,
+        "profitable_signal_rate": 0.5833333333333334,
+        "cumulative_return_pct": 6.034937465757451,
+        "max_drawdown_pct": -3.268008091379482
+      },
+      {
+        "offset": 2,
+        "signal_count": 26,
+        "average_net_return_pct": 0.23134837106159475,
+        "profitable_signal_rate": 0.5769230769230769,
+        "cumulative_return_pct": 6.0585425223981915,
+        "max_drawdown_pct": -2.9568383415710997
+      },
+      {
+        "offset": 3,
+        "signal_count": 22,
+        "average_net_return_pct": -0.23360068851550542,
+        "profitable_signal_rate": 0.5909090909090909,
+        "cumulative_return_pct": -5.354801729582393,
+        "max_drawdown_pct": -7.738911263772774
+      },
+      {
+        "offset": 4,
+        "signal_count": 24,
+        "average_net_return_pct": 0.1840467260553735,
+        "profitable_signal_rate": 0.5833333333333334,
+        "cumulative_return_pct": 4.213162007392857,
+        "max_drawdown_pct": -3.874934910380756
+      }
+    ]
+  }
+}

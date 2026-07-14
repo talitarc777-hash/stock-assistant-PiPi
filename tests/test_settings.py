@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 import os
+import shutil
 import sqlite3
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from app.core.settings import _resolve_profile_db_path, get_settings
 
@@ -32,10 +33,11 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(re.match(settings.cors_allow_origin_regex or "", "https://example.com"))
 
     def test_production_relative_database_is_migrated_outside_checkout(self) -> None:
-        temp_root = Path(os.getenv("TEST_TEMP_DIR", r"C:\tmp"))
+        temp_root = Path("data") / "test_settings"
         temp_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
-            root = Path(temp_dir)
+        root = temp_root / uuid4().hex
+        root.mkdir()
+        try:
             legacy = root / "checkout" / "data" / "user_profiles.db"
             persistent = root / "persistent"
             legacy.parent.mkdir(parents=True)
@@ -58,6 +60,8 @@ class SettingsTests(unittest.TestCase):
             with sqlite3.connect(target) as connection:
                 row = connection.execute("SELECT value FROM preserved").fetchone()
             self.assertEqual(row, ("existing-account-data",))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_development_database_path_is_unchanged(self) -> None:
         self.assertEqual(

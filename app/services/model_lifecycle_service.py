@@ -16,6 +16,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+import pandas as pd
+
 from app.core.settings import get_settings
 from app.models.model_lifecycle import MODEL_REGISTRY_STATUSES, MODEL_WORKFLOW_TYPES
 from app.services.model_results import (
@@ -32,11 +34,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_NAME = "target_5d_updown"
 TRADING_TARGET_NAME = "target_5d_return"
+OUTPERFORMANCE_TARGET_NAME = "target_5d_outperform"
 DEFAULT_PERIOD = "5y"
 TRADING_MODEL_PERIODS = ("2y", "5y", "10y")
 DEFAULT_STALE_DAYS = 30
 PRODUCTION_MIN_SCORE = 0.50
 PROMOTION_DELTA = 0.005
+MIN_WALK_FORWARD_ROWS = 30
+MIN_DIRECTION_ACCURACY = 0.52
+MIN_WORST_FOLD_ACCURACY = 0.45
+MIN_DIRECTION_EDGE = 0.01
+MIN_SIGNAL_MINORITY_RATE = 0.05
+MIN_BALANCED_DIRECTION_ACCURACY = 0.55
+MIN_WORST_CLASS_RECALL = 0.20
+PROMOTION_EXECUTION_COST_PCT = 0.05
+MIN_ACTIVE_SIGNAL_PROFITABLE_RATE = 0.48
+MAX_PROMOTION_PROXY_DRAWDOWN_PCT = -25.0
+VALIDATION_GATE_VERSION = 8
+MIN_VALIDATION_SCHEME_VERSION = 4
+TRADING_TARGET_HORIZON_ROWS = 5
+MIN_PROFITABLE_NON_OVERLAP_PATH_RATE = 0.60
+MIN_POOLED_TICKER_PASS_RATE = 0.60
+MIN_FORWARD_DIRECTION_ACCURACY = 0.55
+MIN_FORWARD_ACTIVE_SIGNALS = 5
+MIN_FORWARD_PROFITABLE_RATE = 0.50
 
 
 class ModelLifecycleError(Exception):
@@ -201,6 +222,342 @@ class ModelLifecycleService:
 
         return 0.0
 
+    @staticmethod
+    def _walk_forward_quality_gate(evaluation_table: pd.DataFrame | None) -> dict[str, Any]:
+        """Reject fragile models before lifecycle promotion.
+
+        Direction accuracy alone is misleading in a strongly rising or falling
+        sample: a model can look accurate by nearly always choosing the majority
+        direction. This gate requires genuine out-of-sample edge, fold stability,
+        and both bullish and bearish signals.
+        """
+        required = {"predicted_value", "actual_future_result"}
+        if evaluation_table is None or not required.issubset(evaluation_table.columns):
+            return {
+                "passed": False,
+                "reasons": ["walk_forward_evaluation_missing"],
+                "sample_count": 0,
+            }
+
+        frame = evaluation_table.copy()
+        frame["_source_position"] = range(len(frame))
+        frame["predicted_value"] = pd.to_numeric(frame["predicted_value"], errors="coerce")
+        frame["actual_future_result"] = pd.to_numeric(
+            frame["actual_future_result"],
+            errors="coerce",
+        )
+        frame = frame.dropna(subset=["predicted_value", "actual_future_result"])
+        actionable_filter_applied = "is_actionable_signal" in frame.columns
+        if actionable_filter_applied:
+            actionable = frame["is_actionable_signal"].astype(str).str.lower().isin(
+                {"true", "1", "yes"}
+            )
+            frame = frame[actionable].copy()
+        regime_filter_applied = "is_regime_trade_allowed" in frame.columns
+        if regime_filter_applied:
+            regime_allowed = frame["is_regime_trade_allowed"].astype(str).str.lower().isin(
+                {"true", "1", "yes"}
+            )
+            frame = frame[regime_allowed].copy()
+        sample_count = int(len(frame))
+        effective_sample_count = int(frame["_source_position"].floordiv(
+            TRADING_TARGET_HORIZON_ROWS
+        ).nunique()) if sample_count else 0
+        if sample_count == 0:
+            return {
+                "passed": False,
+                "reasons": ["walk_forward_evaluation_empty"],
+                "sample_count": 0,
+            }
+
+        direction_paths: list[dict[str, float | int]] = []
+        for offset in range(TRADING_TARGET_HORIZON_ROWS):
+            path = frame[
+                frame["_source_position"] % TRADING_TARGET_HORIZON_ROWS == offset
+            ]
+            if path.empty:
+                continue
+            predicted_up = path["predicted_value"] > 0
+            actual_up = path["actual_future_result"] > 0
+            accuracy = float((predicted_up == actual_up).mean())
+            actual_up_rate = float(actual_up.mean())
+            naive_accuracy = max(actual_up_rate, 1.0 - actual_up_rate)
+            predicted_up_rate = float(predicted_up.mean())
+            true_positive = int((predicted_up & actual_up).sum())
+            true_negative = int((~predicted_up & ~actual_up).sum())
+            actual_positive = int(actual_up.sum())
+            actual_negative = int((~actual_up).sum())
+            positive_recall = (
+                true_positive / actual_positive if actual_positive else 0.0
+            )
+            negative_recall = (
+                true_negative / actual_negative if actual_negative else 0.0
+            )
+            balanced_accuracy = (positive_recall + negative_recall) / 2.0
+            worst_class_recall = min(positive_recall, negative_recall)
+            fold_accuracies: list[float] = []
+            if "evaluation_window" in path.columns:
+                for _, fold in path.groupby("evaluation_window", dropna=True):
+                    fold_predicted_up = fold["predicted_value"] > 0
+                    fold_actual_up = fold["actual_future_result"] > 0
+                    fold_accuracies.append(float((fold_predicted_up == fold_actual_up).mean()))
+            direction_paths.append(
+                {
+                    "offset": offset,
+                    "sample_count": int(len(path)),
+                    "direction_accuracy": accuracy,
+                    "naive_majority_accuracy": naive_accuracy,
+                    "direction_edge": accuracy - naive_accuracy,
+                    "worst_fold_accuracy": min(fold_accuracies) if fold_accuracies else accuracy,
+                    "predicted_up_rate": predicted_up_rate,
+                    "signal_minority_rate": min(predicted_up_rate, 1.0 - predicted_up_rate),
+                    "balanced_direction_accuracy": balanced_accuracy,
+                    "positive_recall": positive_recall,
+                    "negative_recall": negative_recall,
+                    "worst_class_recall": worst_class_recall,
+                }
+            )
+
+        direction_accuracy = float(pd.Series(
+            [item["direction_accuracy"] for item in direction_paths]
+        ).median())
+        naive_accuracy = float(pd.Series(
+            [item["naive_majority_accuracy"] for item in direction_paths]
+        ).median())
+        direction_edge = float(pd.Series(
+            [item["direction_edge"] for item in direction_paths]
+        ).median())
+        worst_fold_accuracy = float(pd.Series(
+            [item["worst_fold_accuracy"] for item in direction_paths]
+        ).median())
+        predicted_up_rate = float(pd.Series(
+            [item["predicted_up_rate"] for item in direction_paths]
+        ).median())
+        signal_minority_rate = float(pd.Series(
+            [item["signal_minority_rate"] for item in direction_paths]
+        ).median())
+        balanced_accuracy = float(pd.Series(
+            [item["balanced_direction_accuracy"] for item in direction_paths]
+        ).median())
+        worst_class_recall = float(pd.Series(
+            [item["worst_class_recall"] for item in direction_paths]
+        ).median())
+        positive_edge_path_rate = float(sum(
+            float(item["direction_edge"]) >= MIN_DIRECTION_EDGE
+            for item in direction_paths
+        ) / len(direction_paths))
+
+        reasons: list[str] = []
+        if effective_sample_count < MIN_WALK_FORWARD_ROWS:
+            reasons.append("insufficient_out_of_sample_rows")
+        if direction_accuracy < MIN_DIRECTION_ACCURACY:
+            reasons.append("direction_accuracy_below_minimum")
+        if direction_edge < MIN_DIRECTION_EDGE:
+            reasons.append("no_edge_over_majority_baseline")
+        if worst_fold_accuracy < MIN_WORST_FOLD_ACCURACY:
+            reasons.append("unstable_walk_forward_folds")
+        if signal_minority_rate < MIN_SIGNAL_MINORITY_RATE:
+            reasons.append("one_sided_predictions")
+        if balanced_accuracy < MIN_BALANCED_DIRECTION_ACCURACY:
+            reasons.append("balanced_accuracy_below_minimum")
+        if worst_class_recall < MIN_WORST_CLASS_RECALL:
+            reasons.append("minority_event_recall_below_minimum")
+        if positive_edge_path_rate < MIN_PROFITABLE_NON_OVERLAP_PATH_RATE:
+            reasons.append("direction_edge_not_robust_across_non_overlapping_paths")
+
+        result = {
+            "passed": not reasons,
+            "reasons": reasons,
+            "sample_count": sample_count,
+            "effective_non_overlapping_sample_count": effective_sample_count,
+            "direction_accuracy": direction_accuracy,
+            "naive_majority_accuracy": naive_accuracy,
+            "direction_edge": direction_edge,
+            "worst_fold_accuracy": worst_fold_accuracy,
+            "predicted_up_rate": predicted_up_rate,
+            "signal_minority_rate": signal_minority_rate,
+            "balanced_direction_accuracy": balanced_accuracy,
+            "worst_class_recall": worst_class_recall,
+            "positive_edge_non_overlapping_path_rate": positive_edge_path_rate,
+            "non_overlapping_direction_paths": direction_paths,
+            "actionable_filter_applied": actionable_filter_applied,
+            "regime_filter_applied": regime_filter_applied,
+        }
+        if "source_ticker" in evaluation_table.columns:
+            source_symbols = evaluation_table["source_ticker"].dropna().astype(str)
+            if source_symbols.nunique() >= 3:
+                per_ticker: dict[str, dict[str, Any]] = {}
+                for symbol, ticker_frame in evaluation_table.groupby("source_ticker"):
+                    per_ticker[str(symbol)] = ModelLifecycleService._walk_forward_quality_gate(
+                        ticker_frame.drop(columns=["source_ticker"])
+                    )
+                pass_rate = sum(bool(item.get("passed")) for item in per_ticker.values()) / len(per_ticker)
+                result["pooled_ticker_quality"] = per_ticker
+                result["pooled_ticker_pass_rate"] = pass_rate
+                if pass_rate < MIN_POOLED_TICKER_PASS_RATE:
+                    result["reasons"].append("direction_edge_not_robust_across_tickers")
+                    result["passed"] = False
+        return result
+
+    @staticmethod
+    def _historical_trading_quality_gate(
+        evaluation_table: pd.DataFrame | None,
+        target_name: str,
+    ) -> dict[str, Any]:
+        """Evaluate whether out-of-sample signals had usable trading economics."""
+        if target_name != TRADING_TARGET_NAME:
+            return {
+                "passed": True,
+                "not_applicable": True,
+                "reasons": [],
+            }
+        required = {"predicted_value", "actual_future_result"}
+        if evaluation_table is None or not required.issubset(evaluation_table.columns):
+            return {
+                "passed": False,
+                "reasons": ["trading_evaluation_missing"],
+                "active_signal_count": 0,
+            }
+
+        frame = evaluation_table.copy()
+        frame["_source_position"] = range(len(frame))
+        frame["predicted_value"] = pd.to_numeric(frame["predicted_value"], errors="coerce")
+        frame["actual_future_result"] = pd.to_numeric(
+            frame["actual_future_result"],
+            errors="coerce",
+        )
+        frame = frame.dropna(subset=["predicted_value", "actual_future_result"])
+        actionable_filter_applied = "is_actionable_signal" in frame.columns
+        if actionable_filter_applied:
+            actionable = frame["is_actionable_signal"].astype(str).str.lower().isin(
+                {"true", "1", "yes"}
+            )
+            frame = frame[actionable].copy()
+        regime_filter_applied = "is_regime_trade_allowed" in frame.columns
+        if regime_filter_applied:
+            regime_allowed = frame["is_regime_trade_allowed"].astype(str).str.lower().isin(
+                {"true", "1", "yes"}
+            )
+            frame = frame[regime_allowed].copy()
+        if frame.empty:
+            return {
+                "passed": False,
+                "reasons": ["trading_evaluation_empty"],
+                "active_signal_count": 0,
+            }
+
+        path_metrics: list[dict[str, float | int]] = []
+        for offset in range(TRADING_TARGET_HORIZON_ROWS):
+            path = frame[
+                frame["_source_position"] % TRADING_TARGET_HORIZON_ROWS == offset
+            ].copy()
+            if path.empty:
+                continue
+            active = path["predicted_value"] > 0
+            if "market_regime_position_multiplier" in path.columns:
+                regime_multiplier = pd.to_numeric(
+                    path["market_regime_position_multiplier"],
+                    errors="coerce",
+                ).fillna(1.0).clip(lower=0.0, upper=1.0)
+            else:
+                regime_multiplier = pd.Series(1.0, index=path.index)
+            signal_changes = active.astype(int).diff().abs().fillna(active.astype(int))
+            strategy_returns_pct = (
+                path["actual_future_result"].where(active, 0.0) * regime_multiplier
+                - signal_changes * PROMOTION_EXECUTION_COST_PCT
+            )
+            active_returns = strategy_returns_pct[active]
+            active_count = int(active.sum())
+            profitable_rate = float((active_returns > 0).mean()) if active_count else 0.0
+            average_return = float(active_returns.mean()) if active_count else 0.0
+
+            wealth = 1.0
+            peak = 1.0
+            max_drawdown = 0.0
+            for value in strategy_returns_pct:
+                period_return = max(-1.0, float(value) / 100.0)
+                wealth *= 1.0 + period_return
+                peak = max(peak, wealth)
+                if peak > 0:
+                    max_drawdown = min(max_drawdown, wealth / peak - 1.0)
+            path_metrics.append(
+                {
+                    "offset": offset,
+                    "active_signal_count": active_count,
+                    "profitable_signal_rate": profitable_rate,
+                    "average_active_return_pct_after_cost": average_return,
+                    "cumulative_signal_return_pct_after_cost": (wealth - 1.0) * 100.0,
+                    "max_signal_drawdown_pct": max_drawdown * 100.0,
+                }
+            )
+
+        if not path_metrics:
+            return {
+                "passed": False,
+                "reasons": ["non_overlapping_trading_paths_missing"],
+                "active_signal_count": 0,
+            }
+
+        active_signal_count = min(int(item["active_signal_count"]) for item in path_metrics)
+        profitable_rate = float(pd.Series(
+            [item["profitable_signal_rate"] for item in path_metrics]
+        ).median())
+        average_active_return_pct = float(pd.Series(
+            [item["average_active_return_pct_after_cost"] for item in path_metrics]
+        ).median())
+        cumulative_return_pct = float(pd.Series(
+            [item["cumulative_signal_return_pct_after_cost"] for item in path_metrics]
+        ).median())
+        max_drawdown_pct = min(float(item["max_signal_drawdown_pct"]) for item in path_metrics)
+        profitable_path_rate = float(sum(
+            float(item["average_active_return_pct_after_cost"]) > 0
+            for item in path_metrics
+        ) / len(path_metrics))
+
+        reasons: list[str] = []
+        if active_signal_count < 10:
+            reasons.append("insufficient_active_signals")
+        if average_active_return_pct <= 0:
+            reasons.append("negative_average_net_signal_return")
+        if profitable_rate < MIN_ACTIVE_SIGNAL_PROFITABLE_RATE:
+            reasons.append("profitable_signal_rate_below_minimum")
+        if max_drawdown_pct < MAX_PROMOTION_PROXY_DRAWDOWN_PCT:
+            reasons.append("historical_signal_drawdown_too_large")
+        if profitable_path_rate < MIN_PROFITABLE_NON_OVERLAP_PATH_RATE:
+            reasons.append("returns_not_robust_across_non_overlapping_paths")
+
+        result = {
+            "passed": not reasons,
+            "reasons": reasons,
+            "active_signal_count": active_signal_count,
+            "profitable_signal_rate": profitable_rate,
+            "average_active_return_pct_after_cost": average_active_return_pct,
+            "cumulative_signal_return_pct_after_cost": cumulative_return_pct,
+            "max_signal_drawdown_pct": max_drawdown_pct,
+            "execution_cost_pct_per_signal_change": PROMOTION_EXECUTION_COST_PCT,
+            "non_overlapping_path_count": len(path_metrics),
+            "profitable_non_overlapping_path_rate": profitable_path_rate,
+            "non_overlapping_path_metrics": path_metrics,
+            "actionable_filter_applied": actionable_filter_applied,
+            "regime_filter_applied": regime_filter_applied,
+        }
+        if "source_ticker" in evaluation_table.columns:
+            source_symbols = evaluation_table["source_ticker"].dropna().astype(str)
+            if source_symbols.nunique() >= 3:
+                per_ticker: dict[str, dict[str, Any]] = {}
+                for symbol, ticker_frame in evaluation_table.groupby("source_ticker"):
+                    per_ticker[str(symbol)] = ModelLifecycleService._historical_trading_quality_gate(
+                        ticker_frame.drop(columns=["source_ticker"]),
+                        target_name,
+                    )
+                pass_rate = sum(bool(item.get("passed")) for item in per_ticker.values()) / len(per_ticker)
+                result["pooled_ticker_trading"] = per_ticker
+                result["pooled_ticker_pass_rate"] = pass_rate
+                if pass_rate < MIN_POOLED_TICKER_PASS_RATE:
+                    result["reasons"].append("returns_not_robust_across_tickers")
+                    result["passed"] = False
+        return result
+
     def _upsert_registry(
         self,
         *,
@@ -303,13 +660,19 @@ class ModelLifecycleService:
     def _row_to_registry_item(self, row: sqlite3.Row) -> dict[str, Any]:
         metrics_summary = _safe_json_load(row["metrics_json"], {})
         stale_after_days = int(row["stale_after_days"] or DEFAULT_STALE_DAYS)
+        stored_is_validated = bool(int(row["is_validated"] or 0))
+        gate_version = int(metrics_summary.get("validation_gate_version") or 0)
+        validation_evidence_current = gate_version >= VALIDATION_GATE_VERSION
         return {
             "ticker": row["ticker"],
             "period": row["period"],
             "target_name": row["target_name"],
             "model_name": row["model_name"],
             "status": row["status"],
-            "is_validated": bool(int(row["is_validated"] or 0)),
+            "is_validated": stored_is_validated and validation_evidence_current,
+            "stored_is_validated": stored_is_validated,
+            "validation_gate_version": gate_version,
+            "validation_evidence_current": validation_evidence_current,
             "validation_score": float(row["validation_score"]) if row["validation_score"] is not None else None,
             "stale_after_days": stale_after_days,
             "is_stale": self._is_stale(row["last_trained_at_utc"], stale_after_days),
@@ -369,7 +732,10 @@ class ModelLifecycleService:
                 """,
                 (str(ticker).strip().upper(), str(period).strip(), str(target_name).strip()),
             ).fetchone()
-        return None if row is None else self._row_to_registry_item(row)
+        if row is None:
+            return None
+        item = self._row_to_registry_item(row)
+        return item if item["is_validated"] else None
 
     def get_latest_validated_candidate(
         self,
@@ -406,6 +772,21 @@ class ModelLifecycleService:
     ) -> bool:
         if validation_score < PRODUCTION_MIN_SCORE:
             return False
+        if target_name == OUTPERFORMANCE_TARGET_NAME:
+            forward_gate = self._benchmark_forward_promotion_gate(
+                ticker=ticker,
+                period=period,
+                model_name=model_name,
+            )
+            if not forward_gate["passed"]:
+                logger.info(
+                    "Benchmark-relative promotion deferred ticker=%s period=%s model=%s reasons=%s",
+                    ticker,
+                    period,
+                    model_name,
+                    forward_gate["reasons"],
+                )
+                return False
 
         current_prod = self.get_production_model(
             ticker=ticker,
@@ -479,6 +860,61 @@ class ModelLifecycleService:
         )
         return True
 
+    def _benchmark_forward_promotion_gate(
+        self,
+        *,
+        ticker: str,
+        period: str,
+        model_name: str,
+    ) -> dict[str, Any]:
+        """Require real forward evidence before benchmark-model promotion."""
+        summary = self.feedback_service.get_benchmark_shadow_summary(
+            ticker=ticker,
+            model_period=period,
+            model_name=model_name,
+        )
+        minimum_samples = int(get_settings().model_feedback_min_samples)
+        sample_count = int(summary.get("sample_count") or 0)
+        active_count = int(summary.get("active_signal_count") or 0)
+        direction_accuracy = summary.get("direction_accuracy")
+        average_net = summary.get("average_active_net_return_pct")
+        profitable_rate = summary.get("active_profitable_rate")
+        reasons: list[str] = []
+        if sample_count < minimum_samples:
+            reasons.append("insufficient_matured_forward_predictions")
+        if active_count < MIN_FORWARD_ACTIVE_SIGNALS:
+            reasons.append("insufficient_matured_active_signals")
+        if direction_accuracy is None or float(direction_accuracy) < MIN_FORWARD_DIRECTION_ACCURACY:
+            reasons.append("forward_direction_accuracy_below_minimum")
+        if average_net is None or float(average_net) <= 0:
+            reasons.append("forward_average_net_return_not_positive")
+        if profitable_rate is None or float(profitable_rate) < MIN_FORWARD_PROFITABLE_RATE:
+            reasons.append("forward_profitable_rate_below_minimum")
+        return {
+            **summary,
+            "passed": not reasons,
+            "reasons": reasons,
+            "required_sample_count": minimum_samples,
+            "required_active_signal_count": MIN_FORWARD_ACTIVE_SIGNALS,
+            "required_direction_accuracy": MIN_FORWARD_DIRECTION_ACCURACY,
+            "required_average_active_net_return_pct": "> 0",
+            "required_active_profitable_rate": MIN_FORWARD_PROFITABLE_RATE,
+        }
+
+    def get_benchmark_forward_promotion_gate(
+        self,
+        *,
+        ticker: str,
+        period: str,
+        model_name: str,
+    ) -> dict[str, Any]:
+        """Public read-only view of benchmark-model promotion readiness."""
+        return self._benchmark_forward_promotion_gate(
+            ticker=ticker,
+            period=period,
+            model_name=model_name,
+        )
+
     def register_training_result(self, result: TrainingRunResult, retrain_type: str) -> dict[str, Any]:
         """Insert/refresh registry row for one training result and attempt promotion."""
         metrics_summary = dict(result.metrics or {})
@@ -500,7 +936,68 @@ class ModelLifecycleService:
         metrics_summary["walk_forward_validation_score"] = base_score
         metrics_summary["live_feedback"] = feedback_summary
         metrics_summary["promotion_score"] = score
-        validated = score >= PRODUCTION_MIN_SCORE
+        quality_gate = self._walk_forward_quality_gate(result.evaluation_table)
+        trading_gate = self._historical_trading_quality_gate(
+            result.evaluation_table,
+            result.target_name,
+        )
+        metrics_summary["walk_forward_quality_gate"] = quality_gate
+        metrics_summary["historical_trading_quality_gate"] = trading_gate
+        provenance_current = (
+            int(metrics_summary.get("validation_scheme_version") or 0)
+            >= MIN_VALIDATION_SCHEME_VERSION
+            and int(metrics_summary.get("validation_gap_rows") or 0)
+            >= TRADING_TARGET_HORIZON_ROWS
+            and (
+                result.target_name != TRADING_TARGET_NAME
+                or (
+                    bool(metrics_summary.get("stationary_features"))
+                    and int(metrics_summary.get("feature_schema_version") or 0) >= 2
+                )
+            )
+            and (
+                result.target_name != OUTPERFORMANCE_TARGET_NAME
+                or bool(
+                    (metrics_summary.get("outperformance_economics_gate") or {}).get(
+                        "passed"
+                    )
+                )
+            )
+            and (
+                not bool(metrics_summary.get("pooled_training"))
+                or (
+                    "pooled_ticker_quality" in quality_gate
+                    and (
+                        result.target_name != TRADING_TARGET_NAME
+                        or "pooled_ticker_trading" in trading_gate
+                    )
+                    and bool(metrics_summary.get("pooled_stationary_features"))
+                    and int(metrics_summary.get("feature_schema_version") or 0) >= 2
+                )
+            )
+        )
+        metrics_summary["validation_gate_version"] = (
+            VALIDATION_GATE_VERSION if provenance_current else 0
+        )
+        metrics_summary["validation_provenance_current"] = provenance_current
+        forward_gate = (
+            self._benchmark_forward_promotion_gate(
+                ticker=result.ticker,
+                period=result.period,
+                model_name=result.model_name,
+            )
+            if result.target_name == OUTPERFORMANCE_TARGET_NAME
+            else None
+        )
+        if forward_gate is not None:
+            metrics_summary["benchmark_forward_promotion_gate"] = forward_gate
+        validated = (
+            provenance_current
+            and
+            score >= PRODUCTION_MIN_SCORE
+            and bool(quality_gate["passed"])
+            and bool(trading_gate["passed"])
+        )
 
         self._upsert_registry(
             ticker=result.ticker,
@@ -535,9 +1032,12 @@ class ModelLifecycleService:
             "model_name": result.model_name,
             "walk_forward_validation_score": base_score,
             "feedback_summary": feedback_summary,
+            "quality_gate": quality_gate,
+            "trading_quality_gate": trading_gate,
             "validation_score": score,
             "validated": validated,
             "promoted": promoted,
+            "benchmark_forward_promotion_gate": forward_gate,
         }
 
     def sync_registry_from_saved_artifacts(self, limit: int = 600) -> int:
@@ -546,7 +1046,11 @@ class ModelLifecycleService:
         if not base_dir.exists():
             return 0
 
-        files = list(base_dir.glob("*/*/*/*/metrics_summary.json"))[: max(1, int(limit))]
+        files = sorted(
+            base_dir.glob("*/*/*/*/metrics_summary.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[: max(1, int(limit))]
         synced = 0
         for metrics_path in files:
             try:
@@ -571,7 +1075,71 @@ class ModelLifecycleService:
                 metrics_summary["walk_forward_validation_score"] = base_score
                 metrics_summary["live_feedback"] = feedback_summary
                 metrics_summary["promotion_score"] = score
-                validated = score >= PRODUCTION_MIN_SCORE
+                evaluation_path = metrics_path.parent / "evaluation_table.csv"
+                evaluation_table = (
+                    pd.read_csv(evaluation_path)
+                    if evaluation_path.exists()
+                    else None
+                )
+                quality_gate = self._walk_forward_quality_gate(evaluation_table)
+                trading_gate = self._historical_trading_quality_gate(
+                    evaluation_table,
+                    target_name,
+                )
+                metrics_summary["walk_forward_quality_gate"] = quality_gate
+                metrics_summary["historical_trading_quality_gate"] = trading_gate
+                provenance_current = (
+                    int(metrics_summary.get("validation_scheme_version") or 0)
+                    >= MIN_VALIDATION_SCHEME_VERSION
+                    and int(metrics_summary.get("validation_gap_rows") or 0)
+                    >= TRADING_TARGET_HORIZON_ROWS
+                    and (
+                        target_name != TRADING_TARGET_NAME
+                        or (
+                            bool(metrics_summary.get("stationary_features"))
+                            and int(metrics_summary.get("feature_schema_version") or 0) >= 2
+                        )
+                    )
+                    and (
+                        target_name != OUTPERFORMANCE_TARGET_NAME
+                        or bool(
+                            (metrics_summary.get("outperformance_economics_gate") or {}).get(
+                                "passed"
+                            )
+                        )
+                    )
+                    and (
+                        not bool(metrics_summary.get("pooled_training"))
+                        or (
+                            "pooled_ticker_quality" in quality_gate
+                            and (
+                                target_name != TRADING_TARGET_NAME
+                                or "pooled_ticker_trading" in trading_gate
+                            )
+                            and bool(metrics_summary.get("pooled_stationary_features"))
+                            and int(metrics_summary.get("feature_schema_version") or 0) >= 2
+                        )
+                    )
+                )
+                metrics_summary["validation_gate_version"] = (
+                    VALIDATION_GATE_VERSION if provenance_current else 0
+                )
+                metrics_summary["validation_provenance_current"] = provenance_current
+                if target_name == OUTPERFORMANCE_TARGET_NAME:
+                    metrics_summary["benchmark_forward_promotion_gate"] = (
+                        self._benchmark_forward_promotion_gate(
+                            ticker=ticker,
+                            period=period,
+                            model_name=model_name,
+                        )
+                    )
+                validated = (
+                    provenance_current
+                    and
+                    score >= PRODUCTION_MIN_SCORE
+                    and bool(quality_gate["passed"])
+                    and bool(trading_gate["passed"])
+                )
                 existing_rows = self.list_registry(
                     ticker=ticker,
                     period=period,
@@ -593,7 +1161,19 @@ class ModelLifecycleService:
                     model_name=model_name,
                     status=(
                         "production"
-                        if existing and existing["status"] == "production"
+                        if (
+                            existing
+                            and existing["status"] == "production"
+                            and (
+                                target_name != OUTPERFORMANCE_TARGET_NAME
+                                or bool(
+                                    metrics_summary.get(
+                                        "benchmark_forward_promotion_gate",
+                                        {},
+                                    ).get("passed")
+                                )
+                            )
+                        )
                         else "candidate"
                     ),
                     is_validated=validated,
@@ -858,12 +1438,13 @@ class ModelLifecycleService:
         """Refresh registry scores and promote reliable challengers."""
         rows = [
             row
+            for target in (TRADING_TARGET_NAME, OUTPERFORMANCE_TARGET_NAME)
             for row in self.list_registry(
-                target_name=TRADING_TARGET_NAME,
+                target_name=target,
                 limit=max(1, int(limit)),
             )
             if row["status"] in {"candidate", "production"}
-        ]
+        ][: max(1, int(limit))]
         updated = 0
         promoted = 0
         for row in rows:
@@ -879,7 +1460,9 @@ class ModelLifecycleService:
                 model_name=row["model_name"],
             )
             combined_score = (
-                self.feedback_service.blend_validation_with_feedback(
+                base_score
+                if row["target_name"] == OUTPERFORMANCE_TARGET_NAME
+                else self.feedback_service.blend_validation_with_feedback(
                     validation_score=base_score,
                     feedback_summary=feedback_summary,
                 )
@@ -887,13 +1470,47 @@ class ModelLifecycleService:
             metrics_summary["walk_forward_validation_score"] = base_score
             metrics_summary["live_feedback"] = feedback_summary
             metrics_summary["promotion_score"] = combined_score
-            validated = combined_score >= PRODUCTION_MIN_SCORE
+            if row["target_name"] == OUTPERFORMANCE_TARGET_NAME:
+                metrics_summary["benchmark_forward_promotion_gate"] = (
+                    self._benchmark_forward_promotion_gate(
+                        ticker=row["ticker"],
+                        period=row["period"],
+                        model_name=row["model_name"],
+                    )
+                )
+            quality_gate = dict(
+                metrics_summary.get("walk_forward_quality_gate") or {}
+            )
+            trading_gate = dict(
+                metrics_summary.get("historical_trading_quality_gate") or {}
+            )
+            gate_version = int(metrics_summary.get("validation_gate_version") or 0)
+            validated = (
+                gate_version >= VALIDATION_GATE_VERSION
+                and
+                combined_score >= PRODUCTION_MIN_SCORE
+                and bool(quality_gate.get("passed"))
+                and bool(trading_gate.get("passed"))
+            )
+            effective_status = (
+                "candidate"
+                if (
+                    row["target_name"] == OUTPERFORMANCE_TARGET_NAME
+                    and not bool(
+                        metrics_summary.get(
+                            "benchmark_forward_promotion_gate",
+                            {},
+                        ).get("passed")
+                    )
+                )
+                else row["status"]
+            )
             self._upsert_registry(
                 ticker=row["ticker"],
                 period=row["period"],
                 target_name=row["target_name"],
                 model_name=row["model_name"],
-                status=row["status"],
+                status=effective_status,
                 is_validated=validated,
                 validation_score=combined_score,
                 stale_after_days=int(row["stale_after_days"]),
@@ -905,7 +1522,7 @@ class ModelLifecycleService:
                 last_promoted_at_utc=row.get("last_promoted_at_utc"),
             )
             updated += 1
-            if row["status"] == "candidate" and validated:
+            if effective_status == "candidate" and validated:
                 if self._promote_candidate_if_eligible(
                     ticker=row["ticker"],
                     period=row["period"],
@@ -978,6 +1595,25 @@ class ModelLifecycleService:
                     triggers.append(
                         f"trading_performance_weakened:{ticker}:{model_name}:{float(outperformance):.2f}"
                     )
+                observation_count = int(summary.get("risk_observation_count") or 0)
+                max_drawdown = summary.get("max_drawdown_pct")
+                if (
+                    observation_count >= 60
+                    and isinstance(max_drawdown, (int, float))
+                    and float(max_drawdown) < -25.0
+                ):
+                    triggers.append(
+                        f"trading_drawdown_exceeded:{ticker}:{model_name}:{float(max_drawdown):.2f}"
+                    )
+                sharpe_ratio = summary.get("sharpe_ratio")
+                if (
+                    observation_count >= 60
+                    and isinstance(sharpe_ratio, (int, float))
+                    and float(sharpe_ratio) < -0.25
+                ):
+                    triggers.append(
+                        f"risk_adjusted_performance_weakened:{ticker}:{model_name}:{float(sharpe_ratio):.2f}"
+                    )
             except Exception:
                 # Historical virtual-trader artifacts may not always exist; keep trigger scan resilient.
                 pass
@@ -1020,6 +1656,9 @@ class ModelLifecycleService:
             and row["ticker"] in {clean_ticker, "GLOBAL"}
             and row["status"] in {"production", "candidate"}
             and bool(row["is_validated"])
+            and int(
+                (row.get("metrics_summary") or {}).get("validation_gate_version") or 0
+            ) >= VALIDATION_GATE_VERSION
         ]
         for row in eligible_rows:
             feedback_summary = self.feedback_service.get_model_summary(

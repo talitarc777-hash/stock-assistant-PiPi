@@ -21,6 +21,7 @@ from app.services.model_lifecycle_scheduler import (
 from app.services.model_lifecycle_service import (
     DEFAULT_TARGET_NAME,
     ModelLifecycleError,
+    OUTPERFORMANCE_TARGET_NAME,
     get_model_lifecycle_service,
 )
 from app.services.model_feedback_service import get_model_feedback_service
@@ -85,6 +86,70 @@ def evaluate_model_feedback() -> dict:
         limit=500
     )
     return {**result, "registry_refresh": refresh}
+
+
+@router.get("/model-lifecycle/benchmark-shadow-feedback")
+def get_benchmark_shadow_feedback(
+    ticker: str = Query(
+        "SPY",
+        min_length=1,
+        max_length=15,
+        pattern=TICKER_PATTERN,
+    ),
+    model_period: str = Query("10y", pattern=PERIOD_PATTERN),
+    model_name: str = Query("random_forest", min_length=1, max_length=50),
+    status: str | None = Query(default=None, pattern="^(pending|evaluated)$"),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    """Return auditable, genuinely forward shadow-model outcomes."""
+    service = get_model_feedback_service()
+    rows = service.list_benchmark_shadow_feedback(
+        ticker=ticker,
+        model_period=model_period,
+        model_name=model_name,
+        status=status,
+        limit=limit,
+    )
+    lifecycle = get_model_lifecycle_service()
+    registry_rows = lifecycle.list_registry(
+        ticker=ticker,
+        period=model_period,
+        target_name=OUTPERFORMANCE_TARGET_NAME,
+        limit=100,
+    )
+    registry_row = next(
+        (
+            row
+            for row in registry_rows
+            if str(row.get("model_name", "")).lower() == model_name.strip().lower()
+        ),
+        None,
+    )
+    historical_evidence = None
+    if registry_row:
+        metrics = dict(registry_row.get("metrics_summary") or {})
+        historical_evidence = {
+            "ticker": registry_row.get("ticker"),
+            "period": registry_row.get("period"),
+            "model_name": registry_row.get("model_name"),
+            "status": registry_row.get("status"),
+            "is_validated": bool(registry_row.get("is_validated")),
+            "is_stale": bool(registry_row.get("is_stale")),
+            "validation_score": registry_row.get("validation_score"),
+            "validation_gate_version": metrics.get("validation_gate_version"),
+            "quality_gate": metrics.get("walk_forward_quality_gate") or {},
+            "economics_gate": metrics.get("outperformance_economics_gate") or {},
+        }
+    return {
+        "count": len(rows),
+        "summary": lifecycle.get_benchmark_forward_promotion_gate(
+            ticker=ticker,
+            period=model_period,
+            model_name=model_name,
+        ),
+        "historical_evidence": historical_evidence,
+        "feedback": rows,
+    }
 
 
 @router.get("/model-lifecycle/status", response_model=ModelLifecycleStatusResponse)

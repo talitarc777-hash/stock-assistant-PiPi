@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchTraderSchedulerStatus,
   fetchLiveVirtualTraderStatus,
+  fetchLiveVirtualTraderSync,
   fetchLiveVirtualTraderTrades,
   fetchVirtualAccountHistory,
   fetchVirtualAccountRecentTrades,
@@ -22,13 +23,16 @@ import RecentRunsPanel from "../components/RecentRunsPanel";
 import RecentTradesTable from "../components/RecentTradesTable";
 import ResetTradingAccountButton from "../components/ResetTradingAccountButton";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
+import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 
 const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
 const HISTORY_PAGE_SIZE = 120;
 const DECISION_HISTORY_LIMIT = 160;
 const SCHEDULER_REFRESH_MS = 60000;
+const LIVE_SYNC_REFRESH_MS = 5000;
 const BUY_POTENTIAL_FILTERS = ["all", "bought", "high_blocked", "watching", "low_now", "holding", "sell_action"];
+const BEGINNER_GUIDE_STORAGE_KEY = "stock-assistant-hide-beginner-guide";
 
 const ZH = {
   intro: "這是一個給新手投資者使用的虛擬交易和學習頁面，只作教育和模擬用途。",
@@ -103,6 +107,58 @@ function formatPercent(value) {
   return ` (${numeric.toFixed(2)}%)`;
 }
 
+function formatRiskValue(value, suffix = "") {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2)}${suffix}` : "Not enough history";
+}
+
+function confidenceGuide(value, languageMode) {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) {
+    return {
+      value: labelByMode(languageMode, "Not available", "未有資料"),
+      level: "unknown",
+      explanation: labelByMode(languageMode, "No comparable confidence score is available.", "未有可比較的信心評分。"),
+    };
+  }
+  const percent = confidence * 100;
+  const level = percent >= 75 ? "high" : percent >= 55 ? "medium" : "low";
+  const labels = {
+    high: ["Higher model confidence", "較高模型信心"],
+    medium: ["Moderate model confidence", "中等模型信心"],
+    low: ["Low model confidence", "較低模型信心"],
+  };
+  return {
+    value: `${percent.toFixed(0)}% · ${labelByMode(languageMode, ...labels[level])}`,
+    level,
+    explanation: labelByMode(
+      languageMode,
+      "This measures how strongly the model supports its signal, not the chance of making a profit.",
+      "這表示模型支持訊號的程度，並不代表獲利機率。"
+    ),
+  };
+}
+
+function contextGuide(value, languageMode) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) {
+    return {
+      value: labelByMode(languageMode, "Not evaluated", "未有評估"),
+      level: "unknown",
+    };
+  }
+  const level = score >= 60 ? "high" : score >= 40 ? "medium" : "low";
+  const labels = {
+    high: ["Supportive conditions", "市況較支持"],
+    medium: ["Mixed conditions", "市況好壞參半"],
+    low: ["Cautious conditions", "市況需要審慎"],
+  };
+  return {
+    value: `${score.toFixed(0)}/100 · ${labelByMode(languageMode, ...labels[level])}`,
+    level,
+  };
+}
+
 function actionText(action, languageMode) {
   const normalized = String(action || "").toLowerCase();
   const map = {
@@ -125,6 +181,9 @@ function decisionReasonText(reason, languageMode) {
     risk_or_cash_constraint: ["Blocked by cash or risk rules", "受現金或風險規則限制"],
     context_score_too_low: ["Context score is too weak to buy", "背景評分不足，暫不買入"],
     context_risk_reduction: ["Context risk triggered a partial sell", "背景風險觸發部分賣出"],
+    portfolio_drawdown_pause: ["Portfolio losses paused new buying", "投資組合虧損觸發暫停新買入"],
+    portfolio_drawdown_reduction: ["Critical portfolio loss triggered risk reduction", "投資組合嚴重虧損觸發減持"],
+    market_data_quality_block: ["Market data was stale or inconsistent, so buying was blocked", "市場資料過時或不一致，因此阻止買入"],
     holding_position: ["Continue holding", "繼續持有"],
     stop_loss: ["Stop-loss was reached", "已觸及止蝕"],
     take_profit: ["Profit target was reached", "已達到止賺目標"],
@@ -179,7 +238,12 @@ function decisionOpportunityScore(item, isWatchlist) {
   );
 }
 
-export default function VirtualTraderPage({ languageMode, currentWatchlist, profileId }) {
+export default function VirtualTraderPage({
+  languageMode,
+  currentWatchlist,
+  profileId,
+  onWatchlistSynced,
+}) {
   const [selectedTicker, setSelectedTicker] = useState(currentWatchlist[0] || "VOO");
   const [liveStatus, setLiveStatus] = useState(null);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
@@ -207,6 +271,22 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
   const [isLoading, setIsLoading] = useState(false);
   const [isRunningNow, setIsRunningNow] = useState(false);
   const [error, setError] = useState("");
+  const [showBeginnerGuide, setShowBeginnerGuide] = useState(
+    () => window.localStorage.getItem(BEGINNER_GUIDE_STORAGE_KEY) !== "true"
+  );
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [liveSyncError, setLiveSyncError] = useState("");
+  const liveSyncInFlight = useRef(false);
+
+  function hideBeginnerGuide() {
+    window.localStorage.setItem(BEGINNER_GUIDE_STORAGE_KEY, "true");
+    setShowBeginnerGuide(false);
+  }
+
+  function restoreBeginnerGuide() {
+    window.localStorage.removeItem(BEGINNER_GUIDE_STORAGE_KEY);
+    setShowBeginnerGuide(true);
+  }
 
   useEffect(() => {
     if (!currentWatchlist.length) return;
@@ -244,6 +324,10 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
       realized_pnl: account.realized_pnl,
       unrealized_pnl: account.unrealized_pnl,
       net_deposits: account.net_deposits ?? account.total_contributions_applied,
+      portfolio_risk_level: account.portfolio_risk_level,
+      performance_vs_contributions_pct: account.performance_vs_contributions_pct,
+      buying_paused: account.buying_paused,
+      position_size_multiplier: account.position_size_multiplier,
       holdings,
       latest_prices: {},
     });
@@ -273,6 +357,11 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         const decisions = decisionHistoryResult.value.trades || [];
         setLiveDecisionLog(decisions);
         setSelectedLiveTrade(decisions[0] || null);
+      }
+      if ([liveStatusResult, recentTradesResult, decisionHistoryResult].some(
+        (result) => result.status === "fulfilled"
+      )) {
+        setLastSyncedAt(new Date());
       }
 
       if (liveStatusResult.status === "rejected") {
@@ -328,10 +417,64 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
     }
   }
 
+  async function loadLiveSyncOnly() {
+    if (!profileId || liveSyncInFlight.current) return;
+    liveSyncInFlight.current = true;
+    try {
+      const payload = await fetchLiveVirtualTraderSync(
+        profileId,
+        20,
+        DECISION_HISTORY_LIMIT
+      );
+      const syncedWatchlist = Array.isArray(payload.watchlist) ? payload.watchlist : [];
+      if (
+        onWatchlistSynced
+        && syncedWatchlist.join(",") !== currentWatchlist.join(",")
+      ) {
+        onWatchlistSynced(syncedWatchlist);
+      }
+      applyLiveStatusPayload(payload.status);
+      setRecentTrades(payload.recent_trades || []);
+      const decisions = payload.decisions || [];
+      setLiveDecisionLog(decisions);
+      setSelectedLiveTrade((current) => {
+        if (!current) return decisions[0] || null;
+        return decisions.find((item) => item.timestamp === current.timestamp)
+          || decisions[0]
+          || null;
+      });
+      setLiveSyncError("");
+      setLastSyncedAt(payload.synced_at_utc ? new Date(payload.synced_at_utc) : new Date());
+    } catch (requestError) {
+      setLiveSyncError(
+        requestError.message
+          || labelByMode(languageMode, "Live synchronization is temporarily unavailable.", "即時同步暫時未能使用。")
+      );
+    } finally {
+      liveSyncInFlight.current = false;
+    }
+  }
+
   useEffect(() => {
     loadGlobalViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileId]);
+
+  useEffect(() => {
+    if (!profileId) return undefined;
+    const refreshWhenVisible = () => {
+      if (!document.hidden) loadLiveSyncOnly();
+    };
+    refreshWhenVisible();
+    const timer = window.setInterval(refreshWhenVisible, LIVE_SYNC_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+    };
+  }, [profileId, languageMode, currentWatchlist, onWatchlistSynced]);
 
   useEffect(() => {
     if (!historyEnabled) return;
@@ -525,6 +668,19 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           <p>{labelByMode(languageMode, "A simple virtual trading view for learning and paper trading.", ZH.intro)}</p>
         </div>
         <div className="header-controls">
+          <div className={`live-sync-status ${liveSyncError ? "warning" : ""}`} role="status">
+            <span className="live-sync-dot" aria-hidden="true" />
+            <span>
+              {liveSyncError
+                || (lastSyncedAt
+                  ? labelByMode(
+                    languageMode,
+                    `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`,
+                    `已同步 ${lastSyncedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+                  )
+                  : labelByMode(languageMode, "Live sync starting", "即時同步啟動中"))}
+            </span>
+          </div>
           <button type="button" onClick={handleRunNow} disabled={isRunningNow}>
             {isRunningNow
               ? labelByMode(languageMode, "Running...", ZH.running)
@@ -532,6 +688,56 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           </button>
         </div>
       </header>
+
+      {showBeginnerGuide ? (
+        <section className="panel beginner-guide">
+          <div className="beginner-guide-heading">
+            <div>
+              <span className="eyebrow">{labelByMode(languageMode, "New here?", "第一次使用？")}</span>
+              <h2>{labelByMode(languageMode, "Start virtual trading in four steps", "四步開始模擬交易")}</h2>
+              <p className="helper-text">
+                {labelByMode(
+                  languageMode,
+                  "No real money is used. Follow these steps to learn what the trader does before judging its results.",
+                  "不會使用真實金錢。請依照以下步驟了解交易員的運作，再評估結果。"
+                )}
+              </p>
+            </div>
+            <button type="button" className="secondary-button" onClick={hideBeginnerGuide}>
+              {labelByMode(languageMode, "Hide guide", "隱藏指南")}
+            </button>
+          </div>
+          <ol className="beginner-guide-steps">
+            <li>
+              <strong>{labelByMode(languageMode, "Set up virtual cash", "設定模擬資金")}</strong>
+              <span>{labelByMode(languageMode, "Add a one-time amount or a monthly contribution. Deposits are not profit.", "加入一次性金額或每月供款；入金並不等於盈利。")}</span>
+            </li>
+            <li>
+              <strong>{labelByMode(languageMode, "Choose what to watch", "選擇觀察項目")}</strong>
+              <span>{labelByMode(languageMode, "Use Settings to maintain a small watchlist. Broad ETFs are easier starting examples than concentrated bets.", "在設定中管理精簡觀察名單；廣泛 ETF 比集中押注更適合作為入門例子。")}</span>
+              <a href="/settings">{labelByMode(languageMode, "Open Settings", "開啟設定")}</a>
+            </li>
+            <li>
+              <strong>{labelByMode(languageMode, "Update and read the decision", "更新並閱讀決定")}</strong>
+              <span>{labelByMode(languageMode, "Action says what happened; reason says why; confidence is signal strength, not profit probability.", "動作表示發生甚麼，原因解釋為何；信心是訊號強度，並非獲利機率。")}</span>
+            </li>
+            <li>
+              <strong>{labelByMode(languageMode, "Connect Discord", "連接 Discord")}</strong>
+              <span>{labelByMode(languageMode, "Generate a one-time code in Settings so both places use the same account and information.", "在設定產生一次性代碼，令兩邊使用相同帳戶及資料。")}</span>
+              <a href="/settings">{labelByMode(languageMode, "Link Discord", "連接 Discord")}</a>
+            </li>
+          </ol>
+          <div className="beginner-guide-note">
+            <strong>{labelByMode(languageMode, "Remember", "請記住")}</strong>
+            <span>{labelByMode(languageMode, "A good decision process can still lose money. Compare results with the benchmark and check drawdown, not profit alone.", "良好決策仍可能虧損。除了盈利，亦要與基準比較並檢查最大跌幅。")}</span>
+            <a href="/glossary">{labelByMode(languageMode, "Look up unfamiliar terms", "查閱不熟悉的詞語")}</a>
+          </div>
+        </section>
+      ) : (
+        <button type="button" className="restore-beginner-guide" onClick={restoreBeginnerGuide}>
+          {labelByMode(languageMode, "Show getting-started guide", "顯示入門指南")}
+        </button>
+      )}
 
       {error ? (
         <div className="error-box">
@@ -643,6 +849,178 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
         </div>
         {selectedLiveTrade ? (
           <div className="decision-context-box">
+            {(() => {
+              const confidence = confidenceGuide(selectedLiveTrade.confidence_score, languageMode);
+              const context = contextGuide(selectedLiveTrade.metadata?.context_score, languageMode);
+              const validationStatus = selectedLiveTrade.metadata?.model_validation_status;
+              const benchmarkShadow = selectedLiveTrade.metadata?.benchmark_shadow;
+              const usesValidatedModel = validationStatus === "validated";
+              const usesSafetyFallback = validationStatus === "safety_fallback";
+              const regimeGuide = marketRegimeGuide(selectedLiveTrade.metadata?.market_regime, languageMode);
+              const action = String(selectedLiveTrade.action || "no_action").toLowerCase();
+              const quantity = Number(selectedLiveTrade.quantity);
+              const executed =
+                (action === "buy" || action === "sell")
+                && Number.isFinite(quantity)
+                && quantity > 0;
+              return (
+                <div className="decision-explainer">
+                  <div className="decision-explainer-heading">
+                    <div>
+                      <span>{labelByMode(languageMode, "What this means", "這代表甚麼")}</span>
+                      <strong>{actionText(selectedLiveTrade.action, languageMode)} {selectedLiveTrade.ticker}</strong>
+                    </div>
+                    <span className={`decision-status-pill ${executed ? "executed" : ""}`}>
+                      {executed
+                        ? labelByMode(
+                          languageMode,
+                          `Simulated trade: ${quantity} share${quantity === 1 ? "" : "s"}`,
+                          `模擬交易：${quantity} 股`
+                        )
+                        : labelByMode(languageMode, "No trade was placed", "沒有執行交易")}
+                    </span>
+                  </div>
+                  <div className="decision-guide-grid">
+                    <div className={`decision-guide-card ${confidence.level}`}>
+                      <span>{labelByMode(languageMode, "Model confidence", "模型信心")}</span>
+                      <strong>{confidence.value}</strong>
+                      <small>{confidence.explanation}</small>
+                      {Number.isFinite(Number(selectedLiveTrade.metadata?.prediction_uncertainty?.out_of_sample_error_pct)) ? (
+                        <small className="uncertainty-detail">
+                          {labelByMode(
+                            languageMode,
+                            `Predicted 5-day return: ${formatRiskValue(selectedLiveTrade.metadata.prediction_uncertainty.predicted_return_pct, "%")}. Typical out-of-sample error: ±${formatRiskValue(selectedLiveTrade.metadata.prediction_uncertainty.out_of_sample_error_pct, "%")}.`,
+                            `預測 5 日回報：${formatRiskValue(selectedLiveTrade.metadata.prediction_uncertainty.predicted_return_pct, "%")}。一般樣本外誤差：±${formatRiskValue(selectedLiveTrade.metadata.prediction_uncertainty.out_of_sample_error_pct, "%")}。`
+                          )}
+                        </small>
+                      ) : null}
+                    </div>
+                    <div className={`decision-guide-card ${context.level}`}>
+                      <span>{labelByMode(languageMode, "Market context", "市場背景")}</span>
+                      <strong>{context.value}</strong>
+                      <small>
+                        {labelByMode(
+                          languageMode,
+                          "Combines technical, news, benchmark, and available external context.",
+                          "綜合技術、新聞、基準及可用外部資料。"
+                        )}
+                      </small>
+                      {selectedLiveTrade.metadata?.market_data_quality ? (
+                        <small className="uncertainty-detail">
+                          {selectedLiveTrade.metadata.market_data_quality.trade_safe
+                            ? labelByMode(languageMode, "Market data check passed.", "市場資料檢查通過。")
+                            : labelByMode(
+                              languageMode,
+                              `Market data blocked trading: ${(selectedLiveTrade.metadata.market_data_quality.reasons || []).map((reason) => marketDataReasonText(reason, "en")).join("; ")}`,
+                              `市場資料阻止交易：${(selectedLiveTrade.metadata.market_data_quality.reasons || []).map((reason) => marketDataReasonText(reason, "zh")).join("；")}`
+                            )}
+                        </small>
+                      ) : null}
+                    </div>
+                    {selectedLiveTrade.metadata?.market_regime ? (
+                      <div className={`decision-guide-card ${selectedLiveTrade.metadata.market_regime.level === "stress" ? "low" : selectedLiveTrade.metadata.market_regime.level === "caution" ? "medium" : "high"}`}>
+                        <span>{labelByMode(languageMode, "Wider-market risk protection", "整體市場風險保護")}</span>
+                        <strong>{regimeGuide.label}</strong>
+                        <small>{regimeGuide.effect}</small>
+                        <small className="uncertainty-detail">{regimeGuide.reasons}</small>
+                      </div>
+                    ) : null}
+                    <div className={`decision-guide-card ${usesValidatedModel ? "high" : "medium"}`}>
+                      <span>{labelByMode(languageMode, "Model safety check", "\u6a21\u578b\u5b89\u5168\u6aa2\u67e5")}</span>
+                      <strong>
+                        {usesValidatedModel
+                          ? labelByMode(languageMode, "Validated model", "\u5df2\u9a57\u8b49\u6a21\u578b")
+                          : usesSafetyFallback
+                          ? labelByMode(languageMode, "Safety fallback", "\u5b89\u5168\u5f8c\u5099\u898f\u5247")
+                          : labelByMode(languageMode, "Verification unavailable", "\u672a\u6709\u9a57\u8b49\u8cc7\u6599")}
+                      </strong>
+                      <small>
+                        {usesValidatedModel
+                          ? labelByMode(
+                            languageMode,
+                            "Passed walk-forward accuracy, trading-cost, stability, and drawdown gates.",
+                            "\u5df2\u901a\u904e\u6efe\u52d5\u6e2c\u8a66\u3001\u4ea4\u6613\u6210\u672c\u3001\u7a69\u5b9a\u6027\u53ca\u8cc7\u91d1\u56de\u64a4\u8981\u6c42\u3002"
+                          )
+                          : usesSafetyFallback
+                          ? labelByMode(
+                            languageMode,
+                            "No model passed every quality gate, so an unvalidated saved model was not used.",
+                            "\u672a\u6709\u6a21\u578b\u901a\u904e\u6240\u6709\u8cea\u91cf\u8981\u6c42\uff0c\u56e0\u6b64\u4e0d\u6703\u4f7f\u7528\u672a\u9a57\u8b49\u7684\u5df2\u5132\u5b58\u6a21\u578b\u3002"
+                          )
+                          : labelByMode(
+                            languageMode,
+                            "This older decision does not contain model-validation evidence.",
+                            "\u6b64\u8f03\u65e9\u7684\u6c7a\u5b9a\u672a\u5305\u542b\u6a21\u578b\u9a57\u8b49\u8cc7\u6599\u3002"
+                          )}
+                      </small>
+                    </div>
+                    {benchmarkShadow?.status === "available" ? (
+                      <div className="decision-guide-card medium">
+                        <span>{labelByMode(languageMode, "Research model comparison", "\u7814\u7a76\u6a21\u578b\u6bd4\u8f03")}</span>
+                        <strong>
+                          {benchmarkShadow.signal === "outperform"
+                            ? labelByMode(
+                              languageMode,
+                              `May beat ${benchmarkShadow.benchmark} over 5 days`,
+                              `\u672a\u4f865\u65e5\u53ef\u80fd\u8dd1\u8d0f ${benchmarkShadow.benchmark}`
+                            )
+                            : labelByMode(
+                              languageMode,
+                              `Not expected to beat ${benchmarkShadow.benchmark}`,
+                              `\u9810\u671f\u672a\u80fd\u8dd1\u8d0f ${benchmarkShadow.benchmark}`
+                            )}
+                        </strong>
+                        <small>
+                          {labelByMode(
+                            languageMode,
+                            `Chance estimated by the model: ${formatRiskValue(Number(benchmarkShadow.outperform_probability) * 100, "%")}. Research only; it cannot place trades.`,
+                            `\u6a21\u578b\u4f30\u8a08\u6a5f\u7387\uff1a${formatRiskValue(Number(benchmarkShadow.outperform_probability) * 100, "%")}\u3002\u50c5\u4f5c\u7814\u7a76\uff0c\u4e0d\u6703\u4e0b\u55ae\u3002`
+                          )}
+                        </small>
+                        <small className="uncertainty-detail">
+                          {labelByMode(
+                            languageMode,
+                            `Past cost-adjusted signal average: ${formatRiskValue(benchmarkShadow.average_net_signal_return_pct, "%")}; worst tested path drawdown: ${formatRiskValue(benchmarkShadow.worst_path_drawdown_pct, "%")}. Past tests do not guarantee future profit.`,
+                            `\u904e\u5f80\u6263\u9664\u6210\u672c\u5f8c\u7684\u8a0a\u865f\u5e73\u5747\uff1a${formatRiskValue(benchmarkShadow.average_net_signal_return_pct, "%")}\uff1b\u6700\u5dee\u6e2c\u8a66\u8def\u5f91\u56de\u64a4\uff1a${formatRiskValue(benchmarkShadow.worst_path_drawdown_pct, "%")}\u3002\u904e\u5f80\u6e2c\u8a66\u4e0d\u4fdd\u8b49\u672a\u4f86\u7372\u5229\u3002`
+                          )}
+                        </small>
+                        <small className="uncertainty-detail">
+                          {Number(benchmarkShadow.forward_evidence?.sample_count || 0) > 0
+                            ? labelByMode(
+                              languageMode,
+                              `Forward check: ${benchmarkShadow.forward_evidence.sample_count} matured predictions, ${benchmarkShadow.forward_evidence.pending_count || 0} waiting for five-day outcomes${benchmarkShadow.forward_evidence.estimated_next_maturity_date ? ` (earliest estimate ${benchmarkShadow.forward_evidence.estimated_next_maturity_date})` : ""}, ${formatRiskValue(Number(benchmarkShadow.forward_evidence.direction_accuracy) * 100, "%")} correct.`,
+                              `\u524d\u77bb\u6aa2\u67e5\uff1a${benchmarkShadow.forward_evidence.sample_count} \u500b\u5df2\u5230\u671f\u9810\u6e2c\uff0c${benchmarkShadow.forward_evidence.pending_count || 0} \u500b\u7b49\u5f85\u4e94\u500b\u4ea4\u6613\u65e5\u7d50\u679c${benchmarkShadow.forward_evidence.estimated_next_maturity_date ? `\uff08\u6700\u65e9\u4f30\u8a08 ${benchmarkShadow.forward_evidence.estimated_next_maturity_date}\uff09` : ""}\uff0c\u6b63\u78ba\u7387 ${formatRiskValue(Number(benchmarkShadow.forward_evidence.direction_accuracy) * 100, "%")}\u3002`
+                            )
+                            : labelByMode(
+                              languageMode,
+                              `Forward check: 0/${benchmarkShadow.forward_evidence?.minimum_samples_for_promotion || 20} matured; ${benchmarkShadow.forward_evidence?.pending_count || 0} waiting for five-day outcomes${benchmarkShadow.forward_evidence?.estimated_next_maturity_date ? ` (earliest estimate ${benchmarkShadow.forward_evidence.estimated_next_maturity_date}; holidays or delayed data can move it)` : ""}. Historical results are not yet confirmed live.`,
+                              `\u524d\u77bb\u6aa2\u67e5\uff1a0/${benchmarkShadow.forward_evidence?.minimum_samples_for_promotion || 20} \u500b\u5df2\u5230\u671f\uff1b${benchmarkShadow.forward_evidence?.pending_count || 0} \u500b\u7b49\u5f85\u4e94\u500b\u4ea4\u6613\u65e5\u7d50\u679c${benchmarkShadow.forward_evidence?.estimated_next_maturity_date ? `\uff08\u6700\u65e9\u4f30\u8a08 ${benchmarkShadow.forward_evidence.estimated_next_maturity_date}\uff1b\u5047\u671f\u6216\u6578\u64da\u5ef6\u8aa4\u53ef\u80fd\u4f7f\u65e5\u671f\u9806\u5ef6\uff09` : ""}\u3002\u6b77\u53f2\u7d50\u679c\u5c1a\u672a\u7372\u5be6\u6642\u8b49\u5be6\u3002`
+                            )}
+                        </small>
+                      </div>
+                    ) : null}
+                    <div className="decision-guide-card">
+                      <span>{labelByMode(languageMode, "Plain-language reason", "簡單原因")}</span>
+                      <strong>{decisionReasonText(selectedLiveTrade.reason, languageMode)}</strong>
+                      <small>
+                        {labelByMode(
+                          languageMode,
+                          "Risk rules can block a trade even when the model looks positive.",
+                          "即使模型看好，風險規則亦可能阻止交易。"
+                        )}
+                      </small>
+                    </div>
+                  </div>
+                  <p className="simulation-warning">
+                    {labelByMode(
+                      languageMode,
+                      "Learning reminder: this simulation can lose money. Model confidence is not a guarantee or financial advice.",
+                      "學習提示：此模擬可能虧損。模型信心並非保證或投資建議。"
+                    )}
+                  </p>
+                </div>
+              );
+            })()}
             <p>
               <strong>{labelByMode(languageMode, "Reason detail", ZH.reasonDetail)}:</strong>{" "}
               {selectedLiveTrade.threshold_summary || selectedLiveTrade.reason}
@@ -705,6 +1083,20 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
           <div>
             <span>{labelByMode(languageMode, "Holdings value", ZH.holdingsValue)}</span>
             <strong>{formatMoney(accountSummary?.holdings_value)}</strong>
+          </div>
+          <div className={accountSummary?.buying_paused ? "risk-paused" : ""}>
+            <span>{labelByMode(languageMode, "Portfolio protection", "投資組合保護")}</span>
+            <strong>
+              {accountSummary?.buying_paused
+                ? labelByMode(languageMode, "New buys paused", "暫停新買入")
+                : accountSummary?.portfolio_risk_level === "caution"
+                ? labelByMode(languageMode, "Smaller positions", "縮小倉位")
+                : labelByMode(languageMode, "Normal", "正常")}
+            </strong>
+            <small>
+              {formatRiskValue(accountSummary?.performance_vs_contributions_pct, "% · ")}
+              {labelByMode(languageMode, "vs cash added", "相對已投入現金")}
+            </small>
           </div>
         </div>
       </section>
@@ -861,6 +1253,40 @@ export default function VirtualTraderPage({ languageMode, currentWatchlist, prof
             </section>
           ) : historicalContributionData ? (
             <>
+              {historicalSummary?.summary ? (
+                <section className="panel">
+                  <h3>{labelByMode(languageMode, "Historical Risk Check", "歷史風險檢查")}</h3>
+                  <p className="helper-text">
+                    {labelByMode(
+                      languageMode,
+                      "These figures remove cash deposits from daily returns so adding money is not mistaken for investment profit.",
+                      "這些數字會從每日回報中扣除新增資金，避免把入金誤當作投資盈利。"
+                    )}
+                  </p>
+                  <div className="risk-metric-grid">
+                    <div>
+                      <span>{labelByMode(languageMode, "Worst historical fall", "歷史最大跌幅")}</span>
+                      <strong>{formatRiskValue(historicalSummary.summary.max_drawdown_pct, "%")}</strong>
+                      <small>{labelByMode(languageMode, "Largest peak-to-trough account decline. Closer to 0% is safer.", "帳戶由高位至低位的最大跌幅；越接近 0% 代表風險越低。")}</small>
+                    </div>
+                    <div>
+                      <span>{labelByMode(languageMode, "Annualized volatility", "年化波動")}</span>
+                      <strong>{formatRiskValue(historicalSummary.summary.annualized_volatility_pct, "%")}</strong>
+                      <small>{labelByMode(languageMode, "How widely daily results moved. Lower usually means a steadier journey.", "每日結果的波動幅度；較低通常代表走勢較穩定。")}</small>
+                    </div>
+                    <div>
+                      <span>{labelByMode(languageMode, "Return efficiency", "回報效率")}</span>
+                      <strong>{formatRiskValue(historicalSummary.summary.sharpe_ratio)}</strong>
+                      <small>{labelByMode(languageMode, "Return relative to volatility. Higher is better; negative means poor risk-adjusted results.", "相對波動的回報；越高越好，負數代表風險調整後表現欠佳。")}</small>
+                    </div>
+                    <div>
+                      <span>{labelByMode(languageMode, "Versus benchmark", "與基準比較")}</span>
+                      <strong>{formatRiskValue(historicalSummary.summary.outperformance_vs_benchmark_pct_points, " pts")}</strong>
+                      <small>{labelByMode(languageMode, "Positive means the simulation beat its benchmark; negative means it lagged.", "正數代表模擬跑贏基準，負數代表落後。")}</small>
+                    </div>
+                  </div>
+                </section>
+              ) : null}
               <EquityChart
                 ticker={selectedTicker}
                 points={historicalEquityPoints}

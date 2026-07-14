@@ -113,6 +113,15 @@ export async function fetchNewsSentimentLatest(ticker, period = "6mo") {
   return fetchJson(`/news-sentiment/latest?ticker=${encodeURIComponent(ticker)}&period=${period}`);
 }
 
+export async function fetchLiveVirtualTraderSync(userId, recentTradeLimit = 20, decisionLimit = 100) {
+  return fetchJson(
+    `/virtual-trader/live-sync?user_id=${encodeURIComponent(userId)}`
+      + `&recent_trade_limit=${encodeURIComponent(recentTradeLimit)}`
+      + `&decision_limit=${encodeURIComponent(decisionLimit)}`,
+    { timeoutMs: 15000, retries: 1 }
+  );
+}
+
 export async function fetchVirtualAccountHistory(userId, limit = 120, offset = 0) {
   return fetchJson(
     `/virtual-account/history?user_id=${encodeURIComponent(userId)}&limit=${limit}&offset=${offset}`,

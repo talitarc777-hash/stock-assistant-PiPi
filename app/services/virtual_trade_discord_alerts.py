@@ -161,10 +161,20 @@ def maybe_send_virtual_trade_discord_alert(
         return None
 
     store = get_user_profile_store()
-    should_send = store.should_send_alert(
+    profile = store.get_or_create_profile(alert.user_id)
+    if not bool(profile.alert_enabled) or str(profile.preferred_delivery_source) != "discord":
+        logger.info(
+            "Virtual trade Discord alert skipped by shared preference user_id=%s enabled=%s delivery=%s",
+            alert.user_id,
+            profile.alert_enabled,
+            profile.preferred_delivery_source,
+        )
+        return None
+    rule = f"virtual_trade_large_{alert.action}"
+    should_send = store.is_alert_state_new(
         alert.user_id,
         alert.ticker,
-        f"virtual_trade_large_{alert.action}",
+        rule,
         alert.state_key,
     )
     if not should_send:
@@ -186,6 +196,12 @@ def maybe_send_virtual_trade_discord_alert(
 
     try:
         send_discord_webhook_message(settings.discord_webhook_url, alert.message)
+        store.record_alert_dispatched(
+            alert.user_id,
+            alert.ticker,
+            rule,
+            alert.state_key,
+        )
         logger.info(
             "Virtual trade Discord alert sent user_id=%s ticker=%s action=%s value=%.2f",
             alert.user_id,

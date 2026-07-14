@@ -72,6 +72,26 @@ class ModelMetricValuesResponse(BaseModel):
     rmse: float | None = None
     r2: float | None = None
     direction_accuracy: float | None = None
+    absolute_error_80_pct: float | None = None
+    absolute_error_95_pct: float | None = None
+
+
+class OutperformanceEconomicsResponse(BaseModel):
+    """After-cost absolute-return evidence for a relative prediction model."""
+
+    passed: bool
+    reasons: list[str] = Field(default_factory=list)
+    evaluation_rows: int = 0
+    active_signal_count: int = 0
+    round_trip_cost_pct: float | None = None
+    average_net_stock_return_pct: float | None = None
+    median_net_stock_return_pct: float | None = None
+    profitable_stock_signal_rate: float | None = None
+    average_excess_return_pct: float | None = None
+    profitable_non_overlapping_path_rate: float | None = None
+    worst_path_drawdown_pct: float | None = None
+    regime_filter_applied: bool = False
+    position_multiplier_applied: bool = False
 
 
 class ModelAccuracyMetricsResponse(BaseModel):
@@ -88,6 +108,15 @@ class ModelAccuracyMetricsResponse(BaseModel):
     time_series_splits: int
     validation_method: str
     validation_note: str
+    validation_scheme_version: int | None = None
+    validation_gap_rows: int | None = None
+    feature_schema_version: int | None = None
+    stationary_features: bool = False
+    benchmark_relative_target: bool = False
+    outperformance_economics_gate: OutperformanceEconomicsResponse | None = None
+    pooled_training: bool = False
+    pooled_stationary_features: bool = False
+    training_tickers: list[str] = Field(default_factory=list)
     fold_sizes: list[FoldSizeResponse]
     metrics: ModelMetricValuesResponse
 
@@ -167,6 +196,16 @@ class VirtualTraderSummaryDataResponse(BaseModel):
     benchmark_symbol: str
     benchmark_final_equity: float
     outperformance_vs_benchmark_pct_points: float
+    annualized_return_pct: float | None = None
+    annualized_volatility_pct: float | None = None
+    sharpe_ratio: float | None = None
+    downside_deviation_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    risk_observation_count: int = 0
+    benchmark_annualized_return_pct: float | None = None
+    benchmark_annualized_volatility_pct: float | None = None
+    benchmark_sharpe_ratio: float | None = None
+    benchmark_max_drawdown_pct: float | None = None
 
 
 class VirtualTraderBenchmarkResponse(BaseModel):
@@ -176,6 +215,12 @@ class VirtualTraderBenchmarkResponse(BaseModel):
     final_equity: float
     total_contributions: float
     return_on_contributions_pct: float
+    annualized_return_pct: float | None = None
+    annualized_volatility_pct: float | None = None
+    sharpe_ratio: float | None = None
+    downside_deviation_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    risk_observation_count: int = 0
 
 
 class VirtualTraderSummaryResponse(BaseModel):
@@ -389,6 +434,23 @@ def model_accuracy(
         time_series_splits=int(metrics_payload["time_series_splits"]),
         validation_method=metrics_payload["validation_method"],
         validation_note=metrics_payload["validation_note"],
+        validation_scheme_version=metrics_payload.get("validation_scheme_version"),
+        validation_gap_rows=metrics_payload.get("validation_gap_rows"),
+        feature_schema_version=metrics_payload.get("feature_schema_version"),
+        stationary_features=bool(metrics_payload.get("stationary_features")),
+        benchmark_relative_target=bool(metrics_payload.get("benchmark_relative_target")),
+        outperformance_economics_gate=(
+            OutperformanceEconomicsResponse(
+                **to_json_safe_dict(metrics_payload["outperformance_economics_gate"])
+            )
+            if metrics_payload.get("outperformance_economics_gate")
+            else None
+        ),
+        pooled_training=bool(metrics_payload.get("pooled_training")),
+        pooled_stationary_features=bool(
+            metrics_payload.get("pooled_stationary_features")
+        ),
+        training_tickers=list(metrics_payload.get("training_tickers") or []),
         fold_sizes=[FoldSizeResponse(**to_json_safe_dict(item)) for item in metrics_payload["fold_sizes"]],
         metrics=_build_metric_values_response(metrics_payload["metrics"]),
     )

@@ -6,3 +6,5 @@ yfinance
 pydantic
 python-dotenv
 scikit-learn
+discord.py>=2.3,<3
+requests>=2.31,<3

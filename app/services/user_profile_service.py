@@ -606,6 +606,43 @@ class UserProfileStore:
             connection.commit()
         return True
 
+    def is_alert_state_new(self, user_id: str, ticker: str, rule: str, state_key: str) -> bool:
+        """Return whether a delivery state has not yet been confirmed sent.
+
+        This read-only check is used by external delivery channels. Callers
+        record the state only after the channel confirms delivery, allowing a
+        transient webhook failure to retry on the next scheduler cycle.
+        """
+        with self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT state_key FROM alert_dispatch_history
+                WHERE user_id = ? AND ticker = ? AND rule = ?
+                """,
+                (user_id, ticker, rule),
+            ).fetchone()
+        return not existing or existing["state_key"] != state_key
+
+    def record_alert_dispatched(
+        self,
+        user_id: str,
+        ticker: str,
+        rule: str,
+        state_key: str,
+    ) -> None:
+        """Record a state only after an external channel confirms delivery."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO alert_dispatch_history (user_id, ticker, rule, state_key, last_triggered_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, ticker, rule)
+                DO UPDATE SET state_key = excluded.state_key, last_triggered_at = excluded.last_triggered_at
+                """,
+                (user_id, ticker, rule, state_key, _utc_now()),
+            )
+            connection.commit()
+
 
 _STORE = UserProfileStore()
 

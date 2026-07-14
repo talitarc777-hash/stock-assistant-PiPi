@@ -365,6 +365,19 @@ button:disabled {
   color: #b91c1c;
 }
 
+.beginner-summary-grid .risk-paused {
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+
+.beginner-summary-grid .risk-paused strong {
+  color: #c2410c;
+}
+
+.beginner-summary-grid small {
+  color: #536274;
+}
+
 .model-overview-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -496,6 +509,322 @@ button:disabled {
 
 .decision-context-box p:last-child {
   margin-bottom: 0;
+}
+
+.decision-explainer {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #dbe3ec;
+}
+
+.decision-explainer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.decision-explainer-heading > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.decision-explainer-heading span,
+.decision-guide-card > span {
+  color: #536274;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.decision-explainer-heading strong {
+  font-size: 1.25rem;
+}
+
+.decision-status-pill {
+  padding: 0.4rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: #eef2f7;
+  color: #435266;
+}
+
+.decision-status-pill.executed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.decision-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.decision-guide-card {
+  display: grid;
+  align-content: start;
+  gap: 0.4rem;
+  min-height: 8rem;
+  padding: 0.85rem;
+  border: 1px solid #dbe3ec;
+  border-top: 4px solid #64748b;
+  border-radius: 0.65rem;
+  background: #fff;
+}
+
+.decision-guide-card.high {
+  border-top-color: #16a34a;
+}
+
+.decision-guide-card.medium {
+  border-top-color: #d97706;
+}
+
+.decision-guide-card.low {
+  border-top-color: #dc2626;
+}
+
+.decision-guide-card strong {
+  line-height: 1.35;
+}
+
+.decision-guide-card small {
+  color: #536274;
+  line-height: 1.45;
+}
+
+.decision-guide-card .uncertainty-detail {
+  margin-top: 0.2rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed #cbd5e1;
+  color: #334155;
+}
+
+.decision-context-box .simulation-warning {
+  margin: 0.85rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.45rem;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.discord-link-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.discord-link-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.discord-link-heading h2,
+.discord-link-heading p {
+  margin-top: 0;
+}
+
+.discord-link-status {
+  white-space: nowrap;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.discord-link-status.linked {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.discord-link-steps {
+  margin: 0;
+  padding-left: 1.4rem;
+  color: #435266;
+  line-height: 1.65;
+}
+
+.discord-link-command {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem;
+  border: 1px solid #c7d2fe;
+  border-radius: 0.6rem;
+  background: #eef2ff;
+}
+
+.discord-link-command code {
+  width: fit-content;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.35rem;
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 700;
+  user-select: all;
+}
+
+.risk-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.risk-metric-grid > div {
+  display: grid;
+  align-content: start;
+  gap: 0.4rem;
+  padding: 0.85rem;
+  border: 1px solid #dbe3ec;
+  border-radius: 0.6rem;
+  background: #f8fafc;
+}
+
+.risk-metric-grid span {
+  color: #536274;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.risk-metric-grid strong {
+  font-size: 1.2rem;
+}
+
+.risk-metric-grid small {
+  color: #536274;
+  line-height: 1.45;
+}
+
+.beginner-guide {
+  display: grid;
+  gap: 1rem;
+  border-color: #bfdbfe;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 68%);
+}
+
+.beginner-guide-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.beginner-guide-heading h2 {
+  margin: 0.2rem 0 0.35rem;
+}
+
+.beginner-guide .eyebrow {
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.beginner-guide-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: beginner-step;
+}
+
+.beginner-guide-steps li {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  padding: 0.85rem;
+  border: 1px solid #dbeafe;
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.9);
+  counter-increment: beginner-step;
+}
+
+.beginner-guide-steps li::before {
+  content: counter(beginner-step);
+  display: grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.beginner-guide-steps span,
+.beginner-guide-note span {
+  color: #435266;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.beginner-guide-steps a,
+.beginner-guide-note a {
+  color: #1d4ed8;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.beginner-guide-note {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border-radius: 0.55rem;
+  background: #fff7ed;
+}
+
+.beginner-guide-note a {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.restore-beginner-guide {
+  width: fit-content;
+  margin-bottom: 1rem;
+}
+
+.live-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #166534;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.live-sync-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px #dcfce7;
+}
+
+.live-sync-status.warning {
+  color: #9a3412;
+}
+
+.live-sync-status.warning .live-sync-dot {
+  background: #f97316;
+  box-shadow: 0 0 0 3px #ffedd5;
+}
+
+.model-evidence-warning {
+  border-color: #f59e0b;
+  background: #fffbeb;
 }
 
 .decision-factor-list {
@@ -994,6 +1323,33 @@ button:disabled {
 }
 
 @media (max-width: 560px) {
+  .beginner-guide-heading,
+  .beginner-guide-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .beginner-guide-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .beginner-guide-note a {
+    margin-left: 0;
+  }
+
+  .risk-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-explainer-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .decision-guide-grid {
+    grid-template-columns: 1fr;
+  }
+
   .app-shell {
     padding: 8px;
   }

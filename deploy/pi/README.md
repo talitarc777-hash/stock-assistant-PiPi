@@ -83,9 +83,25 @@ Try Discord commands:
 
 ```text
 !settings
+!link <code-from-dashboard-settings>
 !analyze VOO
 !watchlist
 !traderstatus
+!account
+```
+
+Confirm shared identity and near-live trader synchronization:
+
+1. Open the web Settings page and generate a Discord link code.
+2. Send `!link CODE` to the bot within 10 minutes.
+3. Run `!account` in Discord and confirm it matches the web Virtual Trader account.
+4. Run `!runtrader` in Discord. The visible web page should refresh within five seconds without a manual reload.
+
+Read-only API smoke checks (these never run the model):
+
+```bash
+curl "http://127.0.0.1:8000/discord-link/status?profile_user_id=<profile-id>"
+curl "http://127.0.0.1:8000/virtual-trader/live-sync?user_id=<profile-id>"
 ```
 
 ## 3. Install systemd Services

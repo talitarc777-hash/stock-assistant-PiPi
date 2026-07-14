@@ -89,3 +89,14 @@ def scan_user_alerts(user_id: str):
 
 def fetch_alert_enabled_users():
     return _request_json("GET", "/user-alerts/enabled-users")
+
+
+def resolve_discord_profile(discord_user_id: str):
+    return _request_json(
+        "GET",
+        f"/discord-link/resolve?discord_user_id={requests.utils.quote(discord_user_id)}",
+    )
+
+
+def consume_discord_link(payload: dict):
+    return _request_json("POST", "/discord-link/consume", payload)

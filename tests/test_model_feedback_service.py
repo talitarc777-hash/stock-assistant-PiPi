@@ -57,6 +57,20 @@ class ModelFeedbackServiceTests(unittest.TestCase):
             },
         }
 
+    @classmethod
+    def _shadow_payload(cls, *, date: str = "2026-01-02") -> dict:
+        payload = cls._payload(date=date)
+        payload["metadata"]["benchmark_shadow"] = {
+            "status": "available",
+            "execution_enabled": False,
+            "benchmark": "VOO",
+            "model_name": "random_forest",
+            "model_period": "10y",
+            "prediction": 1,
+            "outperform_probability": 0.8,
+        }
+        return payload
+
     @staticmethod
     def _history(symbol: str, _: str) -> pd.DataFrame:
         dates = pd.bdate_range("2026-01-02", periods=12)
@@ -134,6 +148,71 @@ class ModelFeedbackServiceTests(unittest.TestCase):
 
         self.assertEqual(unchanged, 0.60)
         self.assertGreater(blended, 0.60)
+
+    def test_shadow_feedback_is_idempotent_and_scores_benchmark_target(self) -> None:
+        payload = self._shadow_payload()
+
+        self.assertTrue(self.service.record_benchmark_shadow(payload))
+        self.assertFalse(self.service.record_benchmark_shadow(payload))
+        result = self.service.evaluate_pending(price_loader=self._history)
+        rows = self.service.list_benchmark_shadow_feedback(status="evaluated")
+        summary = self.service.get_benchmark_shadow_summary(
+            ticker="AAPL",
+            model_period="10y",
+            model_name="random_forest",
+        )
+
+        self.assertEqual(result["shadow_evaluated"], 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["direction_correct"], 1)
+        self.assertGreater(rows[0]["active_net_return_pct"], 0)
+        self.assertEqual(summary["sample_count"], 1)
+        self.assertEqual(summary["active_signal_count"], 1)
+        self.assertEqual(summary["direction_accuracy"], 1.0)
+        self.assertEqual(summary["pending_count"], 0)
+        self.assertEqual(summary["total_observation_count"], 1)
+        self.assertEqual(summary["latest_observation_status"], "evaluated")
+
+    def test_shadow_feedback_stays_pending_without_future_fifth_row(self) -> None:
+        self.service.record_benchmark_shadow(self._shadow_payload())
+
+        def short_history(symbol: str, period: str) -> pd.DataFrame:
+            return self._history(symbol, period).iloc[:5]
+
+        result = self.service.evaluate_pending(price_loader=short_history)
+        summary = self.service.get_benchmark_shadow_summary(ticker="AAPL", model_period="10y", model_name="random_forest")
+
+        self.assertEqual(result["shadow_evaluated"], 0)
+        self.assertEqual(result["shadow_pending"], 1)
+        self.assertEqual(
+            len(self.service.list_benchmark_shadow_feedback(status="pending")),
+            1,
+        )
+        self.assertEqual(summary["sample_count"], 0)
+        self.assertEqual(summary["pending_count"], 1)
+        self.assertEqual(summary["latest_observation_status"], "pending")
+        self.assertEqual(summary["next_pending_observation_date"], "2026-01-02")
+        self.assertEqual(summary["estimated_next_maturity_date"], "2026-01-09")
+        self.assertEqual(summary["maturity_horizon_trading_days"], 5)
+
+    def test_shadow_listing_filters_exact_model_period_and_name(self) -> None:
+        primary = self._shadow_payload(date="2026-01-02")
+        other = self._shadow_payload(date="2026-01-05")
+        other["metadata"]["benchmark_shadow"]["model_period"] = "5y"
+        other["metadata"]["benchmark_shadow"]["model_name"] = "logistic_regression"
+        self.assertTrue(self.service.record_benchmark_shadow(primary))
+        self.assertTrue(self.service.record_benchmark_shadow(other))
+
+        rows = self.service.list_benchmark_shadow_feedback(
+            ticker="AAPL",
+            model_period="10y",
+            model_name="random_forest",
+            limit=20,
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["model_period"], "10y")
+        self.assertEqual(rows[0]["model_name"], "random_forest")
 
 
 if __name__ == "__main__":

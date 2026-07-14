@@ -26,11 +26,13 @@ try:
         ModelTrainingError,
         train_baseline_models_for_ticker,
         train_baseline_models_for_watchlist,
+        train_pooled_baseline_models,
     )
 except Exception:  # pragma: no cover - optional dependency path
     ModelTrainingError = ValueError  # type: ignore[assignment]
     train_baseline_models_for_ticker = None
     train_baseline_models_for_watchlist = None
+    train_pooled_baseline_models = None
 
 try:
     from app.services.virtual_trader import (
@@ -252,13 +254,19 @@ def cmd_export_report(args: argparse.Namespace) -> int:
 
 def cmd_train_models(args: argparse.Namespace) -> int:
     """Handle train-models command for one ticker or a watchlist."""
-    if train_baseline_models_for_ticker is None or train_baseline_models_for_watchlist is None:
+    if (
+        train_baseline_models_for_ticker is None
+        or train_baseline_models_for_watchlist is None
+        or train_pooled_baseline_models is None
+    ):
         raise ValueError(
             "Model training dependencies are not available. Install requirements.txt to use train-models."
         )
 
     if bool(args.ticker) == bool(args.watchlist_config):
         raise ValueError("Provide exactly one of --ticker or --watchlist-config.")
+    if args.pooled and not args.watchlist_config:
+        raise ValueError("--pooled requires --watchlist-config with at least three tickers.")
 
     if args.ticker:
         tickers = [args.ticker.strip().upper()]
@@ -278,8 +286,33 @@ def cmd_train_models(args: argparse.Namespace) -> int:
     print(f"Benchmark: {benchmark}")
     print(f"News sentiment: {'on' if not args.no_news_sentiment else 'off'}")
     print(f"Gradient boosting: {'on' if not args.no_gradient_boosting else 'off'}")
+    individual_targets = {
+        "standard": None,
+        "direction": ("target_5d_updown",),
+        "return": ("target_5d_return",),
+        "outperform": ("target_5d_outperform",),
+    }[args.target_mode]
 
-    if len(tickers) == 1:
+    if args.pooled:
+        pooled_targets = {
+            "return": ("target_5d_return",),
+            "direction": ("target_5d_updown",),
+            "outperform": ("target_5d_outperform",),
+            "both": ("target_5d_updown", "target_5d_return"),
+        }[args.pooled_target]
+        training_map = {
+            "GLOBAL": train_pooled_baseline_models(
+                tickers=tickers,
+                period=period,
+                benchmark=benchmark,
+                include_news_sentiment=not args.no_news_sentiment,
+                sentiment_model=args.sentiment_model,
+                output_dir=args.output_dir,
+                include_gradient_boosting=not args.no_gradient_boosting,
+                target_names=pooled_targets,
+            )
+        }
+    elif len(tickers) == 1:
         training_map = {
             tickers[0]: train_baseline_models_for_ticker(
                 ticker=tickers[0],
@@ -289,6 +322,7 @@ def cmd_train_models(args: argparse.Namespace) -> int:
                 sentiment_model=args.sentiment_model,
                 output_dir=args.output_dir,
                 include_gradient_boosting=not args.no_gradient_boosting,
+                target_names=individual_targets,
             )
         }
     else:
@@ -300,9 +334,10 @@ def cmd_train_models(args: argparse.Namespace) -> int:
             sentiment_model=args.sentiment_model,
             output_dir=args.output_dir,
             include_gradient_boosting=not args.no_gradient_boosting,
+            target_names=individual_targets,
         )
 
-    skipped_tickers = [ticker for ticker in tickers if ticker not in training_map]
+    skipped_tickers = [] if args.pooled else [ticker for ticker in tickers if ticker not in training_map]
     if skipped_tickers:
         _print_section("SKIPPED TICKERS")
         for ticker in skipped_tickers:
@@ -458,6 +493,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-gradient-boosting",
         action="store_true",
         help="Skip gradient boosting baselines and train only the simpler models.",
+    )
+    train_models.add_argument(
+        "--pooled",
+        action="store_true",
+        help="Train one experimental GLOBAL model across a watchlist using date-grouped validation.",
+    )
+    train_models.add_argument(
+        "--pooled-target",
+        choices=["return", "direction", "outperform", "both"],
+        default="return",
+        help="Target for pooled training; default return preserves the existing workflow.",
+    )
+    train_models.add_argument(
+        "--target-mode",
+        choices=["standard", "direction", "return", "outperform"],
+        default="standard",
+        help="Targets for ticker/watchlist training; standard trains direction and return.",
     )
     train_models.set_defaults(func=cmd_train_models)
 

@@ -148,6 +148,27 @@ def virtual_trader_live_status(
     return _get_json(url)
 
 
+def benchmark_shadow_feedback(
+    ticker: str,
+    period: str = "10y",
+    model_name: str = "random_forest",
+    limit: int = 20,
+):
+    """Fetch the same forward benchmark evidence shown by the web app."""
+    url = (
+        f"{BACKEND_BASE_URL}/model-lifecycle/benchmark-shadow-feedback?ticker={ticker}"
+        f"&model_period={period}&model_name={model_name}&limit={limit}"
+    )
+    return _get_json(url)
+
+
+def virtual_trader_live_sync(user_id: str):
+    """Fetch the consolidated read-only state shared by web and Discord."""
+    encoded_user_id = requests.utils.quote(str(user_id))
+    url = f"{BACKEND_BASE_URL}/virtual-trader/live-sync?user_id={encoded_user_id}"
+    return _get_json(url)
+
+
 def virtual_trader_run_now(
     user_id: str,
     tickers: list[str] | None = None,
@@ -214,3 +235,50 @@ def virtual_account_ledger(
     """Fetch immutable virtual account ledger events."""
     url = f"{BACKEND_BASE_URL}/virtual-account/ledger?user_id={user_id}&limit={int(limit)}"
     return _get_json(url)
+
+
+def _post_account_json(path: str, payload: dict):
+    """Post one virtual-account change with consistent Discord-facing errors."""
+    url = f"{BACKEND_BASE_URL}{path}"
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+    except requests.exceptions.Timeout as exc:
+        raise BackendTimeoutError("Backend request timed out.") from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise BackendUnavailableError("Backend is unavailable.") from exc
+    except requests.exceptions.RequestException as exc:
+        raise ApiClientError("Backend request failed.") from exc
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if response.status_code >= 400:
+        detail = str(data.get("detail", f"HTTP {response.status_code}"))
+        if response.status_code >= 500:
+            raise BackendUnavailableError(detail)
+        raise ApiClientError(detail)
+    return data
+
+
+def virtual_account_deposit(user_id: str, amount: float):
+    """Add simulation-only cash to the shared account."""
+    return _post_account_json(
+        "/virtual-account/deposit",
+        {"user_id": user_id, "amount": amount, "source": "discord"},
+    )
+
+
+def virtual_account_withdraw(user_id: str, amount: float):
+    """Withdraw simulation-only cash from the shared account."""
+    return _post_account_json(
+        "/virtual-account/withdraw",
+        {"user_id": user_id, "amount": amount, "source": "discord"},
+    )
+
+
+def virtual_account_set_monthly_contribution(user_id: str, amount: float):
+    """Set the shared recurring monthly simulation contribution."""
+    return _post_account_json(
+        "/virtual-account/monthly-contribution-input",
+        {"user_id": user_id, "amount": amount, "source": "discord"},
+    )
