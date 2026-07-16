@@ -1,21 +1,13 @@
 # Discord alerts
 
-The app can send Discord alerts for three different situations:
+The app sends Discord alerts for two real-market situations:
 
-- large Virtual Trader simulated buys/sells
 - unusual real-market buying/selling pressure from intraday volume and price movement
 - sudden real-market price rises or falls, even when volume is not exceptional
 
 These alerts are for monitoring only. They do not place real trades and are not financial advice.
 
-## Virtual Trader alert
-
-By default, an alert fires when either condition is true:
-
-- one simulated buy/sell trade is at least `HKD 50,000`
-- the same ticker has at least `2` simulated buys or sells within `30` minutes, and the combined value is at least `HKD 50,000`
-
-Only real virtual `buy` and `sell` rows are checked. `hold` and `no_action` rows do not alert.
+Simulated Virtual Trader buy and sell orders do not send Discord notifications.
 
 ## Real-market activity alert
 
@@ -38,11 +30,6 @@ Chinese only; bilingual profiles receive English and Traditional Chinese.
 
 ```env
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-
-VIRTUAL_TRADE_DISCORD_ALERT_ENABLED=true
-VIRTUAL_TRADE_ALERT_WINDOW_MINUTES=30
-VIRTUAL_TRADE_LARGE_VALUE_HKD_THRESHOLD=50000
-VIRTUAL_TRADE_ALERT_MIN_TRADE_COUNT=2
 
 REAL_MARKET_DISCORD_ALERT_ENABLED=true
 REAL_MARKET_ALERT_WINDOW_MINUTES=15

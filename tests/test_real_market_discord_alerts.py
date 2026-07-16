@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from app.services.real_market_discord_alerts import build_real_market_activity_alert
+from app.services.real_market_discord_alerts import (
+    RealMarketActivityAlert,
+    build_real_market_activity_alert,
+    scan_real_market_activity_alerts,
+)
 
 
 def _intraday_frame(
@@ -29,6 +35,73 @@ def _intraday_frame(
 
 
 class RealMarketDiscordAlertsTests(unittest.TestCase):
+    @patch("app.services.real_market_discord_alerts.send_discord_webhook_message")
+    @patch("app.services.real_market_discord_alerts.build_real_market_activity_alert")
+    @patch("app.services.real_market_discord_alerts.get_user_profile_store")
+    @patch("app.services.real_market_discord_alerts.get_settings")
+    def test_scan_sends_real_market_alert_and_records_dedup_after_delivery(
+        self,
+        mock_settings,
+        mock_profile_store,
+        mock_build_alert,
+        mock_send,
+    ) -> None:
+        mock_settings.return_value = SimpleNamespace(
+            real_market_discord_alert_enabled=True,
+            real_market_alert_ticker_limit=40,
+            real_market_alert_window_minutes=15,
+            real_market_large_value_threshold=10_000_000,
+            real_market_volume_spike_multiplier=3.0,
+            real_market_price_move_threshold_pct=1.5,
+            real_market_min_window_volume=100_000,
+            real_market_sudden_move_threshold_pct=10.0,
+            discord_webhook_url="https://discord.invalid/webhook",
+        )
+        store = MagicMock()
+        store.get_or_create_profile.return_value = SimpleNamespace(
+            alert_enabled=True,
+            preferred_delivery_source="discord",
+            preferred_language="en",
+        )
+        store.is_alert_state_new.return_value = True
+        mock_profile_store.return_value = store
+        alert = RealMarketActivityAlert(
+            user_id="u1",
+            ticker="AAPL",
+            alert_type="unusual_activity",
+            pressure="buying_pressure",
+            window_minutes=15,
+            price_change_pct=2.0,
+            latest_close=200.0,
+            window_volume=100_000,
+            average_window_volume=25_000,
+            volume_spike_ratio=4.0,
+            traded_value=20_000_000,
+            threshold_value=10_000_000,
+            price_threshold_pct=1.5,
+            state_key="state-1",
+            message="Unusual real-market buying pressure",
+        )
+        mock_build_alert.return_value = alert
+
+        result = scan_real_market_activity_alerts(
+            user_id="u1",
+            tickers=["AAPL"],
+            download_fn=lambda *_args: pd.DataFrame(),
+        )
+
+        self.assertEqual(result, [alert])
+        mock_send.assert_called_once_with(
+            "https://discord.invalid/webhook",
+            alert.message,
+        )
+        store.record_alert_dispatched.assert_called_once_with(
+            "u1",
+            "AAPL",
+            "real_market_unusual_activity_buying_pressure",
+            "state-1",
+        )
+
     def test_alerts_on_buying_pressure_volume_spike(self) -> None:
         alert = build_real_market_activity_alert(
             user_id="u1",

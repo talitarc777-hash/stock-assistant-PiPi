@@ -18,6 +18,7 @@ from app.services.account_ledger_service import get_account_ledger_service
 from app.services.live_virtual_trader import LiveStatus, run_live_virtual_trader_now
 from app.services.market_hours_service import get_market_hours_state
 from app.services.real_market_discord_alerts import scan_real_market_activity_alerts
+from app.services.score_discord_alerts import scan_overall_score_discord_alerts
 from app.services.user_profile_service import get_user_profile_store
 from app.services.virtual_account_cache import clear_user_virtual_account_cache
 
@@ -327,6 +328,17 @@ class TraderSchedulerService:
                         max_attempts=2,
                     )
                     try:
+                        scan_overall_score_discord_alerts(
+                            user_id=clean_user_id,
+                            tickers=alert_watchlists.get(clean_user_id) or [],
+                        )
+                    except Exception as exc:  # pragma: no cover - monitoring should not break trading
+                        logger.warning(
+                            "Overall-score Discord alert scan failed user_id=%s error=%s",
+                            clean_user_id,
+                            exc,
+                        )
+                    try:
                         scan_real_market_activity_alerts(
                             user_id=clean_user_id,
                             tickers=alert_watchlists.get(clean_user_id) or [],
@@ -417,16 +429,36 @@ class TraderSchedulerService:
             try:
                 profile = get_user_profile_store().get_or_create_profile(clean_user_id)
                 alert_tickers = tickers or profile.alert_watchlist or profile.default_watchlist
-                scan_real_market_activity_alerts(
-                    user_id=clean_user_id,
-                    tickers=alert_tickers,
-                )
             except Exception as exc:  # pragma: no cover - monitoring should not break manual runs
+                alert_tickers = []
                 logger.warning(
-                    "Real market activity alert scan failed user_id=%s error=%s",
+                    "Discord alert preferences unavailable user_id=%s error=%s",
                     clean_user_id,
                     exc,
                 )
+            if alert_tickers:
+                try:
+                    scan_overall_score_discord_alerts(
+                        user_id=clean_user_id,
+                        tickers=alert_tickers,
+                    )
+                except Exception as exc:  # pragma: no cover - monitoring should not break manual runs
+                    logger.warning(
+                        "Overall-score Discord alert scan failed user_id=%s error=%s",
+                        clean_user_id,
+                        exc,
+                    )
+                try:
+                    scan_real_market_activity_alerts(
+                        user_id=clean_user_id,
+                        tickers=alert_tickers,
+                    )
+                except Exception as exc:  # pragma: no cover - monitoring should not break manual runs
+                    logger.warning(
+                        "Real market activity alert scan failed user_id=%s error=%s",
+                        clean_user_id,
+                        exc,
+                    )
             clear_user_virtual_account_cache(clean_user_id)
             tickers_processed = int(status.tickers_evaluated)
             tickers_failed = int(status.tickers_failed)

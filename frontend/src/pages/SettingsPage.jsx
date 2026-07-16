@@ -262,6 +262,13 @@ export default function SettingsPage({
             />
             {labelByMode(languageMode, "Alerts enabled", ZH.alertsEnabled)}
           </label>
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              "Discord alerts include tickers meeting your high overall-score threshold, unusual real-market buying or selling pressure, and sudden price moves. The overall score is a 0-100 screening score, not a profit probability. Simulated Virtual Trader orders do not send notifications.",
+              "Discord 提示包括達到整體高評分門檻的股票、真實市場的異常買盤或賣盤壓力，以及價格急變。整體評分是 0 至 100 的篩選分數，並非獲利機率。模擬交易工具的買賣不會發送通知。"
+            )}
+          </p>
 
           <label>
             {labelByMode(languageMode, "Alert threshold high", ZH.alertHigh)}
@@ -273,6 +280,13 @@ export default function SettingsPage({
               onChange={(event) => setAlertHigh(event.target.value)}
             />
           </label>
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              "A Discord alert is sent when a watched ticker reaches this score (80 or above by default). It is limited to one alert per ticker, threshold, and market-data date.",
+              "當觀察股票達到此評分時會發送 Discord 提示（預設為 80 分或以上）。每隻股票、每個門檻及每個市場數據日期最多發送一次。"
+            )}
+          </p>
 
           <label>
             {labelByMode(languageMode, "Alert threshold low", ZH.alertLow)}

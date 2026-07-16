@@ -48,7 +48,6 @@ from app.services.research_pipeline import build_feature_dataset
 from app.services.model_training import prepare_stationary_feature_dataset
 from app.services.universe_service import get_active_universe
 from app.services.user_profile_service import get_user_profile_store
-from app.services.virtual_trade_discord_alerts import maybe_send_virtual_trade_discord_alert
 
 logger = logging.getLogger(__name__)
 
@@ -1726,12 +1725,6 @@ def run_live_virtual_trader_now(
                     "Model feedback recording skipped ticker=%s error=%s",
                     symbol,
                     exc,
-                )
-            if action in {"buy", "sell"} and quantity > 0:
-                recent_symbol_trades = store.list_trades(clean_user_id, limit=100, ticker=symbol)
-                maybe_send_virtual_trade_discord_alert(
-                    current_trade=trade_payload,
-                    recent_trades=recent_symbol_trades,
                 )
             decisions.append(trade_payload)
             logger.info(

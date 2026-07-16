@@ -21,7 +21,7 @@ import yfinance as yf
 
 from app.core.settings import get_settings
 from app.services.user_profile_service import get_user_profile_store
-from app.services.virtual_trade_discord_alerts import send_discord_webhook_message
+from app.services.discord_webhook import send_discord_webhook_message
 
 logger = logging.getLogger(__name__)
 

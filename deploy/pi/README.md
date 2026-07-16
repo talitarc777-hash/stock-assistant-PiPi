@@ -48,7 +48,11 @@ CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://cowbox.dp
 CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$
 ```
 
-Add your real `DISCORD_BOT_TOKEN` and any `ALLOWED_CHANNEL_IDS` in `.env`. Do not commit `.env`.
+Add your real `DISCORD_BOT_TOKEN`, `DISCORD_WEBHOOK_URL`, and any
+`ALLOWED_CHANNEL_IDS` in `.env`. The webhook enables proactive alerts for
+watched tickers that reach the high overall-score threshold (80/100 by
+default), unusual real-market pressure, and sudden price moves. The overall
+score is a screening score, not a profit probability. Do not commit `.env`.
 
 In production, a relative `PROFILE_DB_PATH` is resolved below
 `PERSISTENT_DATA_DIR`. On the first startup after this change, the app copies
