@@ -32,6 +32,9 @@ class DiscordReadinessResponse(BaseModel):
     proactive_alerts_configured: bool
     fully_configured: bool
     missing_environment_variables: list[str]
+    bot_build_id: str
+    link_command_supported_by_build: bool
+    supported_commands: list[str]
 
 
 class DiscordLinkUnlinkRequest(BaseModel):

@@ -38,6 +38,9 @@ class DiscordLinkApiTests(unittest.TestCase):
             payload["missing_environment_variables"],
             ["DISCORD_BOT_TOKEN", "DISCORD_WEBHOOK_URL"],
         )
+        self.assertTrue(payload["link_command_supported_by_build"])
+        self.assertIn("!link", payload["supported_commands"])
+        self.assertTrue(payload["bot_build_id"])
         self.assertNotIn("token", payload)
         self.assertNotIn("webhook_url", payload)
 

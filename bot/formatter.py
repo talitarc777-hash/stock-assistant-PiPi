@@ -216,6 +216,7 @@ def format_help_message(prefix: str) -> str:
         f"- `{prefix}comparetrader VOO` compare the trader with VOO\n"
         "\n"
         "Settings\n"
+        f"- `{prefix}version` verify the deployed bot build\n"
         f"- `{prefix}syncstatus` verify web/Discord shared data\n"
         f"- `{prefix}settings`\n"
         f"- `{prefix}link CODE` connect to your web profile\n"

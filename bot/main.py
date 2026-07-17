@@ -3,6 +3,7 @@ from discord.ext import commands
 import math
 
 try:
+    from .command_catalog import DISCORD_BOT_BUILD_ID, SUPPORTED_PREFIX_COMMANDS
     from .config import (
         ALLOWED_CHANNEL_IDS,
         COMMAND_PREFIX,
@@ -69,6 +70,7 @@ try:
         trader_scheduler_status,
     )
 except ImportError:  # pragma: no cover - script execution fallback
+    from command_catalog import DISCORD_BOT_BUILD_ID, SUPPORTED_PREFIX_COMMANDS
     from config import (
         ALLOWED_CHANNEL_IDS,
         COMMAND_PREFIX,
@@ -142,8 +144,22 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 
+def validate_command_registry() -> list[str]:
+    """Fail deployment clearly when the runtime bot omits a supported command."""
+    registered = {command.name for command in bot.commands}
+    missing = sorted(set(SUPPORTED_PREFIX_COMMANDS) - registered)
+    if missing:
+        raise RuntimeError(
+            "Discord command registry is incomplete for build "
+            f"{DISCORD_BOT_BUILD_ID}: missing {', '.join(missing)}"
+        )
+    return sorted(registered)
+
+
 def is_allowed(ctx) -> bool:
-    """Allow command in configured channels only (or all if not configured)."""
+    """Allow private messages and configured server channels."""
+    if getattr(ctx, "guild", None) is None:
+        return True
     if not ALLOWED_CHANNEL_IDS:
         return True
     return ctx.channel.id in ALLOWED_CHANNEL_IDS
@@ -691,7 +707,11 @@ async def _send_trader_next_run(ctx) -> None:
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    command_names = validate_command_registry()
+    print(
+        f"Logged in as {bot.user} build={DISCORD_BOT_BUILD_ID} "
+        f"commands={','.join(command_names)}"
+    )
 
 
 @bot.event
@@ -700,7 +720,12 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if ALLOWED_CHANNEL_IDS and message.channel.id not in ALLOWED_CHANNEL_IDS:
+    is_private_message = getattr(message, "guild", None) is None
+    if (
+        not is_private_message
+        and ALLOWED_CHANNEL_IDS
+        and message.channel.id not in ALLOWED_CHANNEL_IDS
+    ):
         return
 
     content = (message.content or "").strip()
@@ -825,6 +850,17 @@ async def help_cmd(ctx):
     if not is_allowed(ctx):
         return
     await ctx.send(format_help_message(COMMAND_PREFIX))
+
+
+@bot.command(name="version")
+async def version_cmd(ctx):
+    """Show enough deployment evidence to identify an obsolete bot process."""
+    if not is_allowed(ctx):
+        return
+    await ctx.send(
+        f"Stock Assistant Discord build `{DISCORD_BOT_BUILD_ID}`. "
+        f"This build supports `{COMMAND_PREFIX}link CODE`."
+    )
 
 
 @bot.command(name="settings")
@@ -1198,4 +1234,5 @@ async def setmonthly_cmd(ctx, amount: float):
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         raise RuntimeError("DISCORD_BOT_TOKEN is required to start the Discord bot.")
+    validate_command_registry()
     bot.run(DISCORD_BOT_TOKEN)

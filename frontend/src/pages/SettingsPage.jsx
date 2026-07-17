@@ -359,6 +359,13 @@ export default function SettingsPage({
                 ? labelByMode(languageMode, "ready", "已準備")
                 : labelByMode(languageMode, "not configured", "尚未設定")}
             </p>
+            <p>
+              {labelByMode(languageMode, "Deployed command build", "已部署指令版本")}: {discordReadiness.bot_build_id || "unknown"}
+              {" · "}
+              <code>!link</code>: {discordReadiness.link_command_supported_by_build
+                ? labelByMode(languageMode, "included", "已包含")
+                : labelByMode(languageMode, "missing", "缺少")}
+            </p>
             {!discordReadiness.fully_configured ? (
               <small>
                 {labelByMode(
@@ -370,6 +377,11 @@ export default function SettingsPage({
             ) : (
               <small>{labelByMode(languageMode, "You can now link an account and verify shared data with !syncstatus.", "現在可以連接帳戶，並使用 !syncstatus 核對共享資料。")}</small>
             )}
+            {discordReadiness.supported_commands?.length ? (
+              <small>
+                {labelByMode(languageMode, "Supported by this build", "此版本支援")}: {discordReadiness.supported_commands.join(", ")}
+              </small>
+            ) : null}
           </div>
         ) : null}
 

@@ -16,6 +16,11 @@ from app.services.discord_link_service import (
     DiscordLinkValidationError,
     get_discord_link_service,
 )
+from bot.command_catalog import (
+    DISCORD_BOT_BUILD_ID,
+    SUPPORTED_PREFIX_COMMANDS,
+    prefixed_commands,
+)
 
 
 router = APIRouter(prefix="/discord-link", tags=["discord-link"])
@@ -36,6 +41,9 @@ def get_discord_readiness() -> dict:
         "proactive_alerts_configured": webhook_configured,
         "fully_configured": bot_configured and webhook_configured,
         "missing_environment_variables": missing,
+        "bot_build_id": DISCORD_BOT_BUILD_ID,
+        "link_command_supported_by_build": "link" in SUPPORTED_PREFIX_COMMANDS,
+        "supported_commands": prefixed_commands("!"),
     }
 
 

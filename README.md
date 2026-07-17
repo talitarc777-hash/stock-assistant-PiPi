@@ -144,6 +144,7 @@ Shared profile model:
 Available Discord commands:
 
 - `!help`
+- `!version` (shows the deployed bot build; useful for finding an obsolete duplicate process)
 - `!settings`
 - `!link CODE`
 - `!syncstatus` (verify the linked profile, shared watchlist, virtual equity, and snapshot time)

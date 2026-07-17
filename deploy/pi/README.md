@@ -88,6 +88,7 @@ Try Discord commands:
 ```text
 !settings
 !link <code-from-dashboard-settings>
+!version
 !analyze VOO
 !watchlist
 !traderstatus
@@ -97,9 +98,18 @@ Try Discord commands:
 Confirm shared identity and near-live trader synchronization:
 
 1. Open the web Settings page and generate a Discord link code.
-2. Send `!link CODE` to the bot within 10 minutes.
+2. Send `!link CODE` to the bot by private message within 10 minutes. Private
+   link messages remain accepted even when server commands are restricted with
+   `ALLOWED_CHANNEL_IDS`.
 3. Run `!account` in Discord and confirm it matches the web Virtual Trader account.
 4. Run `!runtrader` in Discord. The visible web page should refresh within five seconds without a manual reload.
+
+If `!help` lists only the legacy commands and rejects `!link`, a different or
+obsolete bot process is still using the Discord token. Run `!version`: the
+current bot must report build `2026.07.17-link-v1`. Then stop the old Railway,
+cloud, or duplicate bot service; add `DISCORD_BOT_TOKEN` to this Pi's private
+`.env`; and restart `stock-assistant-discord`. Only one deployment should use
+the token.
 
 Read-only API smoke checks (these never run the model):
 
