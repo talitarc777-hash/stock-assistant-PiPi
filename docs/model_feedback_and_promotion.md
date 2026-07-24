@@ -16,6 +16,13 @@ The Virtual Trader now keeps an auditable outcome loop for its model predictions
 4. The observation receives a bounded outcome score from direction accuracy,
    profitability after cost, net return, and benchmark-relative return.
 
+The settlement queue processes the oldest eligible prediction first. This is
+important because newly recorded predictions have not matured yet and must not
+block older five-session outcomes. Only production and validated-candidate
+model decisions contribute to model scores; rule-based fallback decisions are
+excluded. GLOBAL model decisions retain both the traded ticker and the GLOBAL
+model origin so their forward evidence is attributed to the correct registry row.
+
 Repeated five-minute scheduler runs do not create repeated feedback for the same
 model and trading date.
 

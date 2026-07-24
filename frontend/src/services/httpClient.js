@@ -20,6 +20,7 @@ function normalizeApiBaseUrl(value) {
 function inferApiBaseUrlFromLocation() {
   const localFallback = "http://127.0.0.1:8000";
   const tailscaleCustomDomainFallback = "https://cowbox.dpdns.org";
+  const tailnetDomain = "tail8919df.ts.net";
   if (typeof window === "undefined") return localFallback;
 
   const { hostname, protocol } = window.location;
@@ -28,7 +29,7 @@ function inferApiBaseUrlFromLocation() {
 
   // When the frontend is opened through the Tailscale hostname, the API is
   // served by the same Tailscale endpoint rather than an api.* subdomain.
-  if (hostname === "tail8919df.ts.net") {
+  if (hostname === tailnetDomain || hostname.endsWith(`.${tailnetDomain}`)) {
     return `${protocol === "http:" ? "http" : "https"}://${hostname}`;
   }
 
@@ -82,7 +83,7 @@ export async function requestJson(path, options = {}) {
   const url = `${API_BASE_URL}${path}`;
   if (!API_BASE_URL) {
     throw new Error(
-      "Backend URL is not configured. Set VITE_API_BASE_URL to https://cowbox.dpdns.org or https://tail8919df.ts.net."
+      "Backend URL is not configured. Set VITE_API_BASE_URL to https://nanopi-r76s.tail8919df.ts.net."
     );
   }
 

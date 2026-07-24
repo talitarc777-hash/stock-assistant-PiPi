@@ -9,7 +9,7 @@ User=pi
 Group=pi
 WorkingDirectory=/home/pi/stock-assistant-PiPi
 EnvironmentFile=/home/pi/stock-assistant-PiPi/.env
-ExecStart=/home/pi/stock-assistant-PiPi/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=/home/pi/stock-assistant-PiPi/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 

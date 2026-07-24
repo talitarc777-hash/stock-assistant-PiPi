@@ -45,8 +45,10 @@ class ModelFeedbackServiceTests(unittest.TestCase):
             "metadata": {
                 "price_date": date,
                 "prediction_value": 2.0,
+                "task_type": "regression",
                 "model_period": "2y",
                 "model_version": model_version,
+                "model_ticker": "AAPL",
                 "decision_source": "production_model",
                 "context_score": 68.0,
                 "context_label": "supportive",
@@ -110,6 +112,84 @@ class ModelFeedbackServiceTests(unittest.TestCase):
         self.assertGreater(summary["raw_feedback_score"], 0.5)
         self.assertGreater(summary["feedback_score"], 0.5)
         self.assertLess(summary["feedback_score"], summary["raw_feedback_score"])
+
+    def test_oldest_mature_feedback_is_not_starved_by_new_rows(self) -> None:
+        self.assertTrue(
+            self.service.record_decision(
+                self._payload(date="2026-01-02", model_version="old")
+            )
+        )
+        self.assertTrue(
+            self.service.record_decision(
+                self._payload(date="2026-01-08", model_version="new")
+            )
+        )
+
+        def partial_history(symbol: str, _: str) -> pd.DataFrame:
+            dates = pd.bdate_range("2026-01-02", periods=6)
+            closes = [100.0 + index for index in range(len(dates))]
+            if symbol == "VOO":
+                closes = [100.0 + index * 0.2 for index in range(len(dates))]
+            return pd.DataFrame({"date": dates, "close": closes})
+
+        result = self.service.evaluate_pending(
+            price_loader=partial_history,
+            limit=1,
+        )
+
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(
+            self.service.list_feedback(status="evaluated")[0]["decision_date"],
+            "2026-01-02",
+        )
+        self.assertEqual(
+            self.service.list_feedback(status="pending")[0]["decision_date"],
+            "2026-01-08",
+        )
+
+    def test_classifier_zero_is_scored_as_bearish(self) -> None:
+        payload = self._payload()
+        payload["metadata"]["task_type"] = "classification"
+        payload["metadata"]["prediction_value"] = 0.0
+        self.assertTrue(self.service.record_decision(payload))
+
+        def falling_history(symbol: str, _: str) -> pd.DataFrame:
+            dates = pd.bdate_range("2026-01-02", periods=7)
+            closes = (
+                [100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 89.0]
+                if symbol == "AAPL"
+                else [100.0] * len(dates)
+            )
+            return pd.DataFrame({"date": dates, "close": closes})
+
+        self.service.evaluate_pending(price_loader=falling_history)
+        row = self.service.list_feedback(status="evaluated")[0]
+
+        self.assertEqual(row["direction_correct"], 1)
+        self.assertGreater(row["strategy_net_return_pct"], 0)
+        self.assertGreater(row["outcome_score"], 0.5)
+
+    def test_fallback_rule_is_not_recorded_as_model_feedback(self) -> None:
+        payload = self._payload()
+        payload["metadata"]["decision_source"] = "fallback_rule"
+
+        self.assertFalse(self.service.record_decision(payload))
+        self.assertEqual(self.service.list_feedback(), [])
+
+    def test_global_model_feedback_is_attributed_to_global_registry(self) -> None:
+        payload = self._payload()
+        payload["metadata"]["model_ticker"] = "GLOBAL"
+        payload["metadata"]["decision_source"] = "shared_global_candidate"
+        self.assertTrue(self.service.record_decision(payload))
+        self.service.evaluate_pending(price_loader=self._history)
+
+        summary = self.service.get_model_summary(
+            ticker="GLOBAL",
+            model_period="2y",
+            model_name="random_forest",
+        )
+
+        self.assertEqual(summary["sample_count"], 1)
 
     def test_context_adjustment_learns_from_repeated_factor_outcomes(self) -> None:
         dates = ["2026-01-02", "2026-01-05", "2026-01-06"]

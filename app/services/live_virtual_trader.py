@@ -1213,6 +1213,7 @@ def run_live_virtual_trader_now(
             decision_validation_score: float | None = None
             decision_runtime_score: float | None = None
             decision_model_version = "fallback"
+            decision_model_ticker = symbol
             decision_feedback_summary: dict[str, Any] = {}
             decision_uncertainty: dict[str, Any] = {
                 "confidence_score": None,
@@ -1266,6 +1267,7 @@ def run_live_virtual_trader_now(
                     decision_model_version = str(
                         candidate.get("model_version") or "legacy"
                     )
+                    decision_model_ticker = candidate_ticker
                     decision_feedback_summary = dict(
                         candidate.get("feedback_summary") or {}
                     )
@@ -1669,6 +1671,7 @@ def run_live_virtual_trader_now(
                     ),
                     "model_period": decision_model_period,
                     "model_version": decision_model_version,
+                    "model_ticker": decision_model_ticker,
                     "validation_score": decision_validation_score,
                     "runtime_score": decision_runtime_score,
                     "prediction_uncertainty": decision_uncertainty,

@@ -572,7 +572,7 @@ See `deploy/pi/README.md` for the full setup, including `systemd` services, Tail
   for local development, make sure backend is running on `http://127.0.0.1:8000`
   and frontend `.env` contains `VITE_API_BASE_URL=http://127.0.0.1:8000`.
   For a Tailscale deployment, set `VITE_API_BASE_URL=https://cowbox.dpdns.org`
-  (or `https://tail8919df.ts.net`) and add the frontend origin to backend
+  (or `https://nanopi-r76s.tail8919df.ts.net`) and add the frontend origin to backend
   `CORS_ALLOW_ORIGINS`.
 - `No price data returned`:
   verify ticker symbol exists in Yahoo Finance and retry with another period.

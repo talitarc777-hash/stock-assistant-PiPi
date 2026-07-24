@@ -10,7 +10,7 @@ This guide runs the backend API, SQLite data, model artifacts, and Discord bot o
 - Replaceable model/research data: `/home/pi/stock-assistant-PiPi/data`
 - Local API URL: `http://127.0.0.1:8000`
 - Preferred Tailscale custom API URL: `https://cowbox.dpdns.org`
-- Direct Tailscale API URL: `https://tail8919df.ts.net`
+- Direct Tailscale API URL: `https://nanopi-r76s.tail8919df.ts.net`
 
 If your Pi username or checkout path differs, edit both service files before installing them.
 
@@ -45,7 +45,7 @@ PROFILE_DB_PATH=data/user_profiles.db
 RESEARCH_DATA_DIR=data/research
 RESEARCH_MODELS_DIR=data/models
 BACKEND_BASE_URL=http://127.0.0.1:8000
-CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://cowbox.dpdns.org,https://tail8919df.ts.net
+CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://cowbox.dpdns.org,https://nanopi-r76s.tail8919df.ts.net
 CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$
 ```
 
@@ -146,7 +146,7 @@ Keep the FastAPI service bound to the local address `127.0.0.1:8000` and use
 your existing Tailscale configuration to expose it as:
 
 - `https://cowbox.dpdns.org` (preferred custom hostname)
-- `https://tail8919df.ts.net` (direct Tailscale hostname)
+- `https://nanopi-r76s.tail8919df.ts.net` (direct Tailscale MagicDNS hostname)
 
 Confirm Tailscale is connected on the Pi and verify both the local and chosen
 Tailscale health URLs:
@@ -155,6 +155,7 @@ Tailscale health URLs:
 tailscale status
 curl http://127.0.0.1:8000/health
 curl https://cowbox.dpdns.org/health
+curl https://nanopi-r76s.tail8919df.ts.net/health
 ```
 
 ## 5. Frontend hosting
@@ -167,7 +168,7 @@ If you continue to host the static frontend on Cloudflare Pages, configure:
 - Production environment variable: `VITE_API_BASE_URL=https://cowbox.dpdns.org`
 
 For a frontend accessed inside your tailnet, use
-`VITE_API_BASE_URL=https://tail8919df.ts.net` instead. For local development,
+`VITE_API_BASE_URL=https://nanopi-r76s.tail8919df.ts.net` instead. For local development,
 use `VITE_API_BASE_URL=http://127.0.0.1:8000`.
 
 After changing the frontend origin, add it to `CORS_ALLOW_ORIGINS` in the Pi `.env`, then restart the API:

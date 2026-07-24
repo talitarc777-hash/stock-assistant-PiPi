@@ -101,6 +101,7 @@ class Settings(BaseModel):
         "http://127.0.0.1:5173",
         "https://cowbox.dpdns.org",
         "https://tail8919df.ts.net",
+        "https://nanopi-r76s.tail8919df.ts.net",
     ]
     cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
@@ -152,7 +153,8 @@ def get_settings() -> Settings:
             os.getenv(
                 "CORS_ALLOW_ORIGINS",
                 "http://localhost:5173,http://127.0.0.1:5173,"
-                "https://cowbox.dpdns.org,https://tail8919df.ts.net",
+                "https://cowbox.dpdns.org,https://tail8919df.ts.net,"
+                "https://nanopi-r76s.tail8919df.ts.net",
             )
         ),
         cors_allow_origin_regex=_combine_cors_regex(

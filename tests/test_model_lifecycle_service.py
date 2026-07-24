@@ -322,6 +322,80 @@ class ModelLifecycleServiceTests(unittest.TestCase):
             )
         )
 
+    def test_mature_live_feedback_refreshes_registry_score_end_to_end(self) -> None:
+        self.service._upsert_registry(  # pylint: disable=protected-access
+            ticker="AAPL",
+            period="2y",
+            target_name="target_5d_return",
+            model_name="random_forest",
+            status="candidate",
+            is_validated=True,
+            validation_score=0.60,
+            stale_after_days=30,
+            retrain_type="test",
+            metrics_summary={
+                "validation_gate_version": VALIDATION_GATE_VERSION,
+                "walk_forward_validation_score": 0.60,
+                "walk_forward_quality_gate": {"passed": True},
+                "historical_trading_quality_gate": {"passed": True},
+            },
+            notes=None,
+            last_trained_at_utc="2026-01-01T00:00:00+00:00",
+            last_evaluated_at_utc="2026-01-01T00:00:00+00:00",
+        )
+        dates = pd.bdate_range("2026-01-02", periods=20)
+        stock_closes = [100.0 + index * 2.0 for index in range(len(dates))]
+        benchmark_closes = [100.0 + index * 0.2 for index in range(len(dates))]
+        for index, decision_date in enumerate(dates[:8]):
+            date_text = decision_date.date().isoformat()
+            self.assertTrue(
+                self.service.feedback_service.record_decision(
+                    {
+                        "timestamp": f"{date_text}T21:00:00+00:00",
+                        "user_id": "audit",
+                        "ticker": "AAPL",
+                        "action": "no_action",
+                        "quantity": 0.0,
+                        "price": stock_closes[index],
+                        "model_name": "random_forest",
+                        "confidence_score": 0.75,
+                        "metadata": {
+                            "price_date": date_text,
+                            "prediction_value": 2.0,
+                            "task_type": "regression",
+                            "model_period": "2y",
+                            "model_version": f"v{index}",
+                            "model_ticker": "AAPL",
+                            "decision_source": "validated_candidate",
+                        },
+                    }
+                )
+            )
+
+        def price_loader(symbol: str, _: str) -> pd.DataFrame:
+            closes = benchmark_closes if symbol == "VOO" else stock_closes
+            return pd.DataFrame({"date": dates, "close": closes})
+
+        settled = self.service.feedback_service.evaluate_pending(
+            price_loader=price_loader,
+            limit=20,
+        )
+        refreshed = self.service.refresh_feedback_scores()
+        row = self.service.list_registry(
+            ticker="AAPL",
+            period="2y",
+            target_name="target_5d_return",
+            limit=1,
+        )[0]
+
+        self.assertEqual(settled["evaluated"], 8)
+        self.assertGreaterEqual(refreshed["updated"], 1)
+        self.assertEqual(
+            row["metrics_summary"]["live_feedback"]["sample_count"],
+            8,
+        )
+        self.assertGreater(row["validation_score"], 0.60)
+
     def test_trigger_workflow_uses_all_trading_periods(self) -> None:
         config = self.service._workflow_config("trigger_based")  # pylint: disable=protected-access
         self.assertEqual(tuple(config["periods"]), ("2y", "5y", "10y"))

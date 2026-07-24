@@ -19,6 +19,12 @@ from app.services.market_data import get_price_history
 logger = logging.getLogger(__name__)
 PriceLoader = Callable[[str, str], pd.DataFrame]
 BENCHMARK_SHADOW_ROUND_TRIP_COST_PCT = 0.10
+MODEL_FEEDBACK_ELIGIBLE_SOURCES = (
+    "production_model",
+    "validated_candidate",
+    "shared_global_production",
+    "shared_global_candidate",
+)
 
 
 def _utc_now_iso() -> str:
@@ -80,6 +86,18 @@ def _horizon_prices(
     )
 
 
+def _prediction_direction(prediction: float, task_type: str) -> float:
+    """Interpret a stored prediction using the same semantics as the trader."""
+    clean_task = str(task_type or "").strip().lower()
+    if clean_task == "classification":
+        predicted_class = int(round(float(prediction)))
+        if predicted_class == 1:
+            return 1.0
+        if predicted_class == 0:
+            return -1.0
+    return 1.0 if prediction > 0 else -1.0 if prediction < 0 else 0.0
+
+
 class ModelFeedbackService:
     """SQLite-backed prediction feedback and adaptive context statistics."""
 
@@ -102,6 +120,7 @@ class ModelFeedbackService:
                     decision_key TEXT NOT NULL UNIQUE,
                     user_id TEXT NOT NULL,
                     ticker TEXT NOT NULL,
+                    model_ticker TEXT NOT NULL DEFAULT '',
                     benchmark TEXT NOT NULL,
                     decision_date TEXT NOT NULL,
                     recorded_at_utc TEXT NOT NULL,
@@ -110,6 +129,7 @@ class ModelFeedbackService:
                     model_period TEXT NOT NULL,
                     model_version TEXT NOT NULL,
                     decision_source TEXT NOT NULL,
+                    task_type TEXT NOT NULL DEFAULT 'unknown',
                     action TEXT NOT NULL,
                     prediction_value REAL NOT NULL,
                     confidence_score REAL,
@@ -132,11 +152,83 @@ class ModelFeedbackService:
                 )
                 """
             )
+            feedback_columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(model_decision_feedback)"
+                ).fetchall()
+            }
+            if "model_ticker" not in feedback_columns:
+                conn.execute(
+                    "ALTER TABLE model_decision_feedback "
+                    "ADD COLUMN model_ticker TEXT NOT NULL DEFAULT ''"
+                )
+            if "task_type" not in feedback_columns:
+                conn.execute(
+                    "ALTER TABLE model_decision_feedback "
+                    "ADD COLUMN task_type TEXT NOT NULL DEFAULT 'unknown'"
+                )
+            conn.execute(
+                """
+                UPDATE model_decision_feedback
+                SET model_ticker = 'GLOBAL'
+                WHERE model_ticker = ''
+                  AND decision_source IN (
+                      'shared_global_production',
+                      'shared_global_candidate'
+                  )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE model_decision_feedback
+                SET model_ticker = ticker
+                WHERE model_ticker = ''
+                  AND decision_source IN (
+                      'production_model',
+                      'validated_candidate',
+                      'shared_global_production',
+                      'shared_global_candidate'
+                  )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE model_decision_feedback
+                SET task_type = 'classification'
+                WHERE task_type = 'unknown'
+                  AND model_name = 'logistic_regression'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE model_decision_feedback
+                SET task_type = 'regression'
+                WHERE task_type = 'unknown'
+                  AND model_name = 'linear_regression'
+                """
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_model_feedback_lookup
                 ON model_decision_feedback(
                     ticker, model_period, model_name, status, decision_date
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_feedback_evaluation
+                ON model_decision_feedback(
+                    status, decision_source, decision_date, id
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_feedback_origin
+                ON model_decision_feedback(
+                    model_ticker, model_period, model_name, status, decision_date
                 )
                 """
             )
@@ -290,10 +382,23 @@ class ModelFeedbackService:
         model_period = str(metadata.get("model_period") or "unknown")
         model_version = str(metadata.get("model_version") or "legacy")
         source = str(metadata.get("decision_source") or "unknown")
+        if source not in MODEL_FEEDBACK_ELIGIBLE_SOURCES:
+            return False
+        model_ticker = str(metadata.get("model_ticker") or ticker).strip().upper()
+        task_type = str(metadata.get("task_type") or "unknown").strip().lower()
         decision_key = "|".join(
-            (ticker, model_period, model_name, model_version, date_value)
+            (
+                ticker,
+                model_ticker,
+                model_period,
+                model_name,
+                model_version,
+                date_value,
+            )
         )
         context = {
+            "model_ticker": model_ticker,
+            "task_type": task_type,
             "context_score": metadata.get("context_score"),
             "context_label": metadata.get("context_label"),
             "context_factors": list(metadata.get("context_factors") or []),
@@ -315,17 +420,18 @@ class ModelFeedbackService:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO model_decision_feedback (
-                    decision_key, user_id, ticker, benchmark, decision_date,
+                    decision_key, user_id, ticker, model_ticker, benchmark, decision_date,
                     recorded_at_utc, horizon_days, model_name, model_period,
-                    model_version, decision_source, action, prediction_value,
+                    model_version, decision_source, task_type, action, prediction_value,
                     confidence_score, context_score, decision_price, quantity,
                     context_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision_key,
                     str(payload.get("user_id") or "system"),
                     ticker,
+                    model_ticker,
                     str(benchmark or "VOO").strip().upper(),
                     date_value,
                     _utc_now_iso(),
@@ -334,6 +440,7 @@ class ModelFeedbackService:
                     model_period,
                     model_version,
                     source,
+                    task_type,
                     str(payload.get("action") or "no_action").lower(),
                     prediction,
                     _safe_float(payload.get("confidence_score")),
@@ -384,6 +491,59 @@ class ModelFeedbackService:
             output.append(item)
         return output
 
+    def _pending_feedback_for_evaluation(
+        self,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return oldest eligible rows so mature work cannot be starved."""
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM model_decision_feedback
+                WHERE status = 'pending'
+                  AND decision_source IN ({placeholders})
+                ORDER BY decision_date ASC, id ASC
+                LIMIT ?
+                """,
+                (*MODEL_FEEDBACK_ELIGIBLE_SOURCES, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _pending_feedback_count(self) -> int:
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM model_decision_feedback
+                WHERE status = 'pending'
+                  AND decision_source IN ({placeholders})
+                """,
+                MODEL_FEEDBACK_ELIGIBLE_SOURCES,
+            ).fetchone()
+        return int(row["count"] or 0)
+
+    def _pending_benchmark_shadows_for_evaluation(
+        self,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM benchmark_shadow_feedback
+                WHERE status = 'pending'
+                ORDER BY decision_date ASC, id ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _outcome_score(
         *,
@@ -412,7 +572,7 @@ class ModelFeedbackService:
         """Evaluate pending decisions once the future trading-day row exists."""
         if not get_settings().model_feedback_enabled:
             return {"evaluated": 0, "pending": 0, "errors": []}
-        pending = self.list_feedback(status="pending", limit=limit)
+        pending = self._pending_feedback_for_evaluation(limit=limit)
         history_cache: dict[str, pd.DataFrame] = {}
         evaluated = 0
         errors: list[str] = []
@@ -444,11 +604,14 @@ class ModelFeedbackService:
                 actual_return = ((outcome_price / decision_price) - 1.0) * 100.0
                 benchmark_return = ((benchmark_end / benchmark_start) - 1.0) * 100.0
                 prediction = float(row["prediction_value"])
-                direction = 1.0 if prediction > 0 else -1.0 if prediction < 0 else 0.0
+                direction = _prediction_direction(
+                    prediction,
+                    str(row.get("task_type") or "unknown"),
+                )
                 direction_correct = (
-                    (prediction > 0 and actual_return > 0)
-                    or (prediction < 0 and actual_return < 0)
-                    or (prediction == 0 and abs(actual_return) < 0.25)
+                    (direction > 0 and actual_return > 0)
+                    or (direction < 0 and actual_return < 0)
+                    or (direction == 0 and abs(actual_return) < 0.25)
                 )
                 notional = abs(float(row["quantity"]) * decision_price)
                 cost_pct = (
@@ -506,7 +669,7 @@ class ModelFeedbackService:
                     exc,
                 )
 
-        remaining = len(self.list_feedback(status="pending", limit=10000))
+        remaining = self._pending_feedback_count()
         shadow_result = self.evaluate_pending_benchmark_shadows(
             price_loader=price_loader,
             limit=limit,
@@ -527,10 +690,7 @@ class ModelFeedbackService:
         limit: int = 200,
     ) -> dict[str, Any]:
         """Settle shadow observations only after the future row exists."""
-        pending = self.list_benchmark_shadow_feedback(
-            status="pending",
-            limit=limit,
-        )
+        pending = self._pending_benchmark_shadows_for_evaluation(limit=limit)
         history_cache: dict[str, pd.DataFrame] = {}
         evaluated = 0
         errors: list[str] = []
@@ -719,16 +879,21 @@ class ModelFeedbackService:
         model_name: str,
         model_version: str | None = None,
     ) -> dict[str, Any]:
+        source_placeholders = ", ".join(
+            "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
+        )
         clauses = [
-            "ticker = ?",
+            "COALESCE(NULLIF(model_ticker, ''), ticker) = ?",
             "model_period = ?",
             "model_name = ?",
             "status = 'evaluated'",
+            f"decision_source IN ({source_placeholders})",
         ]
         params: list[Any] = [
             str(ticker).strip().upper(),
             str(model_period),
             str(model_name).strip().lower(),
+            *MODEL_FEEDBACK_ELIGIBLE_SOURCES,
         ]
         if model_version:
             clauses.append("model_version = ?")
@@ -822,11 +987,15 @@ class ModelFeedbackService:
         ]
         if not clean_factors:
             return {"adjustment": 0.0, "matched_factors": []}
+        source_placeholders = ", ".join(
+            "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
+        )
         clauses = [
             "status = 'evaluated'",
             "actual_return_pct IS NOT NULL",
+            f"decision_source IN ({source_placeholders})",
         ]
-        params: list[Any] = []
+        params: list[Any] = list(MODEL_FEEDBACK_ELIGIBLE_SOURCES)
         if ticker:
             clauses.append("ticker = ?")
             params.append(str(ticker).strip().upper())
