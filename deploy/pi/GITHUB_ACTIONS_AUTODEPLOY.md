@@ -27,15 +27,15 @@ broken line, or contains the public key instead of the private key.
 ## 2. Make SSH Reachable From GitHub Actions
 
 This workflow uses SSH from a GitHub-hosted runner to the NanoPi. Your
-Cloudflare Tunnel for the backend API only exposes HTTP/HTTPS traffic to the
-FastAPI service; it does not make port `22` reachable for this deploy workflow.
+Tailscale access to the backend API does not automatically make port `22`
+reachable from a GitHub-hosted runner for this deploy workflow.
 
 Use one of these SSH paths:
 
 - Direct public IP or dynamic DNS with router port forwarding to NanoPi SSH.
 - A VPN overlay such as Tailscale with a GitHub Action that joins the tailnet.
 - A self-hosted GitHub runner on the NanoPi, so no inbound SSH is needed.
-- A separate Cloudflare Access SSH setup, plus a workflow that installs and uses `cloudflared`.
+- A self-hosted runner on the Pi or a separate SSH/VPN deployment path.
 
 If GitHub Actions logs `dial tcp <host>:<port>: connect: connection refused`,
 the runner reached the host but no SSH service is accepting connections on that

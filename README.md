@@ -550,16 +550,16 @@ News-sentiment note:
 - Paper trading features are simulation-only and do **not** place real orders.
 - Forecast features are scenario-based and do **not** guarantee future prices.
 
-## Raspberry Pi + Cloudflare Deployment
+## Raspberry Pi + Tailscale Deployment
 
 The low-cost production target is:
 
 - Raspberry Pi for the FastAPI backend, SQLite data, model artifacts, and Discord bot
-- Cloudflare Tunnel for the public HTTPS API hostname
-- Cloudflare Pages for the static Vite frontend
+- Tailscale for secure access to the Pi API
+- Optional static hosting for the Vite frontend (Cloudflare Pages is still supported)
 - GitHub for version control
 
-See `deploy/pi/README.md` for the full setup, including `systemd` services, Cloudflare Tunnel, Cloudflare Pages environment variables, data migration, backups, and smoke tests.
+See `deploy/pi/README.md` for the full setup, including `systemd` services, Tailscale API access, frontend environment variables, data migration, backups, and smoke tests.
 
 ## Troubleshooting
 
@@ -571,9 +571,9 @@ See `deploy/pi/README.md` for the full setup, including `systemd` services, Clou
 - Frontend cannot reach backend:
   for local development, make sure backend is running on `http://127.0.0.1:8000`
   and frontend `.env` contains `VITE_API_BASE_URL=http://127.0.0.1:8000`.
-  For Cloudflare Pages, set `VITE_API_BASE_URL` to your Cloudflare Tunnel API
-  hostname, for example `https://api.your-domain.com`, and add the Pages domain
-  to backend `CORS_ALLOW_ORIGINS`.
+  For a Tailscale deployment, set `VITE_API_BASE_URL=https://cowbox.dpdns.org`
+  (or `https://tail8919df.ts.net`) and add the frontend origin to backend
+  `CORS_ALLOW_ORIGINS`.
 - `No price data returned`:
   verify ticker symbol exists in Yahoo Finance and retry with another period.
 - Running scripts from VS Code tasks:

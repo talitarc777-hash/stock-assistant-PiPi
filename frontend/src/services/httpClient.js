@@ -19,17 +19,27 @@ function normalizeApiBaseUrl(value) {
 
 function inferApiBaseUrlFromLocation() {
   const localFallback = "http://127.0.0.1:8000";
-  const cloudflarePagesFallback = "https://cowbox.dpdns.org";
+  const tailscaleCustomDomainFallback = "https://cowbox.dpdns.org";
   if (typeof window === "undefined") return localFallback;
 
   const { hostname, protocol } = window.location;
   const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
   if (isLocalhost) return localFallback;
 
+  // When the frontend is opened through the Tailscale hostname, the API is
+  // served by the same Tailscale endpoint rather than an api.* subdomain.
+  if (hostname === "tail8919df.ts.net") {
+    return `${protocol === "http:" ? "http" : "https"}://${hostname}`;
+  }
+
+  if (hostname === "cowbox.dpdns.org") {
+    return tailscaleCustomDomainFallback;
+  }
+
   if (hostname.endsWith(".pages.dev")) {
-    // Cloudflare Pages preview domains cannot reveal the custom API domain.
-    // Use the known tunnel-backed API unless VITE_API_BASE_URL overrides it.
-    return cloudflarePagesFallback;
+    // Cloudflare Pages may still host the static frontend, but the API is now
+    // reached through the Tailscale-backed custom domain.
+    return tailscaleCustomDomainFallback;
   }
 
   const withoutWww = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
@@ -72,7 +82,7 @@ export async function requestJson(path, options = {}) {
   const url = `${API_BASE_URL}${path}`;
   if (!API_BASE_URL) {
     throw new Error(
-      "Backend URL is not configured. Set VITE_API_BASE_URL to your API domain, for example https://api.your-domain.com."
+      "Backend URL is not configured. Set VITE_API_BASE_URL to https://cowbox.dpdns.org or https://tail8919df.ts.net."
     );
   }
 

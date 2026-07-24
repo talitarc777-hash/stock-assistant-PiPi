@@ -96,7 +96,12 @@ class Settings(BaseModel):
     profile_db_path: str = "data/user_profiles.db"
     research_data_dir: str = "data/research"
     research_models_dir: str = "data/models"
-    cors_allow_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_allow_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://cowbox.dpdns.org",
+        "https://tail8919df.ts.net",
+    ]
     cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
     external_context_enabled: bool = True
@@ -124,7 +129,7 @@ class Settings(BaseModel):
     hkd_per_usd_rate: float = 7.8
 
 
-_CLOUDFLARE_PAGES_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
+_CLOUDFLARE_PAGES_PREVIEW_CORS_REGEX = r"^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$"
 
 
 @lru_cache(maxsize=1)
@@ -144,11 +149,15 @@ def get_settings() -> Settings:
         research_data_dir=os.getenv("RESEARCH_DATA_DIR", "data/research"),
         research_models_dir=os.getenv("RESEARCH_MODELS_DIR", "data/models"),
         cors_allow_origins=_parse_csv_env(
-            os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+            os.getenv(
+                "CORS_ALLOW_ORIGINS",
+                "http://localhost:5173,http://127.0.0.1:5173,"
+                "https://cowbox.dpdns.org,https://tail8919df.ts.net",
+            )
         ),
         cors_allow_origin_regex=_combine_cors_regex(
             os.getenv("CORS_ALLOW_ORIGIN_REGEX"),
-            _CLOUDFLARE_PAGES_CORS_REGEX,
+            _CLOUDFLARE_PAGES_PREVIEW_CORS_REGEX,
         ),
         default_watchlist=_parse_ticker_csv_env(
             os.getenv("WATCHLIST_TICKERS", "VOO,SPY,QQQ,AAPL,MSFT,NVDA")

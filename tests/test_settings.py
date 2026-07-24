@@ -32,6 +32,14 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertTrue(re.match(settings.cors_allow_origin_regex or "", "https://example.com"))
 
+    def test_default_cors_origins_include_tailscale_hosts(self) -> None:
+        get_settings.cache_clear()
+        with patch.dict("os.environ", {}, clear=True):
+            settings = get_settings()
+
+        self.assertIn("https://cowbox.dpdns.org", settings.cors_allow_origins)
+        self.assertIn("https://tail8919df.ts.net", settings.cors_allow_origins)
+
     def test_production_relative_database_is_migrated_outside_checkout(self) -> None:
         temp_root = Path("data") / "test_settings"
         temp_root.mkdir(parents=True, exist_ok=True)
