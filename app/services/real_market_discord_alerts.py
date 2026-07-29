@@ -304,6 +304,57 @@ def build_real_market_activity_alert(
     )
 
 
+def collect_real_market_activity_alerts(
+    *,
+    user_id: str,
+    tickers: list[str],
+    download_fn: IntradayDownloadFn | None = None,
+) -> list[RealMarketActivityAlert]:
+    """Collect new unusual-market states without performing external delivery."""
+    settings = get_settings()
+    if not settings.real_market_discord_alert_enabled:
+        return []
+    symbols = _normalize_tickers(tickers)[: settings.real_market_alert_ticker_limit]
+    if not symbols:
+        return []
+
+    downloader = download_fn or _default_download_intraday
+    store = get_user_profile_store()
+    profile = store.get_or_create_profile(user_id)
+    if not bool(profile.alert_enabled) or str(profile.preferred_delivery_source) != "discord":
+        return []
+
+    alerts: list[RealMarketActivityAlert] = []
+    for symbol in symbols:
+        try:
+            alert = build_real_market_activity_alert(
+                user_id=user_id,
+                ticker=symbol,
+                intraday_df=downloader(symbol, "5d", "5m"),
+                window_minutes=settings.real_market_alert_window_minutes,
+                large_value_threshold=settings.real_market_large_value_threshold,
+                volume_spike_multiplier=settings.real_market_volume_spike_multiplier,
+                price_move_threshold_pct=settings.real_market_price_move_threshold_pct,
+                min_window_volume=settings.real_market_min_window_volume,
+                sudden_move_threshold_pct=settings.real_market_sudden_move_threshold_pct,
+                language=str(profile.preferred_language or "en"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive provider guard
+            logger.warning("Real market activity scan skipped ticker=%s error=%s", symbol, exc)
+            continue
+        if alert is None:
+            continue
+        rule = f"real_market_{alert.alert_type}_{alert.pressure}"
+        if store.is_alert_state_new(
+            alert.user_id,
+            alert.ticker,
+            rule,
+            alert.state_key,
+        ):
+            alerts.append(alert)
+    return alerts
+
+
 def scan_real_market_activity_alerts(
     *,
     user_id: str,

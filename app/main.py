@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.api.analyze import router as analyze_router
 from app.api.backtest import router as backtest_router
 from app.api.dashboard import router as dashboard_router
+from app.api.discord_alerts import router as discord_alerts_router
 from app.api.discord_link import router as discord_link_router
 from app.api.forecast import router as forecast_router
 from app.api.market_data import router as market_data_router
@@ -25,6 +26,7 @@ from app.api.universe import router as universe_router
 from app.api.virtual_account import router as virtual_account_router
 from app.api.virtual_trader import router as virtual_trader_router
 from app.core.settings import get_settings
+from app.services.discord_alert_scheduler import get_discord_alert_scheduler_service
 from app.services.model_lifecycle_scheduler import get_model_lifecycle_scheduler_service
 from app.services.model_lifecycle_service import get_model_lifecycle_service
 from app.services.trader_scheduler import get_trader_scheduler_service
@@ -53,8 +55,10 @@ async def lifespan(_: FastAPI):
     """Start/stop background schedulers with app lifecycle."""
     logger = logging.getLogger(__name__)
     trader_scheduler = get_trader_scheduler_service()
+    discord_alert_scheduler = get_discord_alert_scheduler_service()
     lifecycle_scheduler = get_model_lifecycle_scheduler_service()
     trader_scheduler_started = False
+    discord_alert_scheduler_started = False
     lifecycle_scheduler_started = False
 
     try:
@@ -70,6 +74,12 @@ async def lifespan(_: FastAPI):
         logger.exception("Trader scheduler failed to start error=%s", exc)
 
     try:
+        discord_alert_scheduler.start()
+        discord_alert_scheduler_started = True
+    except Exception as exc:  # pragma: no cover - defensive startup hardening
+        logger.exception("Discord alert scheduler failed to start error=%s", exc)
+
+    try:
         lifecycle_scheduler.start()
         lifecycle_scheduler_started = True
     except Exception as exc:  # pragma: no cover - defensive startup hardening
@@ -78,6 +88,11 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        if discord_alert_scheduler_started:
+            try:
+                discord_alert_scheduler.stop()
+            except Exception as exc:  # pragma: no cover - defensive shutdown hardening
+                logger.exception("Discord alert scheduler failed to stop error=%s", exc)
         if lifecycle_scheduler_started:
             try:
                 lifecycle_scheduler.stop()
@@ -112,6 +127,7 @@ app.include_router(market_data_router)
 app.include_router(analyze_router)
 app.include_router(backtest_router)
 app.include_router(dashboard_router)
+app.include_router(discord_alerts_router)
 app.include_router(discord_link_router)
 app.include_router(forecast_router)
 app.include_router(paper_router)

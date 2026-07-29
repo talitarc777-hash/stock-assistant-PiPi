@@ -81,6 +81,25 @@ class SettingsTests(unittest.TestCase):
             str(Path("data/user_profiles.db")),
         )
 
+    def test_discord_alert_delivery_settings_are_bounded(self) -> None:
+        get_settings.cache_clear()
+        with patch.dict(
+            "os.environ",
+            {
+                "DISCORD_ALERT_SCHEDULER_ENABLED": "false",
+                "DISCORD_ALERT_MESSAGE_LIMIT": "9999",
+                "DISCORD_WEBHOOK_MAX_ATTEMPTS": "99",
+                "DISCORD_WEBHOOK_RETRY_BASE_SECONDS": "99",
+            },
+            clear=True,
+        ):
+            settings = get_settings()
+
+        self.assertFalse(settings.discord_alert_scheduler_enabled)
+        self.assertEqual(settings.discord_alert_message_limit, 2000)
+        self.assertEqual(settings.discord_webhook_max_attempts, 6)
+        self.assertEqual(settings.discord_webhook_retry_base_seconds, 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()

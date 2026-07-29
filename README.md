@@ -233,9 +233,12 @@ Alert sync:
 - Shared alert fields include `alert_enabled`, `alert_threshold_high`, `alert_threshold_low`, and `alert_watchlist`
 - Discord `!alerts` uses the shared backend alert scan; if that source is unavailable, it reports an error instead of calculating a potentially unsynchronized local result
 - Duplicate alert spam is reduced by storing the last triggered state per user/ticker/rule in SQLite
-- Proactive Discord alerts notify once per ticker/threshold/market-data date when the explainable overall score reaches `alert_threshold_high` (80/100 by default). This screening score is not a profit probability
+- An independent Discord alert scheduler notifies once per ticker/threshold/market-data date when the explainable overall score reaches `alert_threshold_high` (80/100 by default). Alert scanning continues even if a Virtual Trader run fails. This screening score is not a profit probability
 - Proactive unusual real-market Discord alerts honor the same web `alert_enabled` and delivery-source settings; simulated Virtual Trader orders do not send notifications
-- Webhook deduplication is committed only after Discord confirms delivery; missing configuration and transient failures remain retryable
+- Webhook deduplication is committed only after Discord confirms delivery; HTTP 429/5xx and transient network failures use bounded retry and remain retryable on later cycles
+- Discord messages are batched below the platform limit, with secret-free `pending`/`sent`/`failed` delivery audits persisted in SQLite
+- `GET /discord-alerts/health` reports scheduler and delivery health without returning the webhook URL
+- `python scripts/run_discord_alerts.py --user-id demo-user` runs an alert-only scan without executing virtual trades; add `--test-webhook` for a harmless delivery smoke test
 
 Web and Discord account linking:
 

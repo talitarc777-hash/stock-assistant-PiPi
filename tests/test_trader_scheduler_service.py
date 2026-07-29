@@ -77,37 +77,6 @@ class TraderSchedulerServiceTests(unittest.TestCase):
         self.assertEqual(status["recent_runs"][0]["status"], "success")
         self.assertEqual(status["recent_runs"][0]["errors"], 0)
 
-    @patch("app.services.trader_scheduler.scan_overall_score_discord_alerts")
-    @patch("app.services.trader_scheduler.scan_real_market_activity_alerts")
-    @patch("app.services.trader_scheduler.run_live_virtual_trader_now")
-    @patch("app.services.trader_scheduler.get_user_profile_store")
-    @patch("app.services.trader_scheduler.get_market_hours_state")
-    def test_automatic_cycle_scans_users_market_alert_watchlist(
-        self,
-        mock_market_state,
-        mock_profile_store,
-        mock_live_run,
-        mock_market_alert_scan,
-        mock_score_alert_scan,
-    ) -> None:
-        service = TraderSchedulerService()
-        mock_market_state.return_value = self._market_state_open()
-        mock_profile_store.return_value.list_alert_enabled_user_summaries.return_value = [
-            SimpleNamespace(user_id="u1", alert_watchlist=["TSLA", "NVDA"]),
-        ]
-        mock_live_run.return_value = self._live_status("u1")
-
-        service.run_cycle(source="test", raise_if_busy=True)
-
-        mock_market_alert_scan.assert_called_once_with(
-            user_id="u1",
-            tickers=["TSLA", "NVDA"],
-        )
-        mock_score_alert_scan.assert_called_once_with(
-            user_id="u1",
-            tickers=["TSLA", "NVDA"],
-        )
-
     def test_run_user_now_raises_busy_when_locked(self) -> None:
         service = TraderSchedulerService()
         acquired = service._run_lock.acquire(blocking=False)  # pylint: disable=protected-access

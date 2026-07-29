@@ -49,11 +49,15 @@ CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://cowbox.dp
 CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?stock-assistant-pipi\.pages\.dev$
 ```
 
-Add your real `DISCORD_BOT_TOKEN`, `DISCORD_WEBHOOK_URL`, and any
-`ALLOWED_CHANNEL_IDS` in `.env`. The webhook enables proactive alerts for
+Add your real `DISCORD_WEBHOOK_URL` in `.env`. The webhook enables proactive alerts for
 watched tickers that reach the high overall-score threshold (80/100 by
 default), unusual real-market pressure, and sudden price moves. The overall
 score is a screening score, not a profit probability. Do not commit `.env`.
+
+For webhook-only delivery to a channel such as `第一桶金💵`, the Stock Assistant
+does not need `DISCORD_BOT_TOKEN` or `ALLOWED_CHANNEL_IDS`. Those variables and
+the `stock-assistant-discord` service are needed only when using this project's
+command bot. An OpenClaw bot may continue to own its token independently.
 
 In production, a relative `PROFILE_DB_PATH` is resolved below
 `PERSISTENT_DATA_DIR`. On the first startup after this change, the app copies
@@ -117,7 +121,17 @@ Read-only API smoke checks (these never run the model):
 ```bash
 curl "http://127.0.0.1:8000/discord-link/status?profile_user_id=<profile-id>"
 curl "http://127.0.0.1:8000/virtual-trader/live-sync?user_id=<profile-id>"
+curl "http://127.0.0.1:8000/discord-alerts/health"
 ```
+
+Webhook and alert-only smoke checks:
+
+```bash
+.venv/bin/python scripts/run_discord_alerts.py --user-id demo-user --test-webhook
+.venv/bin/python scripts/run_discord_alerts.py --user-id demo-user
+```
+
+The second command scans alerts but never executes the Virtual Trader.
 
 ## 3. Install systemd Services
 

@@ -114,6 +114,10 @@ class Settings(BaseModel):
     sec_context_enabled: bool = True
     sec_user_agent: str = "StockAssistantPiPi/1.0 contact@example.com"
     discord_webhook_url: str | None = None
+    discord_alert_scheduler_enabled: bool = True
+    discord_alert_message_limit: int = 1900
+    discord_webhook_max_attempts: int = 3
+    discord_webhook_retry_base_seconds: float = 0.5
     real_market_discord_alert_enabled: bool = True
     real_market_alert_window_minutes: int = 15
     real_market_large_value_threshold: float = 10_000_000.0
@@ -176,6 +180,22 @@ def get_settings() -> Settings:
             "StockAssistantPiPi/1.0 contact@example.com",
         ),
         discord_webhook_url=(os.getenv("DISCORD_WEBHOOK_URL") or "").strip() or None,
+        discord_alert_scheduler_enabled=_parse_bool_env(
+            os.getenv("DISCORD_ALERT_SCHEDULER_ENABLED"),
+            True,
+        ),
+        discord_alert_message_limit=max(
+            500,
+            min(2000, int(os.getenv("DISCORD_ALERT_MESSAGE_LIMIT", "1900"))),
+        ),
+        discord_webhook_max_attempts=max(
+            1,
+            min(6, int(os.getenv("DISCORD_WEBHOOK_MAX_ATTEMPTS", "3"))),
+        ),
+        discord_webhook_retry_base_seconds=max(
+            0.0,
+            min(30.0, float(os.getenv("DISCORD_WEBHOOK_RETRY_BASE_SECONDS", "0.5"))),
+        ),
         real_market_discord_alert_enabled=_parse_bool_env(
             os.getenv("REAL_MARKET_DISCORD_ALERT_ENABLED"),
             True,

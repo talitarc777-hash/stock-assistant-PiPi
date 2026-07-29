@@ -139,6 +139,49 @@ def build_overall_score_alert(
     )
 
 
+def collect_overall_score_alerts(
+    *,
+    user_id: str,
+    tickers: list[str],
+    price_history_fn: PriceHistoryFn | None = None,
+) -> list[OverallScoreAlert]:
+    """Collect new high-score states without performing external delivery."""
+    symbols = _normalize_tickers(tickers)
+    if not symbols:
+        return []
+
+    store = get_user_profile_store()
+    profile = store.get_or_create_profile(user_id)
+    if not bool(profile.alert_enabled) or str(profile.preferred_delivery_source) != "discord":
+        return []
+
+    history_loader = price_history_fn or get_price_history
+    alerts: list[OverallScoreAlert] = []
+    for symbol in symbols:
+        try:
+            indicator_frame = add_technical_indicators(history_loader(symbol, "1y"))
+            score = score_from_indicators(indicator_frame)
+            alert = build_overall_score_alert(
+                user_id=profile.user_id,
+                ticker=symbol,
+                score=score,
+                threshold=profile.alert_threshold_high,
+                observed_date=indicator_frame.iloc[-1].get("date"),
+                language=str(profile.preferred_language or "en"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive provider guard
+            logger.warning("Overall-score alert scan skipped ticker=%s error=%s", symbol, exc)
+            continue
+        if alert is not None and store.is_alert_state_new(
+            alert.user_id,
+            alert.ticker,
+            "score_above_threshold_discord",
+            alert.state_key,
+        ):
+            alerts.append(alert)
+    return alerts
+
+
 def scan_overall_score_discord_alerts(
     *,
     user_id: str,
