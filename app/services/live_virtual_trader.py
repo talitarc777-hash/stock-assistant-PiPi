@@ -46,6 +46,7 @@ from app.services.model_results import (
 from app.services.prediction_explanations import build_prediction_explanation
 from app.services.research_pipeline import build_feature_dataset
 from app.services.model_training import prepare_stationary_feature_dataset
+from app.services.scoring import score_from_indicators
 from app.services.universe_service import get_active_universe
 from app.services.user_profile_service import get_user_profile_store
 
@@ -1066,6 +1067,7 @@ def run_live_virtual_trader_now(
     latest_row_cache: dict[str, pd.Series] = {}
     stationary_latest_row_cache: dict[str, pd.Series] = {}
     latest_price_cache: dict[str, float] = {}
+    overall_score_cache: dict[str, int | None] = {}
     valuation_cache: dict[str, dict[str, Any]] = {}
     data_quality_cache: dict[str, dict[str, Any]] = {}
     failed_symbols: list[str] = []
@@ -1088,6 +1090,17 @@ def run_live_virtual_trader_now(
                 continue
             latest_row = feature_df.iloc[-1]
             latest_row_cache[symbol] = latest_row
+            try:
+                overall_score_cache[symbol] = int(
+                    score_from_indicators(feature_df).total_score
+                )
+            except Exception as exc:  # pragma: no cover - score display must not block trading
+                overall_score_cache[symbol] = None
+                logger.warning(
+                    "Live trader ticker=%s overall score unavailable: %s",
+                    symbol,
+                    exc,
+                )
             stationary_latest_row_cache[symbol] = prepare_stationary_feature_dataset(
                 feature_df
             ).iloc[-1]
@@ -1581,6 +1594,7 @@ def run_live_virtual_trader_now(
                             "confidence_score": confidence_score,
                             "prediction_value": prediction_value,
                             "decision_source": decision_source,
+                            "overall_score": overall_score_cache.get(symbol),
                         },
                     )
                 except AccountLedgerError as exc:
@@ -1603,6 +1617,7 @@ def run_live_virtual_trader_now(
                             "confidence_score": confidence_score,
                             "prediction_value": prediction_value,
                             "decision_source": decision_source,
+                            "overall_score": overall_score_cache.get(symbol),
                         },
                     )
                 except AccountLedgerError as exc:
@@ -1648,6 +1663,7 @@ def run_live_virtual_trader_now(
                 "unrealized_pnl": unrealized_after,
                 "metadata": {
                     "prediction_value": prediction_value,
+                    "overall_score": overall_score_cache.get(symbol),
                     "task_type": task_type,
                     "price_date": str(latest_row.get("date")),
                     "explanation": explanation["explanation"],

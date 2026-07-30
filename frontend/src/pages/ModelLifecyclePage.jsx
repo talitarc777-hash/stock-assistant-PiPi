@@ -6,6 +6,13 @@ import {
   fetchModelLifecycleStatus,
   runModelLifecycleNow,
 } from "../api";
+import {
+  buildModelPerformanceRows,
+  formatModelRate,
+  historicalAccuracy,
+  liveMatchingRate,
+  predictionRate,
+} from "../utils/modelMetrics";
 
 const TRADING_PERIODS = ["2y", "5y", "10y"];
 const TRADING_MODELS = ["linear_regression", "random_forest", "gradient_boosting"];
@@ -60,6 +67,7 @@ export default function ModelLifecyclePage({ languageMode }) {
   const [runs, setRuns] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRunningNow, setIsRunningNow] = useState(false);
+  const [showTrustExplanation, setShowTrustExplanation] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState("");
 
@@ -114,6 +122,11 @@ export default function ModelLifecyclePage({ languageMode }) {
           TRADING_MODELS.includes(item.model_name)
       ),
     [registry]
+  );
+
+  const modelPerformanceRows = useMemo(
+    () => buildModelPerformanceRows(tradingRegistry, TRADING_MODELS),
+    [tradingRegistry]
   );
 
   const rankedForVoo = useMemo(
@@ -219,8 +232,19 @@ export default function ModelLifecyclePage({ languageMode }) {
 
       {error ? <div className="error-box"><p>{error}</p></div> : null}
 
+      {showTrustExplanation ? (
       <section className={`panel ${currentValidationCount ? "" : "model-evidence-warning"}`}>
-        <h3>{labelByMode(languageMode, "Can the models be trusted now?", "目前可以信任模型嗎？")}</h3>
+        <div className="panel-title-row">
+          <h3>{labelByMode(languageMode, "Can the models be trusted now?", "目前可以信任模型嗎？")}</h3>
+          <button
+            type="button"
+            className="section-visibility-button"
+            aria-expanded="true"
+            onClick={() => setShowTrustExplanation(false)}
+          >
+            {labelByMode(languageMode, "Hide", "隱藏")}
+          </button>
+        </div>
         <p>
           {currentValidationCount
             ? labelByMode(
@@ -296,6 +320,16 @@ export default function ModelLifecyclePage({ languageMode }) {
           </p>
         ) : null}
       </section>
+      ) : (
+        <button
+          type="button"
+          className="restore-section-button"
+          aria-expanded="false"
+          onClick={() => setShowTrustExplanation(true)}
+        >
+          {labelByMode(languageMode, "Show model trust explanation", "顯示模型信任說明")}
+        </button>
+      )}
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Automatic Selection", "\u81ea\u52d5\u9078\u64c7")}</h3>
@@ -331,9 +365,58 @@ export default function ModelLifecyclePage({ languageMode }) {
       </section>
 
       <section className="panel">
+        <h3>{labelByMode(languageMode, "Model Performance", "模型表現")}</h3>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "Accuracy is the median historical walk-forward direction accuracy. Prediction rate is how often the model predicted an upward move, not its chance of success. Matching rate is the sample-weighted share of matured live predictions that matched the actual direction.",
+            "準確率是歷史走步驗證方向準確率的中位數。預測率是模型預測上升的比例，並非成功機率。吻合率是已到期實時預測與實際方向相符的樣本加權比例。"
+          )}
+        </p>
+        <div className="table-wrap responsive-card-table model-performance-table">
+          <table className="static-table">
+            <thead>
+              <tr>
+                <th>{labelByMode(languageMode, "Model", "模型")}</th>
+                <th>{labelByMode(languageMode, "Accuracy rate", "準確率")}</th>
+                <th>{labelByMode(languageMode, "Prediction rate", "預測率")}</th>
+                <th>{labelByMode(languageMode, "Matching rate", "吻合率")}</th>
+                <th>{labelByMode(languageMode, "Evidence", "證據量")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelPerformanceRows.map((item) => (
+                <tr key={item.modelName}>
+                  <td data-label={labelByMode(languageMode, "Model", "模型")}>
+                    <strong>{modelText(item.modelName)}</strong>
+                  </td>
+                  <td data-label={labelByMode(languageMode, "Accuracy rate", "準確率")}>
+                    {formatModelRate(item.accuracyRate)}
+                  </td>
+                  <td data-label={labelByMode(languageMode, "Prediction rate", "預測率")}>
+                    {formatModelRate(item.predictionRate)}
+                  </td>
+                  <td data-label={labelByMode(languageMode, "Matching rate", "吻合率")}>
+                    {formatModelRate(item.matchingRate)}
+                  </td>
+                  <td data-label={labelByMode(languageMode, "Evidence", "證據量")}>
+                    {labelByMode(
+                      languageMode,
+                      `${item.recordCount} model records; ${item.matchingSamples} matured live results`,
+                      `${item.recordCount} 個模型記錄；${item.matchingSamples} 個已到期實時結果`
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
         <h3>{labelByMode(languageMode, "Three Views of the Market", "\u4e09\u7a2e\u5e02\u5834\u8996\u89d2")}</h3>
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap responsive-card-table">
+          <table className="static-table">
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "History", "\u6b77\u53f2\u9577\u5ea6")}</th>
@@ -346,23 +429,23 @@ export default function ModelLifecyclePage({ languageMode }) {
             <tbody>
               {periodRows.map((row) => (
                 <tr key={row.period}>
-                  <td><strong>{row.period}</strong></td>
-                  <td>
+                  <td data-label={labelByMode(languageMode, "History", "歷史長度")}><strong>{row.period}</strong></td>
+                  <td data-label={labelByMode(languageMode, "Purpose", "用途")}>
                     {row.period === "2y"
                       ? labelByMode(languageMode, "Recent market behaviour", "\u8fd1\u671f\u5e02\u5834\u8b8a\u5316")
                       : row.period === "5y"
                       ? labelByMode(languageMode, "Medium-term balance", "\u4e2d\u671f\u5e02\u5834\u5e73\u8861")
                       : labelByMode(languageMode, "Long-term stability", "\u9577\u671f\u5e02\u5834\u7a69\u5b9a\u6027")}
                   </td>
-                  <td>
+                  <td data-label={labelByMode(languageMode, "Refresh", "更新")}>
                     {row.period === "2y"
                       ? labelByMode(languageMode, "Daily", "\u6bcf\u65e5")
                       : row.period === "5y"
                       ? labelByMode(languageMode, "Weekly", "\u6bcf\u9031")
                       : labelByMode(languageMode, "Monthly", "\u6bcf\u6708")}
                   </td>
-                  <td>{row.available}</td>
-                  <td>
+                  <td data-label={labelByMode(languageMode, "Validated models", "已驗證模型")}>{row.available}</td>
+                  <td data-label={labelByMode(languageMode, "Best available", "最佳可用模型")}>
                     {row.best
                       ? `${row.best.ticker}: ${modelText(row.best.model_name)} (${scoreText(row.best.validation_score)})`
                       : labelByMode(languageMode, "Waiting for training", "\u7b49\u5f85\u8a13\u7df4")}
@@ -383,8 +466,8 @@ export default function ModelLifecyclePage({ languageMode }) {
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Recent Model Updates", "\u6700\u8fd1\u6a21\u578b\u66f4\u65b0")}</h3>
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap responsive-card-table">
+          <table className="static-table">
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "Time", "\u6642\u9593")}</th>
@@ -397,11 +480,11 @@ export default function ModelLifecyclePage({ languageMode }) {
             <tbody>
               {runs.length ? runs.map((item) => (
                 <tr key={item.id}>
-                  <td>{dateText(item.started_at_utc)}</td>
-                  <td>{workflowText(item.run_type, languageMode)}</td>
-                  <td>{statusText(item.status, languageMode)}</td>
-                  <td>{item.processed_tickers}</td>
-                  <td>{item.successful_models}</td>
+                  <td data-label={labelByMode(languageMode, "Time", "時間")}>{dateText(item.started_at_utc)}</td>
+                  <td data-label={labelByMode(languageMode, "Update type", "更新類型")}>{workflowText(item.run_type, languageMode)}</td>
+                  <td data-label={labelByMode(languageMode, "Result", "結果")}>{statusText(item.status, languageMode)}</td>
+                  <td data-label={labelByMode(languageMode, "Tickers", "股票數量")}>{item.processed_tickers}</td>
+                  <td data-label={labelByMode(languageMode, "Models ready", "完成模型")}>{item.successful_models}</td>
                 </tr>
               )) : (
                 <tr>
@@ -436,8 +519,8 @@ export default function ModelLifecyclePage({ languageMode }) {
             )}
 
             <h4>{labelByMode(languageMode, "Trading model registry", "\u4ea4\u6613\u6a21\u578b\u767b\u8a18\u8868")}</h4>
-            <div className="table-wrap">
-              <table>
+            <div className="table-wrap responsive-card-table model-registry-table">
+              <table className="static-table">
                 <thead>
                   <tr>
                     <th>Ticker</th>
@@ -445,18 +528,24 @@ export default function ModelLifecyclePage({ languageMode }) {
                     <th>{labelByMode(languageMode, "Model", "\u6a21\u578b")}</th>
                     <th>{labelByMode(languageMode, "State", "\u72c0\u614b")}</th>
                     <th>{labelByMode(languageMode, "Score", "\u5206\u6578")}</th>
+                    <th>{labelByMode(languageMode, "Accuracy rate", "準確率")}</th>
+                    <th>{labelByMode(languageMode, "Prediction rate", "預測率")}</th>
+                    <th>{labelByMode(languageMode, "Matching rate", "吻合率")}</th>
                     <th>{labelByMode(languageMode, "Updated", "\u66f4\u65b0")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {tradingRegistry.slice(0, 80).map((item) => (
                     <tr key={`${item.ticker}-${item.period}-${item.model_name}`}>
-                      <td>{item.ticker}</td>
-                      <td>{item.period}</td>
-                      <td>{modelText(item.model_name)}</td>
-                      <td>{item.status}{item.is_stale ? " (stale)" : ""}</td>
-                      <td>{scoreText(item.validation_score)}</td>
-                      <td>{dateText(item.updated_at)}</td>
+                      <td data-label="Ticker">{item.ticker}</td>
+                      <td data-label={labelByMode(languageMode, "History", "歷史長度")}>{item.period}</td>
+                      <td data-label={labelByMode(languageMode, "Model", "模型")}>{modelText(item.model_name)}</td>
+                      <td data-label={labelByMode(languageMode, "State", "狀態")}>{item.status}{item.is_stale ? " (stale)" : ""}</td>
+                      <td data-label={labelByMode(languageMode, "Score", "分數")}>{scoreText(item.validation_score)}</td>
+                      <td data-label={labelByMode(languageMode, "Accuracy rate", "準確率")}>{formatModelRate(historicalAccuracy(item))}</td>
+                      <td data-label={labelByMode(languageMode, "Prediction rate", "預測率")}>{formatModelRate(predictionRate(item))}</td>
+                      <td data-label={labelByMode(languageMode, "Matching rate", "吻合率")}>{formatModelRate(liveMatchingRate(item))}</td>
+                      <td data-label={labelByMode(languageMode, "Updated", "更新")}>{dateText(item.updated_at)}</td>
                     </tr>
                   ))}
                 </tbody>

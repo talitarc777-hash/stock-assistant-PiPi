@@ -159,6 +159,11 @@ function contextGuide(value, languageMode) {
   };
 }
 
+function stockScoreText(item) {
+  const score = Number(item?.metadata?.overall_score);
+  return Number.isFinite(score) ? `${score.toFixed(0)}/100` : "N/A";
+}
+
 function actionText(action, languageMode) {
   const normalized = String(action || "").toLowerCase();
   const map = {
@@ -795,6 +800,7 @@ export default function VirtualTraderPage({
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "Ticker", ZH.ticker)}</th>
+                <th>{labelByMode(languageMode, "Score", "\u5206\u6578")}</th>
                 <th>{labelByMode(languageMode, "Source", ZH.source)}</th>
                 <th>{labelByMode(languageMode, "Action", ZH.action)}</th>
                 <th>{labelByMode(languageMode, "Buy potential", ZH.buyPotential)}</th>
@@ -812,6 +818,9 @@ export default function VirtualTraderPage({
                     onClick={() => setSelectedLiveTrade(item)}
                   >
                     <td data-label={labelByMode(languageMode, "Ticker", ZH.ticker)}>{item.ticker}</td>
+                    <td data-label={labelByMode(languageMode, "Score", "\u5206\u6578")}>
+                      <strong>{stockScoreText(item)}</strong>
+                    </td>
                     <td data-label={labelByMode(languageMode, "Source", ZH.source)}>
                       <span className={item.is_watchlist ? "ticker-source-watchlist" : "ticker-source-market"}>
                         {item.is_watchlist
@@ -833,7 +842,7 @@ export default function VirtualTraderPage({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     {labelByMode(
                       languageMode,
                       actionRows.length
