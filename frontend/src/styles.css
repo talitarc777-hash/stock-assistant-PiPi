@@ -113,6 +113,13 @@ body {
   gap: 16px;
 }
 
+.layout-grid > *,
+.settings-grid > *,
+.chart-grid > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .panel {
   background: #ffffff;
   border: 1px solid #e5e7eb;
@@ -199,6 +206,7 @@ body {
 .table-wrap {
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;

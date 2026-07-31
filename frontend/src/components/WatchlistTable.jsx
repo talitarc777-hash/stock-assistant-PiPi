@@ -2,12 +2,15 @@ import React from "react";
 import { term } from "../i18n/terms";
 
 export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, languageMode }) {
+  const rankLabel =
+    languageMode === "zh" ? "排名" : languageMode === "en" ? "Rank" : "Rank / 排名";
+
   return (
     <section className="panel">
       <h3>
         {term("Watchlist", languageMode)} ({term("Ranked by Score", languageMode)})
       </h3>
-      <div className="table-wrap">
+      <div className="table-wrap responsive-card-table watchlist-ranking-table">
         <table>
           <thead>
             <tr>
@@ -27,11 +30,15 @@ export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, l
                   className={isSelected ? "selected-row" : ""}
                   onClick={() => onSelectTicker(item.ticker)}
                 >
-                  <td>{index + 1}</td>
-                  <td>{item.ticker}</td>
-                  <td>{item.score_breakdown.total_score}</td>
-                  <td>{item.label}</td>
-                  <td>{item.latest_close.toFixed(2)}</td>
+                  <td data-label={rankLabel}>{index + 1}</td>
+                  <td data-label={term("Ticker", languageMode)}>{item.ticker}</td>
+                  <td data-label={term("Score", languageMode)}>
+                    {item.score_breakdown.total_score}
+                  </td>
+                  <td data-label={term("Label", languageMode)}>{item.label}</td>
+                  <td data-label={term("Close", languageMode)}>
+                    {item.latest_close.toFixed(2)}
+                  </td>
                 </tr>
               );
             })}
