@@ -212,6 +212,18 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
+.top-score-panel {
+  width: 100%;
+}
+
+.top-score-table td:nth-child(3) strong {
+  color: #1d4ed8;
+}
+
+.warning-text {
+  color: #92400e;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

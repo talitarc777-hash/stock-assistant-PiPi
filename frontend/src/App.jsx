@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchAnalyze, fetchChartData, fetchForecast, fetchWatchlistAnalyze } from "./api";
+import {
+  fetchAnalyze,
+  fetchChartData,
+  fetchForecast,
+  fetchLiveVirtualTraderTrades,
+  fetchWatchlistAnalyze,
+} from "./api";
 import LineChart from "./components/LineChart";
 import PriceChart from "./components/PriceChart";
+import TopScoredTickersTable from "./components/TopScoredTickersTable";
 import WatchlistManager from "./components/WatchlistManager";
 import WatchlistTable from "./components/WatchlistTable";
 import GlossaryPage from "./pages/GlossaryPage";
@@ -20,6 +27,7 @@ import {
   normalizeProfileId,
   setStoredProfileId,
 } from "./services/profileStorage";
+import { rankTopScoredTickers } from "./utils/topScoredTickers";
 import "./styles.css";
 
 const DEFAULT_PERIOD = "5y";
@@ -166,6 +174,7 @@ function CurrentAlertsPanel({ languageMode, alertScan, isLoading }) {
 
 function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpdated }) {
   const [watchlistRows, setWatchlistRows] = useState([]);
+  const [marketDecisionRows, setMarketDecisionRows] = useState([]);
   const [selectedTicker, setSelectedTicker] = useState("");
   const [analyzeData, setAnalyzeData] = useState(null);
   const [chartData, setChartData] = useState(null);
@@ -173,9 +182,11 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   const [detailLoadState, setDetailLoadState] = useState("idle");
   const [alertScan, setAlertScan] = useState(null);
   const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
+  const [isLoadingTopScores, setIsLoadingTopScores] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
   const [error, setError] = useState("");
+  const [topScoresError, setTopScoresError] = useState("");
 
   async function loadWatchlist() {
     if (!currentWatchlist.length) {
@@ -262,6 +273,26 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     }
   }
 
+  async function loadTopScores() {
+    setIsLoadingTopScores(true);
+    setTopScoresError("");
+    try {
+      const payload = await fetchLiveVirtualTraderTrades(profileId, null, 200);
+      setMarketDecisionRows(payload.trades || []);
+    } catch {
+      setMarketDecisionRows([]);
+      setTopScoresError(
+        formatBilingualLabel(
+          languageMode,
+          "The latest broad-market scan is unavailable; current watchlist scores are shown instead.",
+          "最新廣泛市場掃描暫時無法使用；現改為顯示目前觀察名單評分。"
+        )
+      );
+    } finally {
+      setIsLoadingTopScores(false);
+    }
+  }
+
   async function loadAlerts() {
     setIsLoadingAlerts(true);
     try {
@@ -276,6 +307,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
 
   useEffect(() => {
     loadWatchlist();
+    loadTopScores();
     loadAlerts();
   }, [currentWatchlist.join(","), profileId]);
 
@@ -315,6 +347,11 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     [analyzeData, languageMode]
   );
 
+  const topScoredTickers = useMemo(
+    () => rankTopScoredTickers(marketDecisionRows, watchlistRows, 10),
+    [marketDecisionRows, watchlistRows]
+  );
+
   return (
     <>
       <header className="app-header">
@@ -341,8 +378,12 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
               </option>
             ))}
           </select>
-          <button type="button" onClick={loadWatchlist} disabled={isLoadingWatchlist}>
-            {isLoadingWatchlist
+          <button
+            type="button"
+            onClick={() => Promise.all([loadWatchlist(), loadTopScores()])}
+            disabled={isLoadingWatchlist || isLoadingTopScores}
+          >
+            {isLoadingWatchlist || isLoadingTopScores
               ? `${formatBilingualLabel(languageMode, "Refresh", ZH.refresh)}...`
               : formatBilingualLabel(languageMode, "Refresh", ZH.refresh)}
           </button>
@@ -356,6 +397,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
             type="button"
             onClick={async () => {
               await loadWatchlist();
+              await loadTopScores();
               await loadAlerts();
               await loadTickerDetail(selectedTicker);
             }}
@@ -364,6 +406,13 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
           </button>
         </div>
       ) : null}
+
+      <TopScoredTickersTable
+        rows={topScoredTickers}
+        languageMode={languageMode}
+        isLoading={isLoadingWatchlist || isLoadingTopScores}
+        error={topScoresError}
+      />
 
       <div className="layout-grid">
         <div>
