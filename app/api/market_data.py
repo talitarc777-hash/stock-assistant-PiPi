@@ -7,6 +7,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from app.models.ticker_classification import ClassifiedTickerResponse
+
 from app.core.api_utils import PERIOD_PATTERN, TICKER_PATTERN, to_json_safe, to_json_safe_dict
 from app.services.market_data import (
     EmptyDataError,
@@ -87,10 +89,9 @@ class IndicatorsResponse(BaseModel):
     latest_30_rows: list[IndicatorRow]
 
 
-class LiveMarketSnapshotResponse(BaseModel):
+class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     """Typed response for near-live market snapshot endpoint."""
 
-    ticker: str
     fetched_at_utc: str
     price_timestamp: str
     close: float
@@ -102,6 +103,7 @@ class LiveMarketSnapshotResponse(BaseModel):
     pe_ratio: float | None = None
     market_cap: float | None = None
     company_name: str | None = None
+    quote_type: str | None = None
     sector: str | None = None
     industry: str | None = None
     business_summary: str | None = None

@@ -9,6 +9,7 @@ import {
 } from "./api";
 import LineChart from "./components/LineChart";
 import PriceChart from "./components/PriceChart";
+import TickerClassificationTags from "./components/TickerClassificationTags";
 import TopScoredTickersTable from "./components/TopScoredTickersTable";
 import WatchlistManager from "./components/WatchlistManager";
 import WatchlistTable from "./components/WatchlistTable";
@@ -352,6 +353,11 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     [marketDecisionRows, watchlistRows]
   );
 
+  const watchlistClassificationByTicker = useMemo(
+    () => Object.fromEntries(watchlistRows.map((item) => [item.ticker, item])),
+    [watchlistRows]
+  );
+
   return (
     <>
       <header className="app-header">
@@ -426,6 +432,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
             userId={profileId}
             watchlist={currentWatchlist}
             languageMode={languageMode}
+            classificationByTicker={watchlistClassificationByTicker}
             onUpdated={() => onProfileUpdated(profileId)}
           />
           <CurrentAlertsPanel
@@ -486,7 +493,16 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
             <>
               <div className="detail-grid">
                 <p>
-                  <strong>{formatBilingualLabel(languageMode, "Ticker", ZH.ticker)}:</strong> {analyzeData.ticker}
+                  <strong>{formatBilingualLabel(languageMode, "Ticker", ZH.ticker)}:</strong>{" "}
+                  <span className="ticker-identity">
+                    <span className="ticker-symbol">{analyzeData.ticker}</span>
+                    <TickerClassificationTags
+                      ticker={analyzeData.ticker}
+                      classification={analyzeData}
+                      languageMode={languageMode}
+                      size="xs"
+                    />
+                  </span>
                 </p>
                 <p>
                   <strong>{formatBilingualLabel(languageMode, "Latest Close", ZH.latestClose)}:</strong>{" "}

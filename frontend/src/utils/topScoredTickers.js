@@ -27,6 +27,9 @@ export function rankTopScoredTickers(decisions = [], watchlistRows = [], limit =
       latestPrice: finiteNumber(item?.price),
       scoredAt: item?.timestamp || null,
       source: "market_scan",
+      primary_ticker_class: item?.primary_ticker_class,
+      stock_subclass: item?.stock_subclass,
+      classification_source: item?.classification_source,
     };
     const current = latestDecisions.get(ticker);
     if (!current || timestampValue(candidate.scoredAt) > timestampValue(current.scoredAt)) {
@@ -46,6 +49,9 @@ export function rankTopScoredTickers(decisions = [], watchlistRows = [], limit =
       latestPrice: finiteNumber(item?.latest_close),
       scoredAt: null,
       source: "watchlist_refresh",
+      primary_ticker_class: item?.primary_ticker_class,
+      stock_subclass: item?.stock_subclass,
+      classification_source: item?.classification_source,
     });
   }
 

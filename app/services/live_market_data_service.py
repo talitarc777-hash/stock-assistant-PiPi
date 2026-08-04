@@ -135,6 +135,7 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
         "pe_ratio": float(pe_ratio) if pe_ratio is not None else None,
         "market_cap": float(market_cap) if market_cap is not None else None,
         "company_name": str(company_name) if company_name else None,
+        "quote_type": str(quote_type) if quote_type else None,
         "sector": str(sector) if sector else None,
         "industry": str(industry) if industry else None,
         "business_summary": str(business_summary) if business_summary else None,

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.models.ticker_classification import (
+    ClassifiedTickerResponse,
+    OptionalClassifiedTickerResponse,
+)
+
 
 LEDGER_EVENT_TYPES = {
     "monthly_contribution",
@@ -15,14 +20,13 @@ LEDGER_EVENT_TYPES = {
 }
 
 
-class AccountLedgerEventResponse(BaseModel):
+class AccountLedgerEventResponse(OptionalClassifiedTickerResponse):
     """One immutable virtual account ledger event."""
 
     id: int
     user_id: str
     event_type: str
     amount: float
-    ticker: str | None = None
     quantity: float | None = None
     price: float | None = None
     reason: str | None = None
@@ -43,14 +47,13 @@ class AccountLedgerListResponse(BaseModel):
     events: list[AccountLedgerEventResponse]
 
 
-class VirtualAccountHistoryEventResponse(BaseModel):
+class VirtualAccountHistoryEventResponse(OptionalClassifiedTickerResponse):
     """One immutable account-history row with derived balance context."""
 
     id: int
     user_id: str
     event_type: str
     created_at: str
-    ticker: str | None = None
     quantity: float | None = None
     price: float | None = None
     gross_amount: float | None = None
@@ -75,10 +78,9 @@ class VirtualAccountHistoryResponse(BaseModel):
     events: list[VirtualAccountHistoryEventResponse]
 
 
-class VirtualHoldingResponse(BaseModel):
+class VirtualHoldingResponse(ClassifiedTickerResponse):
     """Derived holding state from immutable buy/sell ledger events."""
 
-    ticker: str
     quantity: float
     avg_entry_price: float
     current_price: float
@@ -96,14 +98,13 @@ class VirtualAccountHoldingsResponse(BaseModel):
     holdings: list[VirtualHoldingResponse]
 
 
-class VirtualAccountRecentTradeResponse(BaseModel):
+class VirtualAccountRecentTradeResponse(ClassifiedTickerResponse):
     """Recent executed trade events derived from immutable ledger records."""
 
     id: int
     user_id: str
     created_at: str
     event_type: str
-    ticker: str
     quantity: float
     remaining_quantity: float = 0.0
     price: float

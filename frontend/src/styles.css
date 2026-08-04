@@ -2,6 +2,91 @@
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: #111827;
   background-color: #f3f4f6;
+  --ticker-tag-blue-bg: #dbeafe;
+  --ticker-tag-blue-fg: #1e3a8a;
+  --ticker-tag-purple-bg: #ede9fe;
+  --ticker-tag-purple-fg: #5b21b6;
+  --ticker-tag-indigo-bg: #e0e7ff;
+  --ticker-tag-indigo-fg: #3730a3;
+  --ticker-tag-amber-bg: #fef3c7;
+  --ticker-tag-amber-fg: #78350f;
+  --ticker-tag-teal-bg: #ccfbf1;
+  --ticker-tag-teal-fg: #115e59;
+  --ticker-tag-orange-bg: #ffedd5;
+  --ticker-tag-orange-fg: #9a3412;
+  --ticker-tag-cyan-bg: #cffafe;
+  --ticker-tag-cyan-fg: #155e75;
+  --ticker-tag-gold-bg: #fef9c3;
+  --ticker-tag-gold-fg: #713f12;
+  --ticker-tag-red-bg: #fee2e2;
+  --ticker-tag-red-fg: #991b1b;
+  --ticker-tag-green-bg: #dcfce7;
+  --ticker-tag-green-fg: #166534;
+  --ticker-tag-neutral-bg: #f3f4f6;
+  --ticker-tag-neutral-fg: #374151;
+  --ticker-tag-violet-bg: #ede9fe;
+  --ticker-tag-violet-fg: #5b21b6;
+  --ticker-tag-emerald-bg: #d1fae5;
+  --ticker-tag-emerald-fg: #065f46;
+  --ticker-tag-pink-bg: #fce7f3;
+  --ticker-tag-pink-fg: #9d174d;
+  --ticker-tag-lime-bg: #ecfccb;
+  --ticker-tag-lime-fg: #3f6212;
+  --ticker-tag-rose-bg: #ffe4e6;
+  --ticker-tag-rose-fg: #9f1239;
+  --ticker-tag-slate-bg: #e2e8f0;
+  --ticker-tag-slate-fg: #334155;
+  --ticker-tag-stone-bg: #e7e5e4;
+  --ticker-tag-stone-fg: #57534e;
+  --ticker-tag-sky-bg: #e0f2fe;
+  --ticker-tag-sky-fg: #075985;
+  --ticker-tag-fuchsia-bg: #fae8ff;
+  --ticker-tag-fuchsia-fg: #86198f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ticker-tag-blue-bg: #1e3a8a;
+    --ticker-tag-blue-fg: #dbeafe;
+    --ticker-tag-purple-bg: #4c1d95;
+    --ticker-tag-purple-fg: #ede9fe;
+    --ticker-tag-indigo-bg: #312e81;
+    --ticker-tag-indigo-fg: #e0e7ff;
+    --ticker-tag-amber-bg: #78350f;
+    --ticker-tag-amber-fg: #fef3c7;
+    --ticker-tag-teal-bg: #134e4a;
+    --ticker-tag-teal-fg: #ccfbf1;
+    --ticker-tag-orange-bg: #7c2d12;
+    --ticker-tag-orange-fg: #ffedd5;
+    --ticker-tag-cyan-bg: #164e63;
+    --ticker-tag-cyan-fg: #cffafe;
+    --ticker-tag-gold-bg: #713f12;
+    --ticker-tag-gold-fg: #fef9c3;
+    --ticker-tag-red-bg: #7f1d1d;
+    --ticker-tag-red-fg: #fee2e2;
+    --ticker-tag-green-bg: #14532d;
+    --ticker-tag-green-fg: #dcfce7;
+    --ticker-tag-neutral-bg: #374151;
+    --ticker-tag-neutral-fg: #f3f4f6;
+    --ticker-tag-violet-bg: #4c1d95;
+    --ticker-tag-violet-fg: #ede9fe;
+    --ticker-tag-emerald-bg: #064e3b;
+    --ticker-tag-emerald-fg: #d1fae5;
+    --ticker-tag-pink-bg: #831843;
+    --ticker-tag-pink-fg: #fce7f3;
+    --ticker-tag-lime-bg: #365314;
+    --ticker-tag-lime-fg: #ecfccb;
+    --ticker-tag-rose-bg: #881337;
+    --ticker-tag-rose-fg: #ffe4e6;
+    --ticker-tag-slate-bg: #334155;
+    --ticker-tag-slate-fg: #e2e8f0;
+    --ticker-tag-stone-bg: #44403c;
+    --ticker-tag-stone-fg: #e7e5e4;
+    --ticker-tag-sky-bg: #0c4a6e;
+    --ticker-tag-sky-fg: #e0f2fe;
+    --ticker-tag-fuchsia-bg: #701a75;
+    --ticker-tag-fuchsia-fg: #fae8ff;
+  }
 }
 
 * {
@@ -211,6 +296,73 @@ body {
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
 }
+
+.ticker-identity {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.ticker-symbol {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.ticker-classification-tags {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.ticker-classification-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  text-decoration: none;
+}
+
+.ticker-classification-tags--xs .ticker-classification-tag {
+  min-height: 18px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.ticker-classification-tag--blue { background: var(--ticker-tag-blue-bg); color: var(--ticker-tag-blue-fg); }
+.ticker-classification-tag--purple { background: var(--ticker-tag-purple-bg); color: var(--ticker-tag-purple-fg); }
+.ticker-classification-tag--indigo { background: var(--ticker-tag-indigo-bg); color: var(--ticker-tag-indigo-fg); }
+.ticker-classification-tag--amber { background: var(--ticker-tag-amber-bg); color: var(--ticker-tag-amber-fg); }
+.ticker-classification-tag--teal { background: var(--ticker-tag-teal-bg); color: var(--ticker-tag-teal-fg); }
+.ticker-classification-tag--orange { background: var(--ticker-tag-orange-bg); color: var(--ticker-tag-orange-fg); }
+.ticker-classification-tag--cyan { background: var(--ticker-tag-cyan-bg); color: var(--ticker-tag-cyan-fg); }
+.ticker-classification-tag--gold { background: var(--ticker-tag-gold-bg); color: var(--ticker-tag-gold-fg); }
+.ticker-classification-tag--red { background: var(--ticker-tag-red-bg); color: var(--ticker-tag-red-fg); }
+.ticker-classification-tag--green { background: var(--ticker-tag-green-bg); color: var(--ticker-tag-green-fg); }
+.ticker-classification-tag--neutral { background: var(--ticker-tag-neutral-bg); color: var(--ticker-tag-neutral-fg); }
+.ticker-classification-tag--violet { background: var(--ticker-tag-violet-bg); color: var(--ticker-tag-violet-fg); }
+.ticker-classification-tag--emerald { background: var(--ticker-tag-emerald-bg); color: var(--ticker-tag-emerald-fg); }
+.ticker-classification-tag--pink { background: var(--ticker-tag-pink-bg); color: var(--ticker-tag-pink-fg); }
+.ticker-classification-tag--lime { background: var(--ticker-tag-lime-bg); color: var(--ticker-tag-lime-fg); }
+.ticker-classification-tag--rose { background: var(--ticker-tag-rose-bg); color: var(--ticker-tag-rose-fg); }
+.ticker-classification-tag--slate { background: var(--ticker-tag-slate-bg); color: var(--ticker-tag-slate-fg); }
+.ticker-classification-tag--stone { background: var(--ticker-tag-stone-bg); color: var(--ticker-tag-stone-fg); }
+.ticker-classification-tag--sky { background: var(--ticker-tag-sky-bg); color: var(--ticker-tag-sky-fg); }
+.ticker-classification-tag--fuchsia { background: var(--ticker-tag-fuchsia-bg); color: var(--ticker-tag-fuchsia-fg); }
 
 .top-score-panel {
   width: 100%;

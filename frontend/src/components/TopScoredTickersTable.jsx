@@ -1,4 +1,5 @@
 import React from "react";
+import TickerClassificationTags from "./TickerClassificationTags";
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -63,7 +64,17 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
               {rows.map((item, index) => (
                 <tr key={item.ticker}>
                   <td data-label={rankLabel}>{index + 1}</td>
-                  <td data-label={tickerLabel}><strong>{item.ticker}</strong></td>
+                  <td data-label={tickerLabel}>
+                    <span className="ticker-identity">
+                      <strong className="ticker-symbol">{item.ticker}</strong>
+                      <TickerClassificationTags
+                        ticker={item.ticker}
+                        classification={item}
+                        languageMode={languageMode}
+                        size="xs"
+                      />
+                    </span>
+                  </td>
                   <td data-label={scoreLabel}><strong>{item.score.toFixed(0)}/100</strong></td>
                   <td data-label={meaningLabel}>{scoreMeaning(item.score, languageMode)}</td>
                   <td data-label={priceLabel}>{formatPrice(item.latestPrice)}</td>

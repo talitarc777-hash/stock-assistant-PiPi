@@ -22,6 +22,7 @@ import NewsSentimentPanel from "../components/NewsSentimentPanel";
 import RecentRunsPanel from "../components/RecentRunsPanel";
 import RecentTradesTable from "../components/RecentTradesTable";
 import ResetTradingAccountButton from "../components/ResetTradingAccountButton";
+import TickerClassificationTags from "../components/TickerClassificationTags";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
 import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 
@@ -817,7 +818,17 @@ export default function VirtualTraderPage({
                     className={selectedLiveTrade?.timestamp === item.timestamp ? "selected-row" : ""}
                     onClick={() => setSelectedLiveTrade(item)}
                   >
-                    <td data-label={labelByMode(languageMode, "Ticker", ZH.ticker)}>{item.ticker}</td>
+                    <td data-label={labelByMode(languageMode, "Ticker", ZH.ticker)}>
+                      <span className="ticker-identity">
+                        <span className="ticker-symbol">{item.ticker}</span>
+                        <TickerClassificationTags
+                          ticker={item.ticker}
+                          classification={item}
+                          languageMode={languageMode}
+                          size="xs"
+                        />
+                      </span>
+                    </td>
                     <td data-label={labelByMode(languageMode, "Score", "\u5206\u6578")}>
                       <strong>{stockScoreText(item)}</strong>
                     </td>
@@ -877,7 +888,15 @@ export default function VirtualTraderPage({
                   <div className="decision-explainer-heading">
                     <div>
                       <span>{labelByMode(languageMode, "What this means", "這代表甚麼")}</span>
-                      <strong>{actionText(selectedLiveTrade.action, languageMode)} {selectedLiveTrade.ticker}</strong>
+                      <strong className="ticker-identity">
+                        <span>{actionText(selectedLiveTrade.action, languageMode)} {selectedLiveTrade.ticker}</span>
+                        <TickerClassificationTags
+                          ticker={selectedLiveTrade.ticker}
+                          classification={selectedLiveTrade}
+                          languageMode={languageMode}
+                          size="xs"
+                        />
+                      </strong>
                     </div>
                     <span className={`decision-status-pill ${executed ? "executed" : ""}`}>
                       {executed

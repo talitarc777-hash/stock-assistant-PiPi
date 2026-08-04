@@ -7,6 +7,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from app.models.ticker_classification import ClassifiedTickerResponse
+
 from app.core.api_utils import (
     PERIOD_PATTERN,
     TICKER_PATTERN,
@@ -63,10 +65,9 @@ class BenchmarkRelativeResponse(BaseModel):
     benchmark_strength_score: int
 
 
-class AnalyzeResponse(BaseModel):
+class AnalyzeResponse(ClassifiedTickerResponse):
     """Response model for the /analyze endpoint."""
 
-    ticker: str
     latest_close: float
     score_breakdown: ScoreBreakdownResponse
     label: str

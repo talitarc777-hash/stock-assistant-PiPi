@@ -1,4 +1,12 @@
 import React, { useMemo, useState } from "react";
+import {
+  PRIMARY_TICKER_CLASS_CONFIG,
+  STOCK_SUBCLASS_CONFIG,
+  classificationLabel,
+  matchesTickerClassificationFilters,
+  resolveTickerClassification,
+} from "../config/tickerClassification";
+import TickerClassificationTags from "./TickerClassificationTags";
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -37,12 +45,30 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
   const [typeFilter, setTypeFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("all");
   const [sortOrder, setSortOrder] = useState("newest");
+  const [primaryClassFilter, setPrimaryClassFilter] = useState("all");
+  const [stockSubclassFilter, setStockSubclassFilter] = useState("all");
 
   const tickerOptions = useMemo(
     () =>
       [...new Set(trades.map((trade) => String(trade.ticker || "").trim().toUpperCase()).filter(Boolean))].sort(),
     [trades]
   );
+
+  const primaryClassOptions = useMemo(() => {
+    const values = new Set(trades.map((trade) => resolveTickerClassification(trade).primaryClass));
+    return Object.entries(PRIMARY_TICKER_CLASS_CONFIG)
+      .filter(([value]) => values.has(value))
+      .sort(([, left], [, right]) => left.order - right.order);
+  }, [trades]);
+
+  const stockSubclassOptions = useMemo(() => {
+    const values = new Set(
+      trades.map((trade) => resolveTickerClassification(trade).stockSubclass).filter(Boolean)
+    );
+    return Object.entries(STOCK_SUBCLASS_CONFIG)
+      .filter(([value]) => values.has(value))
+      .sort(([, left], [, right]) => left.order - right.order);
+  }, [trades]);
 
   const filteredTrades = useMemo(() => {
     const durationByFilter = {
@@ -56,18 +82,25 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
     return trades
       .filter((trade) => tickerFilter === "all" || String(trade.ticker || "").toUpperCase() === tickerFilter)
       .filter((trade) => typeFilter === "all" || trade.event_type === typeFilter)
+      .filter((trade) => matchesTickerClassificationFilters(
+        trade,
+        primaryClassFilter,
+        stockSubclassFilter
+      ))
       .filter((trade) => minimumTime === null || parseTradeTime(trade.created_at) >= minimumTime)
       .sort((left, right) => {
         const difference = parseTradeTime(right.created_at) - parseTradeTime(left.created_at);
         return sortOrder === "newest" ? difference : -difference;
       });
-  }, [sortOrder, tickerFilter, timeFilter, trades, typeFilter]);
+  }, [primaryClassFilter, sortOrder, stockSubclassFilter, tickerFilter, timeFilter, trades, typeFilter]);
 
   function resetFilters() {
     setTickerFilter("all");
     setTypeFilter("all");
     setTimeFilter("all");
     setSortOrder("newest");
+    setPrimaryClassFilter("all");
+    setStockSubclassFilter("all");
   }
 
   return (
@@ -93,6 +126,37 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
             <option value="all">{labelByMode(languageMode, "Buy and sell", "\u8cb7\u5165\u548c\u8ce3\u51fa")}</option>
             <option value="buy_trade">{labelByMode(languageMode, "Buy only", "\u53ea\u770b\u8cb7\u5165")}</option>
             <option value="sell_trade">{labelByMode(languageMode, "Sell only", "\u53ea\u770b\u8ce3\u51fa")}</option>
+          </select>
+        </label>
+
+        <label>
+          {labelByMode(languageMode, "Asset class", "資產類別")}
+          <select
+            value={primaryClassFilter}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setPrimaryClassFilter(nextValue);
+              if (nextValue !== "all" && nextValue !== "stock") setStockSubclassFilter("all");
+            }}
+          >
+            <option value="all">{labelByMode(languageMode, "All classes", "全部類別")}</option>
+            {primaryClassOptions.map(([value, config]) => (
+              <option key={value} value={value}>{classificationLabel(config, languageMode)}</option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          {labelByMode(languageMode, "Stock sector", "股票行業")}
+          <select
+            value={stockSubclassFilter}
+            onChange={(event) => setStockSubclassFilter(event.target.value)}
+            disabled={primaryClassFilter !== "all" && primaryClassFilter !== "stock"}
+          >
+            <option value="all">{labelByMode(languageMode, "All stock sectors", "全部股票行業")}</option>
+            {stockSubclassOptions.map(([value, config]) => (
+              <option key={value} value={value}>{classificationLabel(config, languageMode)}</option>
+            ))}
           </select>
         </label>
 
@@ -143,7 +207,17 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
                 <tr key={trade.id}>
                   <td data-label={labelByMode(languageMode, "Date/Time", "\u65e5\u671f/\u6642\u9593")}>{trade.created_at}</td>
                   <td data-label={labelByMode(languageMode, "Type", "\u985e\u578b")}>{formatEventType(trade.event_type, languageMode)}</td>
-                  <td data-label={labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}>{trade.ticker}</td>
+                  <td data-label={labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}>
+                    <span className="ticker-identity">
+                      <span className="ticker-symbol">{trade.ticker}</span>
+                      <TickerClassificationTags
+                        ticker={trade.ticker}
+                        classification={trade}
+                        languageMode={languageMode}
+                        size="xs"
+                      />
+                    </span>
+                  </td>
                   <td data-label={labelByMode(languageMode, "Quantity", "\u6578\u91cf")}>{formatQuantity(trade.quantity)}</td>
                   <td data-label={labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}>{formatQuantity(trade.remaining_quantity)}</td>
                   <td data-label={labelByMode(languageMode, "Price", "\u50f9\u683c")}>{formatMoney(trade.price)}</td>

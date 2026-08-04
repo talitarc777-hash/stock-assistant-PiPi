@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import { fetchChartData, fetchLiveMarketSnapshot } from "../api";
 import LineChart from "./LineChart";
+import TickerClassificationTags from "./TickerClassificationTags";
 
 const CHART_RANGES = {
   "3D": { period: "1mo", points: 3, en: "3 days", zh: "3 \u65e5" },
@@ -168,10 +169,18 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
                   <td>
                     <button
                       type="button"
-                      className="holding-ticker-button"
-                      onClick={() => openHoldingSummary(holding)}
-                    >
-                      {holding.ticker}
+                    className="holding-ticker-button"
+                    onClick={() => openHoldingSummary(holding)}
+                  >
+                      <span className="ticker-identity">
+                        <span className="ticker-symbol">{holding.ticker}</span>
+                        <TickerClassificationTags
+                          ticker={holding.ticker}
+                          classification={holding}
+                          languageMode={languageMode}
+                          size="xs"
+                        />
+                      </span>
                     </button>
                   </td>
                   <td>{Number(holding.quantity || 0).toFixed(0)}</td>
@@ -207,7 +216,14 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
                 <h3 id="holding-modal-title">
                   {companyProfile?.company_name || selectedHolding.ticker}
                 </h3>
-                <p>{selectedHolding.ticker}</p>
+                <p className="ticker-identity">
+                  <span className="ticker-symbol">{selectedHolding.ticker}</span>
+                  <TickerClassificationTags
+                    ticker={selectedHolding.ticker}
+                    classification={companyProfile || selectedHolding}
+                    languageMode={languageMode}
+                  />
+                </p>
               </div>
               <button
                 type="button"

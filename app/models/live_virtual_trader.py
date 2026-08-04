@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.models.ticker_classification import ClassifiedTickerResponse
+
 
 class LiveTraderRunRequest(BaseModel):
     """Request body for running live simulated trader now."""
@@ -14,10 +16,9 @@ class LiveTraderRunRequest(BaseModel):
     auto_run: bool = True
 
 
-class LiveTraderDecisionResponse(BaseModel):
+class LiveTraderDecisionResponse(ClassifiedTickerResponse):
     timestamp: str
     user_id: str
-    ticker: str
     action: str
     quantity: float
     price: float
@@ -36,9 +37,8 @@ class LiveTraderDecisionResponse(BaseModel):
     metadata: dict | None = None
 
 
-class LiveTraderHoldingResponse(BaseModel):
+class LiveTraderHoldingResponse(ClassifiedTickerResponse):
     user_id: str | None = None
-    ticker: str
     quantity: float
     avg_entry_price: float
     entry_timestamp: str | None = None

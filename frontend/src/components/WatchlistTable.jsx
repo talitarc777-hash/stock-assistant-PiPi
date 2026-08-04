@@ -1,5 +1,6 @@
 import React from "react";
 import { term } from "../i18n/terms";
+import TickerClassificationTags from "./TickerClassificationTags";
 
 export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, languageMode }) {
   const rankLabel =
@@ -31,7 +32,17 @@ export default function WatchlistTable({ rows, selectedTicker, onSelectTicker, l
                   onClick={() => onSelectTicker(item.ticker)}
                 >
                   <td data-label={rankLabel}>{index + 1}</td>
-                  <td data-label={term("Ticker", languageMode)}>{item.ticker}</td>
+                  <td data-label={term("Ticker", languageMode)}>
+                    <span className="ticker-identity">
+                      <span className="ticker-symbol">{item.ticker}</span>
+                      <TickerClassificationTags
+                        ticker={item.ticker}
+                        classification={item}
+                        languageMode={languageMode}
+                        size="xs"
+                      />
+                    </span>
+                  </td>
                   <td data-label={term("Score", languageMode)}>
                     {item.score_breakdown.total_score}
                   </td>

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import TickerClassificationTags from "./TickerClassificationTags";
 
 import {
   addUserWatchlistTicker,
@@ -24,7 +25,13 @@ const ZH = {
   add: "\u52a0\u5165",
 };
 
-export default function WatchlistManager({ userId, watchlist, languageMode, onUpdated }) {
+export default function WatchlistManager({
+  userId,
+  watchlist,
+  languageMode,
+  onUpdated,
+  classificationByTicker = {},
+}) {
   const [tickerInput, setTickerInput] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -144,8 +151,18 @@ export default function WatchlistManager({ userId, watchlist, languageMode, onUp
             className="watchlist-chip"
             onClick={() => handleRemoveTicker(ticker)}
             disabled={isSaving}
+            aria-label={`Remove ${ticker} from watchlist`}
           >
-            {ticker} x
+            <span className="ticker-identity">
+              <span className="ticker-symbol">{ticker}</span>
+              <TickerClassificationTags
+                ticker={ticker}
+                classification={classificationByTicker[ticker]}
+                languageMode={languageMode}
+                size="xs"
+              />
+              <span aria-hidden="true">&times;</span>
+            </span>
           </button>
         ))}
       </div>
