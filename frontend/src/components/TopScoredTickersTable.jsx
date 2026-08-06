@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import TickerClassificationTags from "./TickerClassificationTags";
+import { resolveTickerClassification } from "../config/tickerClassification.js";
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -19,24 +20,51 @@ function formatPrice(value) {
 }
 
 export default function TopScoredTickersTable({ rows, languageMode, isLoading, error, onSelectTicker }) {
+  const [activeClass, setActiveClass] = useState("stock");
   const rankLabel = labelByMode(languageMode, "Rank", "排名");
   const tickerLabel = labelByMode(languageMode, "Ticker", "股票代號");
   const scoreLabel = labelByMode(languageMode, "Score", "評分");
   const meaningLabel = labelByMode(languageMode, "Meaning", "評分含義");
   const priceLabel = labelByMode(languageMode, "Latest price", "最新價格");
+  const classRows = useMemo(
+    () => rows
+      .filter((item) => resolveTickerClassification(item).primaryClass === activeClass)
+      .slice(0, 10),
+    [activeClass, rows]
+  );
+  const activeClassLabel = activeClass === "etf"
+    ? labelByMode(languageMode, "ETF", "ETF")
+    : labelByMode(languageMode, "Stock", "股票");
 
   return (
     <section className="panel top-score-panel">
-      <h3>{labelByMode(languageMode, "Top 10 Tickers by Score", "評分最高的 10 隻股票")}</h3>
+      <h3>{labelByMode(languageMode, "Top 10 Tickers by Score", "各類別評分最高的 10 隻股票")}</h3>
       <p className="helper-text">
         {labelByMode(
           languageMode,
-          "Ranked using the newest automated market scan and current watchlist scores. A high score describes the technical setup; it does not guarantee profit.",
-          "按最新自動市場掃描及目前觀察名單評分排序。高評分代表技術形態較強，並不保證獲利。"
+          "Each tab independently shows the 10 highest-scoring ETFs or stocks. A high score describes the technical setup; it does not guarantee profit.",
+          "每個分頁獨立顯示評分最高的 10 隻 ETF 或股票。高評分代表技術形態較強，並不保證獲利。"
         )}
       </p>
+      <div className="top-score-tabs" role="tablist" aria-label={labelByMode(languageMode, "Ticker class", "股票類別")}>
+        {[
+          ["stock", labelByMode(languageMode, "Stock", "股票")],
+          ["etf", labelByMode(languageMode, "ETF", "ETF")],
+        ].map(([classKey, label]) => (
+          <button
+            key={classKey}
+            type="button"
+            role="tab"
+            aria-selected={activeClass === classKey}
+            className={activeClass === classKey ? "active" : ""}
+            onClick={() => setActiveClass(classKey)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {error ? <p className="helper-text warning-text">{error}</p> : null}
-      {isLoading && !rows.length ? (
+      {isLoading && !classRows.length ? (
         <p>{labelByMode(languageMode, "Loading top scores...", "正在載入最高評分股票...")}</p>
       ) : null}
       {!isLoading && !rows.length ? (
@@ -48,7 +76,16 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
           )}
         </p>
       ) : null}
-      {rows.length ? (
+      {!isLoading && rows.length > 0 && !classRows.length ? (
+        <p>
+          {labelByMode(
+            languageMode,
+            `No scored ${activeClassLabel} tickers are available yet.`,
+            `目前沒有可用的${activeClassLabel}評分。`
+          )}
+        </p>
+      ) : null}
+      {classRows.length ? (
         <div className="table-wrap responsive-card-table top-score-table">
           <table>
             <thead>
@@ -61,7 +98,7 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
               </tr>
             </thead>
             <tbody>
-              {rows.map((item, index) => (
+              {classRows.map((item, index) => (
                 <tr key={item.ticker}>
                   <td data-label={rankLabel}>{index + 1}</td>
                   <td data-label={tickerLabel}>

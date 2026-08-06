@@ -350,7 +350,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   );
 
   const topScoredTickers = useMemo(
-    () => rankTopScoredTickers(marketDecisionRows, watchlistRows, 10),
+    () => rankTopScoredTickers(marketDecisionRows, watchlistRows, 200),
     [marketDecisionRows, watchlistRows]
   );
 

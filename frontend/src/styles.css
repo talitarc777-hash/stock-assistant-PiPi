@@ -331,6 +331,37 @@ body {
   outline-offset: 2px;
 }
 
+.top-score-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 12px;
+}
+
+.top-score-tabs button {
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.top-score-tabs button:hover,
+.top-score-tabs button:focus-visible {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  outline: 2px solid #bfdbfe;
+  outline-offset: 1px;
+}
+
+.top-score-tabs button.active {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
 .ticker-classification-tags {
   display: inline-flex;
   align-items: center;

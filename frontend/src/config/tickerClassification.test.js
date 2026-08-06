@@ -69,6 +69,7 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   const appSource = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
   const historySource = readFileSync(new URL("../components/TickerHistorySummary.jsx", import.meta.url), "utf8");
   const traderSource = readFileSync(new URL("../pages/VirtualTraderPage.jsx", import.meta.url), "utf8");
+  const topScoreSource = readFileSync(new URL("../components/TopScoredTickersTable.jsx", import.meta.url), "utf8");
   const watchlistSource = readFileSync(new URL("../components/WatchlistTable.jsx", import.meta.url), "utf8");
   const holdingsSource = readFileSync(new URL("../components/HoldingsTable.jsx", import.meta.url), "utf8");
   assert.match(appSource, /TickerClassificationTags/);
@@ -77,6 +78,9 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   assert.equal(historySource.includes('"5D": { period: "5d"'), true);
   assert.equal(historySource.includes('"1W": { period: "7d"'), true);
   assert.match(historySource, /firstSentence/);
+  assert.match(topScoreSource, /resolveTickerClassification/);
+  assert.match(topScoreSource, /slice\(0, 10\)/);
+  assert.match(topScoreSource, /role="tablist"/);
   assert.match(traderSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /onClick=\{\(\) => onSelectTicker/);
