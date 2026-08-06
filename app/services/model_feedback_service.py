@@ -24,6 +24,7 @@ MODEL_FEEDBACK_ELIGIBLE_SOURCES = (
     "validated_candidate",
     "shared_global_production",
     "shared_global_candidate",
+    "saved_model",
 )
 
 

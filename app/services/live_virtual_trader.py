@@ -1161,17 +1161,23 @@ def run_live_virtual_trader_now(
                 periods=TRADING_MODEL_PERIODS if auto_model_selection else (period,),
             )
             candidate_periods = TRADING_MODEL_PERIODS if auto_model_selection else (period,)
+            # Keep the documented fallback hierarchy intact for automatic
+            # trading as well as explicitly requested models. Previously
+            # saved artifacts were only considered when a model name was
+            # explicitly requested, so automatic trading went straight from
+            # an empty/invalid registry to the rule-based fallback.
             saved_candidates: list[dict[str, Any]] = []
-            if not auto_model_selection:
-                for candidate_period in candidate_periods:
-                    for candidate in list_compatible_saved_model_candidates(
-                        ticker=symbol,
-                        period=candidate_period,
-                        target_name=target_name,
-                        requested_model_name=requested_model_name,
-                        limit=12,
-                    ):
-                        saved_candidates.append({**candidate, "period": candidate_period})
+            for candidate_period in candidate_periods:
+                for candidate in list_compatible_saved_model_candidates(
+                    ticker=symbol,
+                    period=candidate_period,
+                    target_name=target_name,
+                    requested_model_name=(
+                        None if auto_model_selection else requested_model_name
+                    ),
+                    limit=12,
+                ):
+                    saved_candidates.append({**candidate, "period": candidate_period})
 
             runtime_candidates: list[dict[str, Any]] = []
             seen_runtime: set[tuple[str, str, str]] = set()
@@ -1185,12 +1191,18 @@ def run_live_virtual_trader_now(
                 if key in seen_runtime:
                     continue
                 seen_runtime.add(key)
+                candidate_source = str(candidate.get("source", "candidate"))
+                if candidate_source.startswith("saved_"):
+                    # Saved artifacts are real model decisions (unlike the
+                    # rule fallback), so keep them auditable in the feedback
+                    # loop while the registry catches up with them.
+                    candidate_source = "saved_model"
                 runtime_candidates.append(
                     {
                         "ticker": tkr,
                         "period": candidate_period,
                         "model_name": mdl,
-                        "source": str(candidate.get("source", "candidate")),
+                        "source": candidate_source,
                         "validation_score": candidate.get("validation_score"),
                         "runtime_score": candidate.get("runtime_score"),
                         "feedback_summary": candidate.get("feedback_summary") or {},

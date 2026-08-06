@@ -176,6 +176,13 @@ class ModelFeedbackServiceTests(unittest.TestCase):
         self.assertFalse(self.service.record_decision(payload))
         self.assertEqual(self.service.list_feedback(), [])
 
+    def test_saved_model_is_recorded_but_rule_fallback_is_not(self) -> None:
+        payload = self._payload()
+        payload["metadata"]["decision_source"] = "saved_model"
+
+        self.assertTrue(self.service.record_decision(payload))
+        self.assertEqual(self.service.list_feedback()[0]["decision_source"], "saved_model")
+
     def test_global_model_feedback_is_attributed_to_global_registry(self) -> None:
         payload = self._payload()
         payload["metadata"]["model_ticker"] = "GLOBAL"
