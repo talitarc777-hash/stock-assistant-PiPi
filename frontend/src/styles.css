@@ -312,6 +312,25 @@ body {
   font-weight: 700;
 }
 
+.ticker-dashboard-link {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ticker-dashboard-link:hover,
+.ticker-dashboard-link:focus-visible {
+  color: #1d4ed8;
+  text-decoration: underline;
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+
 .ticker-classification-tags {
   display: inline-flex;
   align-items: center;
@@ -424,6 +443,86 @@ tbody tr:hover {
 
 .detail-grid p {
   margin: 0;
+}
+
+.ticker-history-summary {
+  margin: 14px 0 18px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.ticker-nature-summary {
+  margin-bottom: 16px;
+}
+
+.ticker-nature-summary h4,
+.ticker-history-heading h4 {
+  margin: 0 0 6px;
+}
+
+.ticker-nature-summary p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.ticker-nature-identity {
+  margin-bottom: 6px !important;
+}
+
+.ticker-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.ticker-history-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #f3f4f6;
+}
+
+.ticker-history-tabs button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.ticker-history-tabs button:hover,
+.ticker-history-tabs button:focus-visible {
+  background: #e5e7eb;
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
+
+.ticker-history-tabs button.active {
+  background: #ffffff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.12);
+}
+
+.ticker-trend-up,
+.ticker-trend-down {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.ticker-trend-up {
+  color: #166534;
+}
+
+.ticker-trend-down {
+  color: #b91c1c;
 }
 
 .bullet-list {

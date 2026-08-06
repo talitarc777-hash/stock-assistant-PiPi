@@ -67,10 +67,16 @@ test("tag styles include mobile wrapping and dark-theme contrast overrides", () 
 
 test("Dashboard and Virtual Trader wire the same reusable component without removing actions", () => {
   const appSource = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+  const historySource = readFileSync(new URL("../components/TickerHistorySummary.jsx", import.meta.url), "utf8");
   const traderSource = readFileSync(new URL("../pages/VirtualTraderPage.jsx", import.meta.url), "utf8");
   const watchlistSource = readFileSync(new URL("../components/WatchlistTable.jsx", import.meta.url), "utf8");
   const holdingsSource = readFileSync(new URL("../components/HoldingsTable.jsx", import.meta.url), "utf8");
   assert.match(appSource, /TickerClassificationTags/);
+  assert.match(appSource, /TickerHistorySummary/);
+  assert.match(historySource, /fetchLiveMarketSnapshot/);
+  assert.equal(historySource.includes('"5D": { period: "5d"'), true);
+  assert.equal(historySource.includes('"1W": { period: "7d"'), true);
+  assert.match(historySource, /firstSentence/);
   assert.match(traderSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /onClick=\{\(\) => onSelectTicker/);

@@ -18,7 +18,7 @@ function formatPrice(value) {
   return Number.isFinite(value) ? value.toFixed(2) : "N/A";
 }
 
-export default function TopScoredTickersTable({ rows, languageMode, isLoading, error }) {
+export default function TopScoredTickersTable({ rows, languageMode, isLoading, error, onSelectTicker }) {
   const rankLabel = labelByMode(languageMode, "Rank", "排名");
   const tickerLabel = labelByMode(languageMode, "Ticker", "股票代號");
   const scoreLabel = labelByMode(languageMode, "Score", "評分");
@@ -65,15 +65,21 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
                 <tr key={item.ticker}>
                   <td data-label={rankLabel}>{index + 1}</td>
                   <td data-label={tickerLabel}>
-                    <span className="ticker-identity">
-                      <strong className="ticker-symbol">{item.ticker}</strong>
-                      <TickerClassificationTags
-                        ticker={item.ticker}
-                        classification={item}
-                        languageMode={languageMode}
-                        size="xs"
-                      />
-                    </span>
+                    <button
+                      type="button"
+                      className="ticker-dashboard-link"
+                      onClick={() => onSelectTicker?.(item.ticker)}
+                    >
+                      <span className="ticker-identity">
+                        <strong className="ticker-symbol">{item.ticker}</strong>
+                        <TickerClassificationTags
+                          ticker={item.ticker}
+                          classification={item}
+                          languageMode={languageMode}
+                          size="xs"
+                        />
+                      </span>
+                    </button>
                   </td>
                   <td data-label={scoreLabel}><strong>{item.score.toFixed(0)}/100</strong></td>
                   <td data-label={meaningLabel}>{scoreMeaning(item.score, languageMode)}</td>

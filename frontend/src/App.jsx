@@ -11,6 +11,7 @@ import LineChart from "./components/LineChart";
 import PriceChart from "./components/PriceChart";
 import TickerClassificationTags from "./components/TickerClassificationTags";
 import TopScoredTickersTable from "./components/TopScoredTickersTable";
+import TickerHistorySummary from "./components/TickerHistorySummary";
 import WatchlistManager from "./components/WatchlistManager";
 import WatchlistTable from "./components/WatchlistTable";
 import GlossaryPage from "./pages/GlossaryPage";
@@ -418,6 +419,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
         languageMode={languageMode}
         isLoading={isLoadingWatchlist || isLoadingTopScores}
         error={topScoresError}
+        onSelectTicker={setSelectedTicker}
       />
 
       <div className="layout-grid">
@@ -524,6 +526,11 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
                   {analyzeData.benchmark_relative?.benchmark_strength_score ?? "N/A"}
                 </p>
               </div>
+              <TickerHistorySummary
+                ticker={analyzeData.ticker}
+                classification={analyzeData}
+                languageMode={languageMode}
+              />
               <h4>{formatBilingualLabel(languageMode, "Explanation", ZH.explanation)}</h4>
               <ul className="bullet-list">
                 {explanationBullets.map((bullet) => (
