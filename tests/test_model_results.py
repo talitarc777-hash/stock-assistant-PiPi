@@ -15,6 +15,7 @@ from app.services.model_results import (
     load_model_latest_prediction,
     load_virtual_trader_summary,
     load_virtual_trader_trades,
+    list_compatible_saved_model_candidates,
 )
 
 
@@ -174,7 +175,20 @@ class ModelResultsTests(unittest.TestCase):
         if self.base_dir.exists():
             shutil.rmtree(self.base_dir)
 
+    def test_saved_model_scan_uses_ticker_parent_not_period(self) -> None:
+        (self.base_dir / "VOO" / "5y" / "target_5d_updown" / "logistic_regression" / "model.pkl").touch()
+        candidates = list_compatible_saved_model_candidates(
+            ticker="VOO",
+            period="5y",
+            target_name="target_5d_updown",
+            base_dir=self.base_dir,
+        )
+
+        self.assertEqual(candidates[0]["ticker"], "VOO")
+        self.assertEqual(candidates[0]["model_name"], "logistic_regression")
+
     def test_load_model_latest_prediction(self) -> None:
+
         payload = load_model_latest_prediction(
             ticker="VOO",
             period="5y",

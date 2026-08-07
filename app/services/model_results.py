@@ -35,7 +35,9 @@ def _scan_saved_model_artifacts(period: str, target_name: str, base_dir_text: st
     pattern = f"*/{period}/{target_name}/*/model.pkl"
     for model_path in base_dir.glob(pattern):
         try:
-            ticker = model_path.parent.parent.parent.name.strip().upper()
+            # model.pkl is stored as ticker/period/target/model/model.pkl.
+            # The ticker is therefore four parent levels above the file.
+            ticker = model_path.parent.parent.parent.parent.name.strip().upper()
             model_name = model_path.parent.name.strip().lower()
             if ticker and model_name:
                 discovered.append(
