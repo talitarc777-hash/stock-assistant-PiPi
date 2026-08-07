@@ -169,6 +169,22 @@ class ModelFeedbackServiceTests(unittest.TestCase):
         self.assertGreater(row["strategy_net_return_pct"], 0)
         self.assertGreater(row["outcome_score"], 0.5)
 
+    def test_list_feedback_filters_model_period_and_name(self) -> None:
+        first = self._payload(date="2026-01-02", model_version="v1")
+        second = self._payload(date="2026-01-05", model_version="v2")
+        second["model_name"] = "linear_regression"
+        second["metadata"]["model_period"] = "5y"
+        self.assertTrue(self.service.record_decision(first))
+        self.assertTrue(self.service.record_decision(second))
+
+        rows = self.service.list_feedback(
+            model_period="5y",
+            model_name="linear_regression",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["model_period"], "5y")
+        self.assertEqual(rows[0]["model_name"], "linear_regression")
+
     def test_fallback_rule_is_not_recorded_as_model_feedback(self) -> None:
         payload = self._payload()
         payload["metadata"]["decision_source"] = "fallback_rule"

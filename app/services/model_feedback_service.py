@@ -458,6 +458,8 @@ class ModelFeedbackService:
         self,
         *,
         ticker: str | None = None,
+        model_period: str | None = None,
+        model_name: str | None = None,
         status: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -466,6 +468,12 @@ class ModelFeedbackService:
         if ticker:
             clauses.append("ticker = ?")
             params.append(str(ticker).strip().upper())
+        if model_period:
+            clauses.append("model_period = ?")
+            params.append(str(model_period).strip())
+        if model_name:
+            clauses.append("model_name = ?")
+            params.append(str(model_name).strip().lower())
         if status:
             clauses.append("status = ?")
             params.append(str(status).strip().lower())

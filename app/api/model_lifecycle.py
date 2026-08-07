@@ -60,6 +60,8 @@ def get_model_feedback(
     service = get_model_feedback_service()
     rows = service.list_feedback(
         ticker=ticker,
+        model_period=model_period,
+        model_name=model_name,
         status=status,
         limit=limit,
     )
