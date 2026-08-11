@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 import yfinance as yf
 
 from app.services.market_data import get_price_history
+from app.services.market_config import get_hk_board_lot, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ _INDUSTRY_ZH = {
     "Software - Infrastructure": "基礎軟件",
     "Software - Application": "應用軟件",
 }
+
+_METADATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_METADATA_CACHE_LOCK = Lock()
+_METADATA_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 def _build_business_summary_zh(
@@ -75,13 +82,17 @@ def _build_business_summary_zh(
     return None
 
 
-def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]:
+def get_live_market_snapshot(
+    ticker: str,
+    period: str = "3mo",
+    market: str = "US",
+) -> dict[str, Any]:
     """Return latest available market snapshot for one ticker."""
-    symbol = str(ticker).strip().upper()
-    if not symbol:
-        raise ValueError("ticker is required.")
+    identity = resolve_security(ticker, market)
+    symbol = identity.ticker
+    provider_symbol = identity.provider_symbol
 
-    history = get_price_history(symbol, period=period).sort_values("date")
+    history = get_price_history(symbol, period=period, market=identity.market).sort_values("date")
     latest = history.iloc[-1]
     previous = history.iloc[-2] if len(history) >= 2 else latest
 
@@ -98,8 +109,18 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
     quote_type = None
     category = None
     fund_family = None
+    now_ts = monotonic()
+    with _METADATA_CACHE_LOCK:
+        cached_metadata = _METADATA_CACHE.get(provider_symbol)
+        info = dict(cached_metadata[1]) if cached_metadata and cached_metadata[0] > now_ts else None
     try:
-        info = yf.Ticker(symbol).info or {}
+        if info is None:
+            info = yf.Ticker(provider_symbol).info or {}
+            with _METADATA_CACHE_LOCK:
+                _METADATA_CACHE[provider_symbol] = (
+                    monotonic() + _METADATA_CACHE_TTL_SECONDS,
+                    dict(info),
+                )
         pe_ratio = info.get("trailingPE")
         market_cap = info.get("marketCap")
         company_name = info.get("longName") or info.get("shortName")
@@ -110,12 +131,14 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
         category = info.get("category")
         fund_family = info.get("fundFamily")
     except Exception as exc:  # pragma: no cover - depends on upstream provider
-        logger.info("Live valuation fetch skipped for %s: %s", symbol, exc)
+        logger.info("Live valuation fetch skipped for %s: %s", provider_symbol, exc)
 
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     logger.info(
-        "Live market snapshot ticker=%s latest_date=%s close=%.2f change_pct=%.3f pe=%s",
+        "Live market snapshot market=%s ticker=%s provider_symbol=%s latest_date=%s close=%.2f change_pct=%.3f pe=%s",
+        identity.market,
         symbol,
+        provider_symbol,
         latest["date"],
         latest_close,
         daily_change_pct,
@@ -123,7 +146,12 @@ def get_live_market_snapshot(ticker: str, period: str = "3mo") -> dict[str, Any]
     )
 
     return {
+        "market": identity.market,
         "ticker": symbol,
+        "provider_symbol": provider_symbol,
+        "currency": identity.currency,
+        "currency_symbol": identity.currency_symbol,
+        "board_lot": get_hk_board_lot(symbol) if identity.market == "HK" else 1,
         "fetched_at_utc": now,
         "price_timestamp": latest["date"].strftime("%Y-%m-%d"),
         "close": latest_close,

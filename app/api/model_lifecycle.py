@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from app.services.model_lifecycle_service import (
     get_model_lifecycle_service,
 )
 from app.services.model_feedback_service import get_model_feedback_service
+from app.services.market_config import normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class ModelLifecycleHealthResponse(BaseModel):
 
 @router.get("/model-lifecycle/feedback")
 def get_model_feedback(
+    market: Literal["US", "HK"] = "US",
     ticker: str | None = Query(
         default=None,
         min_length=1,
@@ -58,22 +61,27 @@ def get_model_feedback(
 ) -> dict:
     """Return auditable model predictions, outcomes, and summary scores."""
     service = get_model_feedback_service()
+    clean_market = normalize_market(market)
+    clean_ticker = resolve_security(ticker, clean_market).ticker if ticker else None
     rows = service.list_feedback(
-        ticker=ticker,
+        ticker=clean_ticker,
         model_period=model_period,
         model_name=model_name,
         status=status,
+        market=clean_market,
         limit=limit,
     )
     summary = None
-    if ticker and model_period and model_name:
+    if clean_ticker and model_period and model_name:
         summary = service.get_model_summary(
-            ticker=ticker,
+            ticker=clean_ticker,
             model_period=model_period,
             model_name=model_name,
+            market=clean_market,
         )
     return {
         "count": len(rows),
+        "market": clean_market,
         "summary": summary,
         "feedback": rows,
     }
@@ -156,6 +164,7 @@ def get_benchmark_shadow_feedback(
 
 @router.get("/model-lifecycle/status", response_model=ModelLifecycleStatusResponse)
 def get_model_lifecycle_status(
+    market: Literal["US", "HK"] = "US",
     ticker: str = Query("VOO", min_length=1, max_length=15, pattern=TICKER_PATTERN),
     period: str = Query("5y", pattern=PERIOD_PATTERN),
     target_name: str = Query(DEFAULT_TARGET_NAME, min_length=1, max_length=50),
@@ -168,6 +177,7 @@ def get_model_lifecycle_status(
             period=period,
             target_name=target_name,
             log_limit=log_limit,
+            market=market,
         )
         production_payload = payload.get("production_model")
         return ModelLifecycleStatusResponse(
@@ -193,6 +203,7 @@ def get_model_lifecycle_status(
 
 @router.get("/model-lifecycle/registry", response_model=list[ModelRegistryItemResponse])
 def list_model_registry(
+    market: Literal["US", "HK"] = "US",
     ticker: str | None = Query(default=None, min_length=1, max_length=15, pattern=TICKER_PATTERN),
     period: str | None = Query(default=None, pattern=PERIOD_PATTERN),
     target_name: str | None = Query(default=None, min_length=1, max_length=50),
@@ -204,6 +215,7 @@ def list_model_registry(
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
             limit=limit,
         )
         return [ModelRegistryItemResponse(**row) for row in rows]

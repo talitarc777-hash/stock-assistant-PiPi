@@ -1861,6 +1861,101 @@ button:disabled {
   }
 }
 
+.virtual-market-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.market-selector {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.market-selector button {
+  min-width: 88px;
+  min-height: 40px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.market-selector button.active {
+  color: #ffffff;
+  border-color: #172033;
+  background: #172033;
+}
+
+.market-context {
+  display: grid;
+  gap: 2px;
+}
+
+.market-context span {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.hk-ticker-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+}
+
+.hk-ticker-control input,
+.hk-ticker-control select {
+  width: auto;
+  min-width: 150px;
+  flex: 1 1 180px;
+}
+
+.hk-ticker-control .helper-text {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .virtual-market-controls,
+  .hk-ticker-control {
+    align-items: stretch;
+  }
+
+  .market-selector {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .market-context,
+  .hk-ticker-control input,
+  .hk-ticker-control select,
+  .hk-ticker-control button {
+    width: 100%;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .market-selector {
+    border-color: #475569;
+    background: #1e293b;
+  }
+
+  .market-selector button.active {
+    border-color: #93c5fd;
+    background: #1d4ed8;
+  }
+
+  .market-context span {
+    color: #cbd5e1;
+  }
+}
+
 @media (min-width: 1024px) {
   .app-shell {
     padding: 20px;

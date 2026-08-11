@@ -5,6 +5,7 @@ import {
   fetchLiveVirtualTraderStatus,
   fetchLiveVirtualTraderSync,
   fetchLiveVirtualTraderTrades,
+  fetchModelLifecycleRegistry,
   fetchVirtualAccountHistory,
   fetchVirtualAccountRecentTrades,
   fetchVirtualTraderTrades,
@@ -100,6 +101,13 @@ function formatMoney(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "N/A";
   return numeric.toFixed(2);
+}
+
+function normalizeHkTickerInput(value) {
+  const match = String(value || "").trim().toUpperCase().match(/^(\d{1,4})(?:\.HK)?$/);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return code >= 1 && code <= 9999 ? String(code).padStart(4, "0") : null;
 }
 
 function formatPercent(value) {
@@ -250,6 +258,9 @@ export default function VirtualTraderPage({
   profileId,
   onWatchlistSynced,
 }) {
+  const [market, setMarket] = useState("US");
+  const [hkTickers, setHkTickers] = useState(["0700", "9988"]);
+  const [hkTickerInput, setHkTickerInput] = useState("0700");
   const [selectedTicker, setSelectedTicker] = useState(currentWatchlist[0] || "VOO");
   const [liveStatus, setLiveStatus] = useState(null);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
@@ -282,7 +293,14 @@ export default function VirtualTraderPage({
   );
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [liveSyncError, setLiveSyncError] = useState("");
+  const [modelRegistry, setModelRegistry] = useState([]);
+  const [modelRegistryError, setModelRegistryError] = useState("");
   const liveSyncInFlight = useRef(false);
+  const activeWatchlist = useMemo(
+    () => (market === "HK" ? hkTickers : currentWatchlist),
+    [currentWatchlist, hkTickers, market]
+  );
+  const currencySymbol = market === "HK" ? "HK$" : "$";
 
   function hideBeginnerGuide() {
     window.localStorage.setItem(BEGINNER_GUIDE_STORAGE_KEY, "true");
@@ -294,12 +312,39 @@ export default function VirtualTraderPage({
     setShowBeginnerGuide(true);
   }
 
-  useEffect(() => {
-    if (!currentWatchlist.length) return;
-    if (!currentWatchlist.includes(selectedTicker)) {
-      setSelectedTicker(currentWatchlist[0]);
+  function selectMarket(nextMarket) {
+    if (nextMarket === market) return;
+    setMarket(nextMarket);
+    setSelectedTicker(nextMarket === "HK" ? "0700" : (currentWatchlist[0] || "VOO"));
+    setLiveStatus(null);
+    setAccountSummary(null);
+    setAccountHoldings([]);
+    setRecentTrades([]);
+    setLiveDecisionLog([]);
+    setAccountHistory([]);
+    setHistoricalEnabled(false);
+    setHistoryEnabled(false);
+    setError("");
+  }
+
+  function activateHkTicker() {
+    const ticker = normalizeHkTickerInput(hkTickerInput);
+    if (!ticker) {
+      setError("Enter an HK code from 1 to 4 digits, for example 700, 0700, or 0700.HK.");
+      return;
     }
-  }, [currentWatchlist, selectedTicker]);
+    setHkTickers((current) => (current.includes(ticker) ? current : [...current, ticker]));
+    setSelectedTicker(ticker);
+    setHkTickerInput(ticker);
+    setError("");
+  }
+
+  useEffect(() => {
+    if (!activeWatchlist.length) return;
+    if (!activeWatchlist.includes(selectedTicker)) {
+      setSelectedTicker(activeWatchlist[0]);
+    }
+  }, [activeWatchlist, selectedTicker]);
 
   function applyLiveStatusPayload(payload) {
     if (!payload) return;
@@ -350,10 +395,10 @@ export default function VirtualTraderPage({
     try {
       const [liveStatusResult, schedulerStatusResult, recentTradesResult, decisionHistoryResult] =
         await Promise.allSettled([
-          fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false),
+          fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false, market),
           fetchTraderSchedulerStatus(24),
-          fetchVirtualAccountRecentTrades(profileId, 20),
-          fetchLiveVirtualTraderTrades(profileId, null, DECISION_HISTORY_LIMIT),
+          fetchVirtualAccountRecentTrades(profileId, 20, market),
+          fetchLiveVirtualTraderTrades(profileId, null, DECISION_HISTORY_LIMIT, market),
         ]);
 
       if (schedulerStatusResult.status === "fulfilled") setSchedulerStatus(schedulerStatusResult.value);
@@ -403,7 +448,7 @@ export default function VirtualTraderPage({
     setHistoryError("");
     try {
       const nextOffset = reset ? 0 : historyOffset;
-      const payload = await fetchVirtualAccountHistory(profileId, HISTORY_PAGE_SIZE, nextOffset);
+      const payload = await fetchVirtualAccountHistory(profileId, HISTORY_PAGE_SIZE, nextOffset, market);
       const newEvents = payload?.events || [];
       setAccountHistory((current) => (reset ? newEvents : [...current, ...newEvents]));
       setHistoryOffset(nextOffset + newEvents.length);
@@ -423,6 +468,22 @@ export default function VirtualTraderPage({
     }
   }
 
+  async function loadSelectedTickerModels() {
+    if (!selectedTicker) return;
+    try {
+      const rows = await fetchModelLifecycleRegistry(60, {
+        market,
+        ticker: selectedTicker,
+        targetName: "target_5d_return",
+      });
+      setModelRegistry(Array.isArray(rows) ? rows : []);
+      setModelRegistryError("");
+    } catch (requestError) {
+      setModelRegistry([]);
+      setModelRegistryError(requestError.message || "Model registry could not be loaded.");
+    }
+  }
+
   async function loadLiveSyncOnly() {
     if (!profileId || liveSyncInFlight.current) return;
     liveSyncInFlight.current = true;
@@ -430,11 +491,12 @@ export default function VirtualTraderPage({
       const payload = await fetchLiveVirtualTraderSync(
         profileId,
         20,
-        DECISION_HISTORY_LIMIT
+        DECISION_HISTORY_LIMIT,
+        market
       );
       const syncedWatchlist = Array.isArray(payload.watchlist) ? payload.watchlist : [];
       if (
-        onWatchlistSynced
+        market === "US" && onWatchlistSynced
         && syncedWatchlist.join(",") !== currentWatchlist.join(",")
       ) {
         onWatchlistSynced(syncedWatchlist);
@@ -464,7 +526,7 @@ export default function VirtualTraderPage({
   useEffect(() => {
     loadGlobalViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId]);
+  }, [profileId, market]);
 
   useEffect(() => {
     if (!profileId) return undefined;
@@ -480,19 +542,19 @@ export default function VirtualTraderPage({
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       window.removeEventListener("focus", refreshWhenVisible);
     };
-  }, [profileId, languageMode, currentWatchlist, onWatchlistSynced]);
+  }, [profileId, languageMode, currentWatchlist, onWatchlistSynced, market]);
 
   useEffect(() => {
     if (!historyEnabled) return;
     loadAccountHistoryPage({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, historyEnabled]);
+  }, [profileId, historyEnabled, market]);
 
   useEffect(() => {
     if (!historicalEnabled) return;
     loadHistoricalReplayData(selectedTicker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, selectedTicker, historicalEnabled]);
+  }, [profileId, selectedTicker, historicalEnabled, market]);
 
   useEffect(() => {
     if (!profileId) return undefined;
@@ -502,12 +564,23 @@ export default function VirtualTraderPage({
     return () => window.clearInterval(timer);
   }, [profileId]);
 
+  useEffect(() => {
+    if (!advancedEnabled) return;
+    loadSelectedTickerModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advancedEnabled, market, selectedTicker]);
+
   async function handleRunNow() {
     if (!profileId) return;
     setIsRunningNow(true);
     setError("");
     try {
-      await runLiveVirtualTraderNow(profileId, null, AUTO_TRADING_MODEL);
+      await runLiveVirtualTraderNow(
+        profileId,
+        market === "HK" ? [selectedTicker] : null,
+        AUTO_TRADING_MODEL,
+        market
+      );
       await loadGlobalViews();
       if (historicalEnabled) await loadHistoricalReplayData(selectedTicker);
     } catch (requestError) {
@@ -524,7 +597,7 @@ export default function VirtualTraderPage({
     if (!profileId || !canSubmitCash) return;
     setError("");
     try {
-      await postVirtualAccountDeposit(profileId, cashValue, cashReason);
+      await postVirtualAccountDeposit(profileId, cashValue, cashReason, market);
       setCashAmount("");
       setCashReason("");
       await loadGlobalViews();
@@ -537,7 +610,7 @@ export default function VirtualTraderPage({
     if (!profileId || !canSubmitCash) return;
     setError("");
     try {
-      await postVirtualAccountWithdraw(profileId, cashValue, cashReason);
+      await postVirtualAccountWithdraw(profileId, cashValue, cashReason, market);
       setCashAmount("");
       setCashReason("");
       await loadGlobalViews();
@@ -606,7 +679,7 @@ export default function VirtualTraderPage({
 
   const actionRows = useMemo(() => {
     const watchlistSet = new Set(
-      currentWatchlist.map((ticker) => String(ticker).trim().toUpperCase()).filter(Boolean)
+      activeWatchlist.map((ticker) => String(ticker).trim().toUpperCase()).filter(Boolean)
     );
     const latestByTicker = new Map();
 
@@ -626,7 +699,7 @@ export default function VirtualTraderPage({
           - decisionOpportunityScore(left, left.is_watchlist)
       )
       .slice(0, 15);
-  }, [currentWatchlist, liveDecisionLog]);
+  }, [activeWatchlist, liveDecisionLog]);
 
   const buyPotentialCounts = useMemo(() => {
     return actionRows.reduce(
@@ -694,6 +767,64 @@ export default function VirtualTraderPage({
           </button>
         </div>
       </header>
+
+      <section className="panel virtual-market-controls" aria-label="Virtual trader market">
+        <div className="market-selector" role="tablist" aria-label="Market">
+          {[
+            ["US", "US / 美股"],
+            ["HK", "HK / 港股"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={market === value}
+              className={market === value ? "active" : ""}
+              onClick={() => selectMarket(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="market-context">
+          <strong>{market === "HK" ? "HK Virtual Trader" : "US Virtual Trader"}</strong>
+          <span>{market === "HK" ? "HKD (HK$) · Asia/Hong_Kong" : "USD ($) · America/New_York"}</span>
+        </div>
+        {market === "HK" ? (
+          <div className="hk-ticker-control">
+            <label htmlFor="hk-ticker-input">
+              {labelByMode(languageMode, "HK ticker", "港股代號")}
+            </label>
+            <input
+              id="hk-ticker-input"
+              value={hkTickerInput}
+              inputMode="numeric"
+              placeholder="700, 0700, or 0700.HK"
+              onChange={(event) => setHkTickerInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") activateHkTicker();
+              }}
+            />
+            <button type="button" onClick={activateHkTicker}>
+              {labelByMode(languageMode, "Use ticker", "使用此代號")}
+            </button>
+            <select
+              aria-label={labelByMode(languageMode, "Active HK ticker", "目前港股")}
+              value={selectedTicker}
+              onChange={(event) => setSelectedTicker(event.target.value)}
+            >
+              {hkTickers.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
+            </select>
+            <span className="helper-text">
+              {labelByMode(
+                languageMode,
+                `${selectedTicker} is fetched from Yahoo as ${selectedTicker}.HK. Missing models train once in the background and are then reused.`,
+                `${selectedTicker} 會以 ${selectedTicker}.HK 向 Yahoo 取數；如無模型，會在背景訓練一次後重用。`
+              )}
+            </span>
+          </div>
+        ) : null}
+      </section>
 
       {showBeginnerGuide ? (
         <section className="panel beginner-guide">
@@ -772,8 +903,12 @@ export default function VirtualTraderPage({
         <p className="helper-text">
           {labelByMode(
             languageMode,
-            "Educational simulation only. Whole-share trades are used, normal sell signals reduce about 50% of a holding, stop-loss sells all shares, and each trade includes HKD 50 cost.",
-            "只作教育模擬用途。交易使用整數股；一般賣出訊號會減持約 50%；止蝕會賣出全部持倉；每次交易計入 50 港元成本。"
+            market === "HK"
+              ? "Educational simulation only. HK trades use each security's board lot, normal sell signals reduce about 50% of a holding, stop-loss sells all lots, and each trade includes an HK$50 simulated cost."
+              : "Educational simulation only. US trades use whole shares, normal sell signals reduce about 50% of a holding, stop-loss sells all shares, and the configured administrative cost is converted to USD.",
+            market === "HK"
+              ? "只作教育模擬用途。港股交易按每手股數執行；一般賣出訊號會減持約 50%；止蝕會賣出所有完整手數；每次交易計入 50 港元模擬成本。"
+              : "只作教育模擬用途。美股交易使用整數股；一般賣出訊號會減持約 50%；止蝕會賣出全部持倉；管理成本會換算為美元。"
           )}
         </p>
         <div className="action-filter-panel">
@@ -848,7 +983,7 @@ export default function VirtualTraderPage({
                         ? ` (${item.metadata?.model_period || item.model_period})`
                         : ""}
                     </td>
-                    <td data-label={labelByMode(languageMode, "Price", ZH.price)}>{formatMoney(item.price)}</td>
+                    <td data-label={labelByMode(languageMode, "Price", ZH.price)}>{currencySymbol}{formatMoney(item.price)}</td>
                   </tr>
                 ))
               ) : (
@@ -869,6 +1004,12 @@ export default function VirtualTraderPage({
         </div>
         {selectedLiveTrade ? (
           <div className="decision-context-box">
+            {market === "HK" ? (
+              <p>
+                <strong>{labelByMode(languageMode, "Board lot", "每手股數")}:</strong>{" "}
+                {selectedLiveTrade.metadata?.board_lot || labelByMode(languageMode, "Unavailable; buying is blocked", "未有可靠資料；已阻止買入")}
+              </p>
+            ) : null}
             {(() => {
               const confidence = confidenceGuide(selectedLiveTrade.confidence_score, languageMode);
               const context = contextGuide(selectedLiveTrade.metadata?.context_score, languageMode);
@@ -1098,19 +1239,19 @@ export default function VirtualTraderPage({
         <div className="beginner-summary-grid">
           <div>
             <span>{labelByMode(languageMode, "Account value", ZH.accountValue)}</span>
-            <strong>{formatMoney(accountSummary?.total_account_value)}</strong>
+            <strong>{currencySymbol}{formatMoney(accountSummary?.total_account_value)}</strong>
           </div>
           <div className={totalProfitLoss >= 0 ? "pnl-positive" : "pnl-negative"}>
             <span>{labelByMode(languageMode, "Profit / Loss", ZH.profitLoss)}</span>
-            <strong>{formatMoney(totalProfitLoss)}{formatPercent(totalProfitLossPct)}</strong>
+            <strong>{currencySymbol}{formatMoney(totalProfitLoss)}{formatPercent(totalProfitLossPct)}</strong>
           </div>
           <div>
             <span>{labelByMode(languageMode, "Cash", ZH.cash)}</span>
-            <strong>{formatMoney(accountSummary?.cash)}</strong>
+            <strong>{currencySymbol}{formatMoney(accountSummary?.cash)}</strong>
           </div>
           <div>
             <span>{labelByMode(languageMode, "Holdings value", ZH.holdingsValue)}</span>
-            <strong>{formatMoney(accountSummary?.holdings_value)}</strong>
+            <strong>{currencySymbol}{formatMoney(accountSummary?.holdings_value)}</strong>
           </div>
           <div className={accountSummary?.buying_paused ? "risk-paused" : ""}>
             <span>{labelByMode(languageMode, "Portfolio protection", "投資組合保護")}</span>
@@ -1129,33 +1270,50 @@ export default function VirtualTraderPage({
         </div>
       </section>
 
-      <HoldingsTable languageMode={languageMode} holdings={accountHoldings} />
+      <HoldingsTable
+        languageMode={languageMode}
+        holdings={accountHoldings}
+        market={market}
+        currencySymbol={currencySymbol}
+      />
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Contributions", ZH.contributions)}</h3>
         <div className="beginner-summary-grid">
           <div>
             <span>{labelByMode(languageMode, "Total cash added", ZH.totalCashAdded)}</span>
-            <strong>{formatMoney(accountSummary?.net_deposits)}</strong>
+            <strong>{currencySymbol}{formatMoney(accountSummary?.net_deposits)}</strong>
           </div>
           <div>
             <span>{labelByMode(languageMode, "Recent monthly", ZH.recentMonthly)}</span>
-            <strong>{formatMoney(contributionSummary.monthly)}</strong>
+            <strong>{currencySymbol}{formatMoney(contributionSummary.monthly)}</strong>
           </div>
           <div>
             <span>{labelByMode(languageMode, "Recent one-time", ZH.recentOneTime)}</span>
-            <strong>{formatMoney(contributionSummary.oneTime)}</strong>
+            <strong>{currencySymbol}{formatMoney(contributionSummary.oneTime)}</strong>
           </div>
         </div>
       </section>
 
-      <MonthlyContributionInput userId={profileId} languageMode={languageMode} onUpdated={loadGlobalViews} />
+      {market === "US" ? (
+        <MonthlyContributionInput userId={profileId} languageMode={languageMode} onUpdated={loadGlobalViews} />
+      ) : (
+        <section className="panel">
+          <p className="helper-text">
+            {labelByMode(
+              languageMode,
+              "Recurring deposits remain attached to the existing USD account. Use the HKD one-time deposit below for the separate HK account.",
+              "每月入金繼續屬於現有 USD 帳戶。港股獨立帳戶請使用下方 HKD 單次入金。"
+            )}
+          </p>
+        </section>
+      )}
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "One-Time Cash Add / Withdraw", ZH.oneTimeCash)}</h3>
         <div className="settings-form">
           <label>
-            {labelByMode(languageMode, "Amount (USD)", ZH.amountUsd)}
+            {labelByMode(languageMode, `Amount (${market === "HK" ? "HKD" : "USD"})`, ZH.amountUsd)}
             <input
               type="number"
               min="0.01"
@@ -1182,10 +1340,17 @@ export default function VirtualTraderPage({
             </p>
           ) : null}
         </div>
-        <ResetTradingAccountButton userId={profileId} languageMode={languageMode} onResetComplete={loadGlobalViews} />
+        {market === "US" ? (
+          <ResetTradingAccountButton
+            userId={profileId}
+            market={market}
+            languageMode={languageMode}
+            onResetComplete={loadGlobalViews}
+          />
+        ) : null}
       </section>
 
-      <RecentTradesTable languageMode={languageMode} trades={recentTrades} />
+      <RecentTradesTable languageMode={languageMode} trades={recentTrades} currencySymbol={currencySymbol} />
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Advanced Details", ZH.advancedDetails)}</h3>
@@ -1214,6 +1379,67 @@ export default function VirtualTraderPage({
             onRefresh={loadSchedulerStatusOnly}
           />
 
+          <section className="panel">
+            <div className="beginner-guide-heading">
+              <div>
+                <h3>{labelByMode(languageMode, "Selected Ticker Models", "所選股票模型")}</h3>
+                <p className="helper-text">
+                  {labelByMode(
+                    languageMode,
+                    `${market} ${selectedTicker}: independently trained models and market-specific five-session feedback.`,
+                    `${market} ${selectedTicker}：獨立訓練模型及市場獨立五個交易日反饋。`
+                  )}
+                </p>
+              </div>
+              <button type="button" className="secondary-button" onClick={loadSelectedTickerModels}>
+                {labelByMode(languageMode, "Refresh models", "更新模型")}
+              </button>
+            </div>
+            {modelRegistryError ? <p className="holding-modal-error">{modelRegistryError}</p> : null}
+            <div className="table-wrap responsive-card-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{labelByMode(languageMode, "Period", "期間")}</th>
+                    <th>{labelByMode(languageMode, "Model", "模型")}</th>
+                    <th>{labelByMode(languageMode, "Status", "狀態")}</th>
+                    <th>{labelByMode(languageMode, "Validation", "驗證分數")}</th>
+                    <th>{labelByMode(languageMode, "5-day samples", "5 日反饋樣本")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {modelRegistry.length ? modelRegistry.map((row) => (
+                    <tr key={`${row.market}-${row.ticker}-${row.period}-${row.model_name}`}>
+                      <td data-label="Period">{row.period}</td>
+                      <td data-label="Model">{row.model_name}</td>
+                      <td data-label="Status">{row.status}{row.is_validated ? " · validated" : " · waiting"}</td>
+                      <td data-label="Validation">
+                        {Number.isFinite(Number(row.validation_score))
+                          ? `${(Number(row.validation_score) * 100).toFixed(1)}%`
+                          : "N/A"}
+                      </td>
+                      <td data-label="5-day samples">
+                        {Number(row.metrics_summary?.live_feedback?.sample_count || 0)}
+                      </td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td colSpan={5}>
+                        {labelByMode(
+                          languageMode,
+                          market === "HK"
+                            ? "No registered HK model yet. Select Update decisions once; missing models train in the background, then refresh this table."
+                            : "No registered model is available for this ticker yet.",
+                          "尚未有已登記模型。港股可先執行「更新決定」，等待背景訓練後再更新此表。"
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <EquityChart
             ticker={profileId}
             points={liveEquityPoints}
@@ -1239,7 +1465,10 @@ export default function VirtualTraderPage({
               </div>
             </section>
           ) : (
-            <NewsSentimentPanel ticker={selectedTicker} languageMode={languageMode} />
+            <NewsSentimentPanel
+              ticker={market === "HK" ? `${selectedTicker}.HK` : selectedTicker}
+              languageMode={languageMode}
+            />
           )}
 
           {!historyEnabled ? (
@@ -1267,10 +1496,23 @@ export default function VirtualTraderPage({
               hasMore={historyHasMore}
               onLoadMore={() => loadAccountHistoryPage({ reset: false })}
               errorMessage={historyError}
+              currencySymbol={currencySymbol}
             />
           )}
 
-          {!historicalEnabled ? (
+          {market === "HK" ? (
+            <section className="panel">
+              <h3>{labelByMode(languageMode, "HK Model History", "港股模型紀錄")}</h3>
+              <p className="helper-text">
+                {labelByMode(
+                  languageMode,
+                  "Live HK decisions and their five-session feedback appear in the tables above. Open Trading Models for the market-specific registry and validation status.",
+                  "港股即時決定及其五個交易日反饋顯示於上方表格；市場獨立模型登記及驗證狀態可於交易模型頁查看。"
+                )}
+              </p>
+              <a href="/model-lifecycle">{labelByMode(languageMode, "Open Trading Models", "開啟交易模型")}</a>
+            </section>
+          ) : !historicalEnabled ? (
             <section className="panel">
               <h3>{labelByMode(languageMode, "Historical Replay Mode", ZH.historicalMode)}</h3>
               <div className="settings-actions">

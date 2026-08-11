@@ -19,10 +19,11 @@ def build_live_equity_curve(
     *,
     latest_prices: dict[str, float] | None = None,
     limit: int = 200,
+    market: str = "US",
 ) -> dict[str, Any]:
     """Build a beginner-friendly profile equity curve from immutable ledger events."""
     ledger = get_account_ledger_service()
-    events = ledger.list_events_chronological(user_id=user_id)
+    events = ledger.list_events_chronological(user_id=user_id, market=market)
 
     cash_balance = 0.0
     positions: dict[str, float] = {}
@@ -68,7 +69,11 @@ def build_live_equity_curve(
             }
         )
 
-    latest_snapshot = ledger.build_account_summary(user_id=user_id, latest_prices=latest_prices)
+    latest_snapshot = ledger.build_account_summary(
+        user_id=user_id,
+        latest_prices=latest_prices,
+        market=market,
+    )
     latest_point = {
         "timestamp": latest_snapshot["as_of"],
         "cash": float(latest_snapshot["cash"]),
@@ -95,6 +100,9 @@ def build_live_equity_curve(
 
     return {
         "user_id": str(user_id).strip(),
+        "market": latest_snapshot.get("market", market),
+        "currency": latest_snapshot.get("currency", "USD"),
+        "currency_symbol": latest_snapshot.get("currency_symbol", "$"),
         "last_updated": latest_snapshot["as_of"],
         "curve_last_point_timestamp": latest_point["timestamp"],
         "latest_total_equity": float(latest_snapshot["total_account_value"]),

@@ -1,0 +1,23 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+const pageSource = readFileSync(new URL("../pages/VirtualTraderPage.jsx", import.meta.url), "utf8");
+const apiSource = readFileSync(new URL("../api.js", import.meta.url), "utf8");
+const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+
+test("Virtual Trader exposes one shared US/HK market interface", () => {
+  assert.match(pageSource, /className="market-selector"/);
+  assert.match(pageSource, /normalizeHkTickerInput/);
+  assert.match(pageSource, /HK Virtual Trader/);
+  assert.match(pageSource, /currencySymbol = market === "HK" \? "HK\$" : "\$"/);
+  assert.match(pageSource, /market === "HK" \? \[selectedTicker\] : null/);
+  assert.doesNotMatch(pageSource, /selectedMarket/);
+});
+
+test("market-aware API calls and narrow-screen controls remain wired", () => {
+  assert.match(apiSource, /market = "US"/);
+  assert.match(apiSource, /market=\$\{encodeURIComponent\(market\)\}/);
+  assert.match(styleSource, /\.hk-ticker-control/);
+  assert.match(styleSource, /@media \(max-width: 600px\)/);
+});

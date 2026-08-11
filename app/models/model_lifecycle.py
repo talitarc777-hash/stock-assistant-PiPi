@@ -12,6 +12,7 @@ MODEL_WORKFLOW_TYPES = {"daily_incremental", "weekly_full", "monthly_deep", "tri
 class ModelRegistryItemResponse(BaseModel):
     """One model registry row."""
 
+    market: str = "US"
     ticker: str
     period: str
     target_name: str

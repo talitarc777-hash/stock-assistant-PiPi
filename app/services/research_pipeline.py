@@ -13,6 +13,7 @@ import pandas as pd
 from app.core.settings import get_settings
 from app.services.indicators import add_technical_indicators
 from app.services.market_data import get_price_history
+from app.services.market_config import model_security_root, resolve_security
 from app.services.news_sentiment import build_daily_news_features
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,7 @@ def build_feature_dataset(
     benchmark: str = "VOO",
     include_news_sentiment: bool = True,
     sentiment_model: str = "finbert",
+    market: str = "US",
 ) -> pd.DataFrame:
     """
     Build one daily feature dataset for a single ticker.
@@ -148,8 +150,10 @@ def build_feature_dataset(
     - optional lightweight Yahoo-news sentiment features
     - 5-day and 20-day prediction targets
     """
-    ticker_symbol = ticker.strip().upper()
-    benchmark_symbol = benchmark.strip().upper()
+    ticker_identity = resolve_security(ticker, market)
+    benchmark_identity = resolve_security(benchmark, market)
+    ticker_symbol = ticker_identity.ticker
+    benchmark_symbol = benchmark_identity.ticker
 
     logger.info(
         "Building research dataset ticker=%s period=%s benchmark=%s",
@@ -158,10 +162,11 @@ def build_feature_dataset(
         benchmark_symbol,
     )
 
-    price_df = get_price_history(ticker_symbol, period=period)
+    price_df = get_price_history(ticker_symbol, period=period, market=ticker_identity.market)
     benchmark_df = price_df.copy() if ticker_symbol == benchmark_symbol else get_price_history(
         benchmark_symbol,
         period=period,
+        market=benchmark_identity.market,
     )
 
     dataset_df = _add_return_features(price_df)
@@ -170,7 +175,7 @@ def build_feature_dataset(
 
     if include_news_sentiment:
         news_df = build_daily_news_features(
-            ticker=ticker_symbol,
+            ticker=ticker_identity.provider_symbol,
             date_index=dataset_df["date"],
             sentiment_model=sentiment_model,
             fallback_to_lexicon=True,
@@ -180,11 +185,13 @@ def build_feature_dataset(
     dataset_df = _add_target_columns(dataset_df)
     dataset_df["ticker"] = ticker_symbol
     dataset_df["benchmark"] = benchmark_symbol
+    dataset_df["market"] = ticker_identity.market
 
     ordered_columns = [
         "date",
         "ticker",
         "benchmark",
+        "market",
         "open",
         "high",
         "low",
@@ -204,6 +211,7 @@ def save_feature_dataset(
     period: str,
     benchmark: str = "VOO",
     output_dir: str | Path | None = None,
+    market: str = "US",
 ) -> ResearchDatasetArtifact:
     """
     Save one dataset under a beginner-friendly local folder structure.
@@ -213,7 +221,8 @@ def save_feature_dataset(
     - data/research/<ticker>/<period>/metadata.json
     """
     base_dir = Path(output_dir or get_settings().research_data_dir)
-    ticker_dir = base_dir / ticker.strip().upper() / period
+    identity = resolve_security(ticker, market)
+    ticker_dir = model_security_root(base_dir, identity.market, identity.ticker) / period
     ticker_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_path = ticker_dir / "features.csv"
@@ -222,7 +231,9 @@ def save_feature_dataset(
     dataset_df.to_csv(dataset_path, index=False)
 
     metadata = {
-        "ticker": ticker.strip().upper(),
+        "ticker": identity.ticker,
+        "market": identity.market,
+        "provider_symbol": identity.provider_symbol,
         "benchmark": benchmark.strip().upper(),
         "period": period,
         "row_count": int(len(dataset_df)),
@@ -252,6 +263,7 @@ def build_and_save_feature_dataset(
     output_dir: str | Path | None = None,
     include_news_sentiment: bool = True,
     sentiment_model: str = "finbert",
+    market: str = "US",
 ) -> ResearchDatasetArtifact:
     """Convenience wrapper to build a dataset and save it locally."""
     dataset_df = build_feature_dataset(
@@ -260,6 +272,7 @@ def build_and_save_feature_dataset(
         benchmark=benchmark,
         include_news_sentiment=include_news_sentiment,
         sentiment_model=sentiment_model,
+        market=market,
     )
     return save_feature_dataset(
         dataset_df=dataset_df,
@@ -267,6 +280,7 @@ def build_and_save_feature_dataset(
         period=period,
         benchmark=benchmark,
         output_dir=output_dir,
+        market=market,
     )
 
 

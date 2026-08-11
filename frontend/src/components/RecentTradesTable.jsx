@@ -40,7 +40,7 @@ function parseTradeTime(value) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-export default function RecentTradesTable({ languageMode, trades = [] }) {
+export default function RecentTradesTable({ languageMode, trades = [], currencySymbol = "$" }) {
   const [tickerFilter, setTickerFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("all");
@@ -220,7 +220,7 @@ export default function RecentTradesTable({ languageMode, trades = [] }) {
                   </td>
                   <td data-label={labelByMode(languageMode, "Quantity", "\u6578\u91cf")}>{formatQuantity(trade.quantity)}</td>
                   <td data-label={labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}>{formatQuantity(trade.remaining_quantity)}</td>
-                  <td data-label={labelByMode(languageMode, "Price", "\u50f9\u683c")}>{formatMoney(trade.price)}</td>
+                  <td data-label={labelByMode(languageMode, "Price", "\u50f9\u683c")}>{currencySymbol}{formatMoney(trade.price)}</td>
                   <td data-label={labelByMode(languageMode, "Reason", "\u539f\u56e0")}>{trade.reason || "-"}</td>
                 </tr>
               ))

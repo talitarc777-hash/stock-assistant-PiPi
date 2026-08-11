@@ -13,8 +13,9 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.core.settings import get_settings
-from app.services.account_ledger_service import get_trade_admin_fee_usd
+from app.services.account_ledger_service import TRADE_ADMIN_FEE_HKD, get_trade_admin_fee_usd
 from app.services.market_data import get_price_history
+from app.services.market_config import normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 PriceLoader = Callable[[str, str], pd.DataFrame]
@@ -99,6 +100,22 @@ def _prediction_direction(prediction: float, task_type: str) -> float:
     return 1.0 if prediction > 0 else -1.0 if prediction < 0 else 0.0
 
 
+def _load_market_history(
+    price_loader: PriceLoader,
+    *,
+    ticker: str,
+    market: str,
+    period: str = "3mo",
+) -> pd.DataFrame:
+    """Load one market's candles without exposing provider symbols to storage."""
+    identity = resolve_security(ticker, market)
+    if price_loader is get_price_history:
+        return get_price_history(identity.ticker, period, market=identity.market)
+    # Existing tests and injected loaders use the original two-argument contract.
+    symbol = identity.provider_symbol if identity.market == "HK" else identity.ticker
+    return price_loader(symbol, period)
+
+
 class ModelFeedbackService:
     """SQLite-backed prediction feedback and adaptive context statistics."""
 
@@ -150,6 +167,7 @@ class ModelFeedbackService:
                     direction_correct INTEGER,
                     profitable_after_cost INTEGER,
                     outcome_score REAL
+                    ,market TEXT NOT NULL DEFAULT 'US'
                 )
                 """
             )
@@ -159,6 +177,11 @@ class ModelFeedbackService:
                     "PRAGMA table_info(model_decision_feedback)"
                 ).fetchall()
             }
+            if "market" not in feedback_columns:
+                conn.execute(
+                    "ALTER TABLE model_decision_feedback "
+                    "ADD COLUMN market TEXT NOT NULL DEFAULT 'US'"
+                )
             if "model_ticker" not in feedback_columns:
                 conn.execute(
                     "ALTER TABLE model_decision_feedback "
@@ -213,7 +236,15 @@ class ModelFeedbackService:
                 """
                 CREATE INDEX IF NOT EXISTS idx_model_feedback_lookup
                 ON model_decision_feedback(
-                    ticker, model_period, model_name, status, decision_date
+                    market, ticker, model_period, model_name, status, decision_date
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_feedback_market_lookup
+                ON model_decision_feedback(
+                    market, ticker, model_period, model_name, status, decision_date
                 )
                 """
             )
@@ -256,15 +287,33 @@ class ModelFeedbackService:
                     excess_return_pct REAL,
                     active_net_return_pct REAL,
                     direction_correct INTEGER,
-                    profitable_after_cost INTEGER
+                    profitable_after_cost INTEGER,
+                    market TEXT NOT NULL DEFAULT 'US'
                 )
                 """
             )
+            shadow_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(benchmark_shadow_feedback)").fetchall()
+            }
+            if "market" not in shadow_columns:
+                conn.execute(
+                    "ALTER TABLE benchmark_shadow_feedback "
+                    "ADD COLUMN market TEXT NOT NULL DEFAULT 'US'"
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_benchmark_shadow_lookup
                 ON benchmark_shadow_feedback(
                     ticker, model_period, model_name, status, decision_date
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_benchmark_shadow_market_lookup
+                ON benchmark_shadow_feedback(
+                    market, ticker, model_period, model_name, status, decision_date
                 )
                 """
             )
@@ -278,11 +327,15 @@ class ModelFeedbackService:
         if not get_settings().model_feedback_enabled:
             return False
         metadata = dict(payload.get("metadata") or {})
+        market = normalize_market(payload.get("market") or metadata.get("market") or "US")
         shadow = dict(metadata.get("benchmark_shadow") or {})
         if shadow.get("status") != "available" or shadow.get("execution_enabled"):
             return False
-        ticker = str(payload.get("ticker") or "").strip().upper()
-        benchmark = str(shadow.get("benchmark") or "VOO").strip().upper()
+        ticker = resolve_security(str(payload.get("ticker") or ""), market).ticker
+        benchmark = resolve_security(
+            str(shadow.get("benchmark") or ("2800" if market == "HK" else "VOO")),
+            market,
+        ).ticker
         model_name = str(shadow.get("model_name") or "").strip().lower()
         model_period = str(shadow.get("model_period") or "").strip()
         prediction = int(shadow.get("prediction"))
@@ -299,7 +352,7 @@ class ModelFeedbackService:
             return False
         decision_date = _decision_date(payload)
         observation_key = "|".join(
-            (ticker, benchmark, model_period, model_name, decision_date)
+            (market, ticker, benchmark, model_period, model_name, decision_date)
         )
         with self._connect() as conn:
             cursor = conn.execute(
@@ -307,8 +360,8 @@ class ModelFeedbackService:
                 INSERT OR IGNORE INTO benchmark_shadow_feedback (
                     observation_key, ticker, benchmark, decision_date,
                     recorded_at_utc, horizon_days, model_name, model_period,
-                    prediction, outperform_probability, decision_price
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prediction, outperform_probability, decision_price, market
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     observation_key,
@@ -322,6 +375,7 @@ class ModelFeedbackService:
                     prediction,
                     _safe_float(shadow.get("outperform_probability")),
                     price,
+                    market,
                 ),
             )
             conn.commit()
@@ -334,10 +388,14 @@ class ModelFeedbackService:
         model_period: str | None = None,
         model_name: str | None = None,
         status: str | None = None,
+        market: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        if market:
+            clauses.append("market = ?")
+            params.append(normalize_market(market))
         if ticker:
             clauses.append("ticker = ?")
             params.append(str(ticker).strip().upper())
@@ -374,7 +432,9 @@ class ModelFeedbackService:
         if not get_settings().model_feedback_enabled:
             return False
         metadata = dict(payload.get("metadata") or {})
-        ticker = str(payload.get("ticker") or "").strip().upper()
+        market = normalize_market(payload.get("market") or metadata.get("market") or "US")
+        identity = resolve_security(str(payload.get("ticker") or ""), market)
+        ticker = identity.ticker
         model_name = str(payload.get("model_name") or "").strip().lower()
         if not ticker or not model_name:
             return False
@@ -386,9 +446,12 @@ class ModelFeedbackService:
         if source not in MODEL_FEEDBACK_ELIGIBLE_SOURCES:
             return False
         model_ticker = str(metadata.get("model_ticker") or ticker).strip().upper()
+        if market == "HK":
+            model_ticker = resolve_security(model_ticker, market).ticker
         task_type = str(metadata.get("task_type") or "unknown").strip().lower()
         decision_key = "|".join(
             (
+                market,
                 ticker,
                 model_ticker,
                 model_period,
@@ -425,8 +488,8 @@ class ModelFeedbackService:
                     recorded_at_utc, horizon_days, model_name, model_period,
                     model_version, decision_source, task_type, action, prediction_value,
                     confidence_score, context_score, decision_price, quantity,
-                    context_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    context_json, market
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision_key,
@@ -449,6 +512,7 @@ class ModelFeedbackService:
                     price,
                     float(_safe_float(payload.get("quantity")) or 0.0),
                     json.dumps(context, ensure_ascii=False),
+                    market,
                 ),
             )
             conn.commit()
@@ -461,13 +525,18 @@ class ModelFeedbackService:
         model_period: str | None = None,
         model_name: str | None = None,
         status: str | None = None,
+        market: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        clean_market = normalize_market(market) if market else None
+        if clean_market:
+            clauses.append("market = ?")
+            params.append(clean_market)
         if ticker:
             clauses.append("ticker = ?")
-            params.append(str(ticker).strip().upper())
+            params.append(resolve_security(ticker, clean_market or "US").ticker)
         if model_period:
             clauses.append("model_period = ?")
             params.append(str(model_period).strip())
@@ -589,18 +658,25 @@ class ModelFeedbackService:
         for row in pending:
             ticker = str(row["ticker"])
             benchmark = str(row["benchmark"])
+            market = normalize_market(row.get("market") or "US")
             try:
-                if ticker not in history_cache:
-                    history_cache[ticker] = price_loader(ticker, "3mo")
-                if benchmark not in history_cache:
-                    history_cache[benchmark] = price_loader(benchmark, "3mo")
+                ticker_key = f"{market}:{ticker}"
+                benchmark_key = f"{market}:{benchmark}"
+                if ticker_key not in history_cache:
+                    history_cache[ticker_key] = _load_market_history(
+                        price_loader, ticker=ticker, market=market
+                    )
+                if benchmark_key not in history_cache:
+                    history_cache[benchmark_key] = _load_market_history(
+                        price_loader, ticker=benchmark, market=market
+                    )
                 ticker_prices = _horizon_prices(
-                    history_cache[ticker],
+                    history_cache[ticker_key],
                     str(row["decision_date"]),
                     int(row["horizon_days"]),
                 )
                 benchmark_prices = _horizon_prices(
-                    history_cache[benchmark],
+                    history_cache[benchmark_key],
                     str(row["decision_date"]),
                     int(row["horizon_days"]),
                 )
@@ -623,8 +699,13 @@ class ModelFeedbackService:
                     or (direction == 0 and abs(actual_return) < 0.25)
                 )
                 notional = abs(float(row["quantity"]) * decision_price)
+                round_trip_fee = (
+                    2.0 * TRADE_ADMIN_FEE_HKD
+                    if market == "HK"
+                    else 2.0 * get_trade_admin_fee_usd()
+                )
                 cost_pct = (
-                    (2.0 * get_trade_admin_fee_usd() / notional) * 100.0
+                    (round_trip_fee / notional) * 100.0
                     if row["action"] in {"buy", "sell"} and notional > 0
                     else 0.0
                 )
@@ -673,7 +754,8 @@ class ModelFeedbackService:
             except Exception as exc:  # pragma: no cover - provider guard
                 errors.append(f"{ticker}:{exc}")
                 logger.warning(
-                    "Model feedback evaluation skipped ticker=%s error=%s",
+                    "Model feedback evaluation skipped market=%s ticker=%s error=%s",
+                    market,
                     ticker,
                     exc,
                 )
@@ -706,18 +788,25 @@ class ModelFeedbackService:
         for row in pending:
             ticker = str(row["ticker"])
             benchmark = str(row["benchmark"])
+            market = normalize_market(row.get("market") or "US")
             try:
-                if ticker not in history_cache:
-                    history_cache[ticker] = price_loader(ticker, "3mo")
-                if benchmark not in history_cache:
-                    history_cache[benchmark] = price_loader(benchmark, "3mo")
+                ticker_key = f"{market}:{ticker}"
+                benchmark_key = f"{market}:{benchmark}"
+                if ticker_key not in history_cache:
+                    history_cache[ticker_key] = _load_market_history(
+                        price_loader, ticker=ticker, market=market
+                    )
+                if benchmark_key not in history_cache:
+                    history_cache[benchmark_key] = _load_market_history(
+                        price_loader, ticker=benchmark, market=market
+                    )
                 ticker_prices = _horizon_prices(
-                    history_cache[ticker],
+                    history_cache[ticker_key],
                     str(row["decision_date"]),
                     int(row["horizon_days"]),
                 )
                 benchmark_prices = _horizon_prices(
-                    history_cache[benchmark],
+                    history_cache[benchmark_key],
                     str(row["decision_date"]),
                     int(row["horizon_days"]),
                 )
@@ -773,7 +862,8 @@ class ModelFeedbackService:
             except Exception as exc:  # pragma: no cover - provider guard
                 errors.append(f"{ticker}:{exc}")
                 logger.warning(
-                    "Benchmark shadow evaluation skipped ticker=%s error=%s",
+                    "Benchmark shadow evaluation skipped market=%s ticker=%s error=%s",
+                    market,
                     ticker,
                     exc,
                 )
@@ -887,11 +977,15 @@ class ModelFeedbackService:
         model_period: str,
         model_name: str,
         model_version: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
+        clean_market = normalize_market(market)
+        identity = resolve_security(ticker, clean_market)
         source_placeholders = ", ".join(
             "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
         )
         clauses = [
+            "market = ?",
             "COALESCE(NULLIF(model_ticker, ''), ticker) = ?",
             "model_period = ?",
             "model_name = ?",
@@ -899,7 +993,8 @@ class ModelFeedbackService:
             f"decision_source IN ({source_placeholders})",
         ]
         params: list[Any] = [
-            str(ticker).strip().upper(),
+            clean_market,
+            identity.ticker,
             str(model_period),
             str(model_name).strip().lower(),
             *MODEL_FEEDBACK_ELIGIBLE_SOURCES,
@@ -987,6 +1082,7 @@ class ModelFeedbackService:
         *,
         factors: list[str],
         ticker: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         """Learn a small buy-context adjustment from past factor outcomes."""
         clean_factors = [
@@ -1000,14 +1096,16 @@ class ModelFeedbackService:
             "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
         )
         clauses = [
+            "market = ?",
             "status = 'evaluated'",
             "actual_return_pct IS NOT NULL",
             f"decision_source IN ({source_placeholders})",
         ]
-        params: list[Any] = list(MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        clean_market = normalize_market(market)
+        params: list[Any] = [clean_market, *MODEL_FEEDBACK_ELIGIBLE_SOURCES]
         if ticker:
             clauses.append("ticker = ?")
-            params.append(str(ticker).strip().upper())
+            params.append(resolve_security(ticker, clean_market).ticker)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""

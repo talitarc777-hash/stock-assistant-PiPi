@@ -6,9 +6,13 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 
 import pandas as pd
 import yfinance as yf
+
+from app.services.market_config import MarketValidationError, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,10 @@ _PROXY_ENV_KEYS = (
     "GIT_HTTP_PROXY",
     "GIT_HTTPS_PROXY",
 )
+
+_HISTORY_CACHE: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
+_HISTORY_CACHE_LOCK = Lock()
+_HISTORY_CACHE_TTL_SECONDS = 15 * 60
 
 
 def _clear_broken_local_proxy_env() -> None:
@@ -194,6 +202,7 @@ def get_price_history(
     ticker: str,
     period: str = "5y",
     download_fn: DownloadFn | None = None,
+    market: str = "US",
 ) -> pd.DataFrame:
     """
     Fetch and clean daily OHLCV data for a single ticker.
@@ -207,14 +216,47 @@ def get_price_history(
         pandas DataFrame with columns:
         date, open, high, low, close, adj_close, volume
     """
-    safe_ticker: str = _validate_ticker(ticker)
+    try:
+        identity = resolve_security(ticker, market)
+    except MarketValidationError as exc:
+        raise InvalidTickerError(str(exc)) from exc
+    safe_ticker: str = _validate_ticker(identity.provider_symbol)
     downloader: DownloadFn = download_fn or _default_download_daily
+
+    cache_key = (identity.market, safe_ticker, str(period).strip().lower())
+    if download_fn is None:
+        now = monotonic()
+        with _HISTORY_CACHE_LOCK:
+            cached = _HISTORY_CACHE.get(cache_key)
+            if cached is not None and cached[0] > now:
+                logger.info(
+                    "Market data cache hit market=%s ticker=%s provider_symbol=%s period=%s",
+                    identity.market,
+                    identity.ticker,
+                    identity.provider_symbol,
+                    period,
+                )
+                return cached[1].copy(deep=True)
 
     logger.info("Downloading daily price history: ticker=%s period=%s", safe_ticker, period)
 
     try:
         raw_df: pd.DataFrame = downloader(safe_ticker, period)
-        return _clean_ohlcv_dataframe(raw_df, ticker=safe_ticker)
+        cleaned = _clean_ohlcv_dataframe(raw_df, ticker=safe_ticker)
+        if download_fn is None:
+            with _HISTORY_CACHE_LOCK:
+                _HISTORY_CACHE[cache_key] = (
+                    monotonic() + _HISTORY_CACHE_TTL_SECONDS,
+                    cleaned.copy(deep=True),
+                )
+        logger.info(
+            "Market data loaded market=%s ticker=%s provider_symbol=%s rows=%d cache=miss",
+            identity.market,
+            identity.ticker,
+            identity.provider_symbol,
+            len(cleaned),
+        )
+        return cleaned
     except MarketDataError:
         # Preserve expected domain errors with clear logs.
         logger.warning(
@@ -237,6 +279,7 @@ def get_price_history_for_tickers(
     tickers: list[str],
     period: str = "5y",
     download_fn: DownloadFn | None = None,
+    market: str = "US",
 ) -> dict[str, pd.DataFrame]:
     """
     Fetch daily OHLCV data for multiple tickers.
@@ -248,11 +291,12 @@ def get_price_history_for_tickers(
 
     for ticker in tickers:
         try:
-            safe_ticker: str = _validate_ticker(ticker)
-            results[safe_ticker] = get_price_history(
-                ticker=safe_ticker,
+            identity = resolve_security(ticker, market)
+            results[identity.ticker] = get_price_history(
+                ticker=identity.ticker,
                 period=period,
                 download_fn=download_fn,
+                market=identity.market,
             )
         except MarketDataError as exc:
             logger.warning("Skipping ticker '%s': %s", ticker, exc)

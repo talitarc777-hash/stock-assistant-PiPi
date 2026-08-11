@@ -12,6 +12,7 @@ from functools import lru_cache
 import pandas as pd
 
 from app.core.settings import get_settings
+from app.services.market_config import model_security_root, normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,24 @@ def _get_models_base_dir(base_dir: str | Path | None = None) -> Path:
     return Path(base_dir or get_settings().research_models_dir)
 
 
-@lru_cache(maxsize=64)
-def _scan_saved_model_artifacts(period: str, target_name: str, base_dir_text: str) -> list[dict[str, str]]:
+@lru_cache(maxsize=128)
+def _scan_saved_model_artifacts(
+    period: str,
+    target_name: str,
+    base_dir_text: str,
+    market: str = "US",
+) -> list[dict[str, str]]:
     """Cache discovered saved model artifact directories for quick runtime reuse."""
     base_dir = Path(base_dir_text)
     discovered: list[dict[str, str]] = []
     if not base_dir.exists():
         return discovered
-    pattern = f"*/{period}/{target_name}/*/model.pkl"
+    clean_market = normalize_market(market)
+    pattern = (
+        f"*/{period}/{target_name}/*/model.pkl"
+        if clean_market == "US"
+        else f"{clean_market}/*/{period}/{target_name}/*/model.pkl"
+    )
     for model_path in base_dir.glob(pattern):
         try:
             # model.pkl is stored as ticker/period/target/model/model.pkl.
@@ -43,6 +54,7 @@ def _scan_saved_model_artifacts(period: str, target_name: str, base_dir_text: st
                 discovered.append(
                     {
                         "ticker": ticker,
+                        "market": clean_market,
                         "model_name": model_name,
                         "artifact_dir": str(model_path.parent),
                     }
@@ -59,6 +71,7 @@ def list_compatible_saved_model_candidates(
     requested_model_name: str | None = None,
     base_dir: str | Path | None = None,
     limit: int = 12,
+    market: str = "US",
 ) -> list[dict[str, str]]:
     """Find compatible saved models before falling back to rules.
 
@@ -69,12 +82,18 @@ def list_compatible_saved_model_candidates(
     4) any ticker + requested model
     5) any ticker + any model
     """
-    clean_ticker = str(ticker).strip().upper()
+    identity = resolve_security(ticker, market)
+    clean_ticker = identity.ticker
     clean_period = str(period).strip()
     clean_target = str(target_name).strip()
     requested = str(requested_model_name).strip().lower() if requested_model_name else None
     base_path = _get_models_base_dir(base_dir)
-    rows = _scan_saved_model_artifacts(clean_period, clean_target, str(base_path))
+    rows = _scan_saved_model_artifacts(
+        clean_period,
+        clean_target,
+        str(base_path),
+        identity.market,
+    )
     if not rows:
         return []
 
@@ -115,13 +134,18 @@ def list_compatible_saved_model_candidates(
         for row in sorted(rows, key=sort_key):
             if row["ticker"] == clean_ticker and row["model_name"] == requested:
                 append_row(row, "saved_exact_ticker_requested_model")
-        for row in sorted(rows, key=sort_key):
-            if row["ticker"] != clean_ticker and row["model_name"] == requested:
-                append_row(row, "saved_compatible_requested_model")
+        if identity.market == "US":
+            for row in sorted(rows, key=sort_key):
+                if row["ticker"] != clean_ticker and row["model_name"] == requested:
+                    append_row(row, "saved_compatible_requested_model")
 
     for row in sorted(rows, key=sort_key):
         if row["ticker"] == clean_ticker:
             append_row(row, "saved_exact_ticker_model")
+    if identity.market == "HK":
+        # HK models are always security-specific. Never reuse another HK
+        # issuer's fitted model merely because its feature schema matches.
+        return output[: max(1, int(limit))]
     for row in sorted(rows, key=sort_key):
         if row["ticker"] == "GLOBAL":
             append_row(row, "saved_global_model")
@@ -137,9 +161,13 @@ def _resolve_model_artifact_dir(
     target_name: str = "target_5d_updown",
     model_name: str = "logistic_regression",
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> Path:
     """Resolve one saved model artifact directory."""
-    artifact_dir = _get_models_base_dir(base_dir) / ticker.strip().upper() / period / target_name / model_name
+    identity = resolve_security(ticker, market)
+    artifact_dir = model_security_root(
+        _get_models_base_dir(base_dir), identity.market, identity.ticker
+    ) / period / target_name / model_name
     if not artifact_dir.exists():
         raise ModelResultsError(
             "Saved model artifacts were not found for "
@@ -155,6 +183,7 @@ def resolve_model_artifact_dir(
     target_name: str = "target_5d_updown",
     model_name: str = "logistic_regression",
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> Path:
     """Public wrapper for resolving one saved model artifact directory."""
     return _resolve_model_artifact_dir(
@@ -163,6 +192,7 @@ def resolve_model_artifact_dir(
         target_name=target_name,
         model_name=model_name,
         base_dir=base_dir,
+        market=market,
     )
 
 
@@ -171,9 +201,13 @@ def _resolve_virtual_trader_artifact_dir(
     period: str = "5y",
     model_name: str = "logistic_regression",
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> Path:
     """Resolve one saved virtual-trader artifact directory."""
-    artifact_dir = _get_models_base_dir(base_dir) / ticker.strip().upper() / period / "virtual_trader" / model_name
+    identity = resolve_security(ticker, market)
+    artifact_dir = model_security_root(
+        _get_models_base_dir(base_dir), identity.market, identity.ticker
+    ) / period / "virtual_trader" / model_name
     if not artifact_dir.exists():
         raise ModelResultsError(
             "Saved virtual trader artifacts were not found for "
@@ -209,6 +243,7 @@ def load_trained_model_bundle(
     target_name: str = "target_5d_updown",
     model_name: str = "logistic_regression",
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> dict[str, Any]:
     """Load trained model object + feature list from saved artifacts."""
     artifact_dir = _resolve_model_artifact_dir(
@@ -217,6 +252,7 @@ def load_trained_model_bundle(
         target_name=target_name,
         model_name=model_name,
         base_dir=base_dir,
+        market=market,
     )
 
     model_path = artifact_dir / "model.pkl"
@@ -402,6 +438,7 @@ def load_virtual_trader_summary(
     model_name: str = "logistic_regression",
     equity_limit: int = 500,
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> dict[str, Any]:
     """Load saved virtual trader summary, benchmark comparison, and equity curve."""
     artifact_dir = _resolve_virtual_trader_artifact_dir(
@@ -409,6 +446,7 @@ def load_virtual_trader_summary(
         period=period,
         model_name=model_name,
         base_dir=base_dir,
+        market=market,
     )
     summary = _read_json_file(artifact_dir / "summary.json")
     benchmark_comparison = _read_json_file(artifact_dir / "benchmark_comparison.json")
@@ -433,6 +471,7 @@ def load_virtual_trader_trades(
     model_name: str = "logistic_regression",
     limit: int = 200,
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> dict[str, Any]:
     """Load saved virtual trader trade log and contribution history."""
     artifact_dir = _resolve_virtual_trader_artifact_dir(
@@ -440,6 +479,7 @@ def load_virtual_trader_trades(
         period=period,
         model_name=model_name,
         base_dir=base_dir,
+        market=market,
     )
     trade_log_df = _read_csv_file(artifact_dir / "trade_log.csv")
     contribution_df = _read_csv_file(artifact_dir / "monthly_contributions.csv")

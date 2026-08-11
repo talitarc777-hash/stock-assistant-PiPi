@@ -32,6 +32,7 @@ from app.services.equity_curve_service import build_live_equity_curve
 from app.services.external_market_context_service import build_external_market_context
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
+from app.services.market_config import MARKET_CONFIGS, get_hk_board_lot, normalize_market, resolve_security
 from app.services.market_regime import assess_market_regime
 from app.services.model_feedback_service import get_model_feedback_service
 from app.services.model_lifecycle_service import (
@@ -61,11 +62,14 @@ def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def _normalize_tickers(tickers: list[str]) -> list[str]:
+def _normalize_tickers(tickers: list[str], market: str = "US") -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for ticker in tickers:
-        symbol = str(ticker).strip().upper()
+        try:
+            symbol = resolve_security(ticker, market).ticker
+        except ValueError:
+            continue
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
@@ -82,6 +86,9 @@ class LiveStatus:
     holdings: list[dict[str, Any]]
     latest_decisions: list[dict[str, Any]]
     contribution_events: list[dict[str, Any]]
+    market: str = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     universe_size: int = 0
     tickers_evaluated: int = 0
     tickers_failed: int = 0
@@ -299,6 +306,32 @@ class LiveVirtualTraderStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS live_trader_positions_market (
+                    user_id TEXT NOT NULL,
+                    market TEXT NOT NULL DEFAULT 'US',
+                    ticker TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    avg_entry_price REAL NOT NULL,
+                    entry_timestamp TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, market, ticker)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO live_trader_positions_market (
+                    user_id, market, ticker, quantity, avg_entry_price,
+                    entry_timestamp, model_name, updated_at
+                )
+                SELECT user_id, 'US', ticker, quantity, avg_entry_price,
+                       entry_timestamp, model_name, updated_at
+                FROM live_trader_positions
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS live_trader_trade_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -323,21 +356,38 @@ class LiveVirtualTraderStore:
                 )
                 """
             )
+            trade_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(live_trader_trade_log)").fetchall()
+            }
+            if "market" not in trade_columns:
+                conn.execute(
+                    "ALTER TABLE live_trader_trade_log "
+                    "ADD COLUMN market TEXT NOT NULL DEFAULT 'US'"
+                )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_live_trader_market_log
+                ON live_trader_trade_log(user_id, market, ticker, id)
+                """
+            )
             conn.commit()
 
-    def list_positions(self, user_id: str) -> list[dict[str, Any]]:
+    def list_positions(self, user_id: str, market: str = "US") -> list[dict[str, Any]]:
+        clean_market = normalize_market(market)
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM live_trader_positions
-                WHERE user_id = ?
+                SELECT * FROM live_trader_positions_market
+                WHERE user_id = ? AND market = ?
                 ORDER BY ticker ASC
                 """,
-                (str(user_id).strip(),),
+                (str(user_id).strip(), clean_market),
             ).fetchall()
         return [
             {
                 "user_id": row["user_id"],
+                "market": row["market"],
                 "ticker": row["ticker"],
                 "quantity": float(row["quantity"]),
                 "avg_entry_price": float(row["avg_entry_price"]),
@@ -348,19 +398,26 @@ class LiveVirtualTraderStore:
             for row in rows
         ]
 
-    def get_position(self, user_id: str, ticker: str) -> dict[str, Any] | None:
+    def get_position(
+        self,
+        user_id: str,
+        ticker: str,
+        market: str = "US",
+    ) -> dict[str, Any] | None:
+        identity = resolve_security(ticker, market)
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT * FROM live_trader_positions
-                WHERE user_id = ? AND ticker = ?
+                SELECT * FROM live_trader_positions_market
+                WHERE user_id = ? AND market = ? AND ticker = ?
                 """,
-                (str(user_id).strip(), str(ticker).strip().upper()),
+                (str(user_id).strip(), identity.market, identity.ticker),
             ).fetchone()
         if row is None:
             return None
         return {
             "user_id": row["user_id"],
+            "market": row["market"],
             "ticker": row["ticker"],
             "quantity": float(row["quantity"]),
             "avg_entry_price": float(row["avg_entry_price"]),
@@ -377,20 +434,22 @@ class LiveVirtualTraderStore:
         avg_entry_price: float,
         model_name: str,
         entry_timestamp: str | None = None,
+        market: str = "US",
     ) -> None:
+        identity = resolve_security(ticker, market)
         now = _utc_now()
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT entry_timestamp FROM live_trader_positions WHERE user_id = ? AND ticker = ?",
-                (str(user_id).strip(), str(ticker).strip().upper()),
+                "SELECT entry_timestamp FROM live_trader_positions_market WHERE user_id = ? AND market = ? AND ticker = ?",
+                (str(user_id).strip(), identity.market, identity.ticker),
             ).fetchone()
             first_entry = entry_timestamp or (existing["entry_timestamp"] if existing else now)
             conn.execute(
                 """
-                INSERT INTO live_trader_positions (
-                    user_id, ticker, quantity, avg_entry_price, entry_timestamp, model_name, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, ticker) DO UPDATE SET
+                INSERT INTO live_trader_positions_market (
+                    user_id, market, ticker, quantity, avg_entry_price, entry_timestamp, model_name, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, market, ticker) DO UPDATE SET
                     quantity = excluded.quantity,
                     avg_entry_price = excluded.avg_entry_price,
                     model_name = excluded.model_name,
@@ -398,7 +457,8 @@ class LiveVirtualTraderStore:
                 """,
                 (
                     str(user_id).strip(),
-                    str(ticker).strip().upper(),
+                    identity.market,
+                    identity.ticker,
                     float(quantity),
                     float(avg_entry_price),
                     first_entry,
@@ -408,11 +468,12 @@ class LiveVirtualTraderStore:
             )
             conn.commit()
 
-    def remove_position(self, user_id: str, ticker: str) -> None:
+    def remove_position(self, user_id: str, ticker: str, market: str = "US") -> None:
+        identity = resolve_security(ticker, market)
         with self._connect() as conn:
             conn.execute(
-                "DELETE FROM live_trader_positions WHERE user_id = ? AND ticker = ?",
-                (str(user_id).strip(), str(ticker).strip().upper()),
+                "DELETE FROM live_trader_positions_market WHERE user_id = ? AND market = ? AND ticker = ?",
+                (str(user_id).strip(), identity.market, identity.ticker),
             )
             conn.commit()
 
@@ -424,8 +485,8 @@ class LiveVirtualTraderStore:
                     timestamp, user_id, ticker, action, quantity, price, model_name,
                     confidence_score, reason, threshold_summary, technical_state_summary,
                     news_sentiment_summary, benchmark_strength_summary, action_summary,
-                    cash_after, holdings_after, realized_pnl, unrealized_pnl, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cash_after, holdings_after, realized_pnl, unrealized_pnl, metadata_json, market
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["timestamp"],
@@ -447,13 +508,21 @@ class LiveVirtualTraderStore:
                     float(payload["realized_pnl"]),
                     float(payload["unrealized_pnl"]),
                     json.dumps(payload.get("metadata", {}), ensure_ascii=False),
+                    normalize_market(payload.get("market", "US")),
                 ),
             )
             conn.commit()
 
-    def list_trades(self, user_id: str, limit: int = 50, ticker: str | None = None) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM live_trader_trade_log WHERE user_id = ?"
-        params: list[Any] = [str(user_id).strip()]
+    def list_trades(
+        self,
+        user_id: str,
+        limit: int = 50,
+        ticker: str | None = None,
+        market: str = "US",
+    ) -> list[dict[str, Any]]:
+        clean_market = normalize_market(market)
+        sql = "SELECT * FROM live_trader_trade_log WHERE user_id = ? AND market = ?"
+        params: list[Any] = [str(user_id).strip(), clean_market]
         if ticker:
             sql += " AND ticker = ?"
             params.append(str(ticker).strip().upper())
@@ -471,6 +540,7 @@ class LiveVirtualTraderStore:
                 {
                     "timestamp": row["timestamp"],
                     "user_id": row["user_id"],
+                    "market": row["market"] if "market" in row.keys() else "US",
                     "ticker": row["ticker"],
                     "action": row["action"],
                     "quantity": float(row["quantity"]),
@@ -493,16 +563,23 @@ class LiveVirtualTraderStore:
         return result
 
 
-def _resolve_user_tickers(user_id: str, tickers: list[str] | None) -> list[str]:
+def _resolve_user_tickers(
+    user_id: str,
+    tickers: list[str] | None,
+    market: str = "US",
+) -> list[str]:
+    clean_market = normalize_market(market)
     if tickers:
-        values = _normalize_tickers(tickers)
+        values = _normalize_tickers(tickers, clean_market)
         if values:
             return values
+    if clean_market == "HK":
+        return list(MARKET_CONFIGS[clean_market].default_tickers)
     # Autonomous mode default: scan a broader active universe.
-    values = _normalize_tickers(get_active_universe(limit=120))
+    values = _normalize_tickers(get_active_universe(limit=120), clean_market)
     # Keep user watchlist symbols included for continuity.
     watchlist, _, _ = get_user_profile_store().get_effective_watchlist(user_id=user_id)
-    values = _normalize_tickers(values + watchlist)
+    values = _normalize_tickers(values + watchlist, clean_market)
     if not values:
         raise LiveVirtualTraderError("No tickers available for live virtual trader.")
     return values
@@ -525,11 +602,11 @@ def _derive_signal_flags(predicted_value: float, task_type: str, min_return: flo
     return bullish, bearish
 
 
-def _latest_prices_for_symbols(symbols: list[str]) -> dict[str, float]:
+def _latest_prices_for_symbols(symbols: list[str], market: str = "US") -> dict[str, float]:
     prices: dict[str, float] = {}
     for symbol in symbols:
         try:
-            history = get_price_history(symbol, period="3mo")
+            history = get_price_history(symbol, period="3mo", market=market)
             prices[symbol] = float(history.sort_values("date").iloc[-1]["close"])
         except Exception as exc:
             logger.warning("Live trader latest price skipped ticker=%s error=%s", symbol, exc)
@@ -541,12 +618,16 @@ def _schedule_background_training_if_enabled(
     ticker: str,
     period: str,
     benchmark: str,
+    market: str = "US",
 ) -> None:
     """Optionally schedule non-blocking ticker training when model is missing."""
-    if not _AUTO_TRAIN_ON_MODEL_MISS:
+    clean_market = normalize_market(market)
+    # Preserve the conservative US default. HK models are created lazily only
+    # after a user activates that ticker, never by scanning the whole exchange.
+    if not _AUTO_TRAIN_ON_MODEL_MISS and clean_market != "HK":
         return
 
-    job_key = (ticker, period, benchmark)
+    job_key = (f"{clean_market}:{ticker}", period, benchmark)
     with _TRAINING_LOCK:
         if job_key in _TRAINING_QUEUE:
             return
@@ -556,13 +637,23 @@ def _schedule_background_training_if_enabled(
         try:
             from app.services.model_training import train_baseline_models_for_ticker
 
-            train_baseline_models_for_ticker(
+            results = train_baseline_models_for_ticker(
                 ticker=ticker,
                 period=period,
                 benchmark=benchmark,
                 include_gradient_boosting=True,
+                market=clean_market,
             )
-            logger.info("Background training completed ticker=%s period=%s", ticker, period)
+            lifecycle = get_model_lifecycle_service()
+            for result in results:
+                lifecycle.register_training_result(result, retrain_type="lazy_activation")
+            logger.info(
+                "Background training completed market=%s ticker=%s period=%s models=%s",
+                clean_market,
+                ticker,
+                period,
+                len(results),
+            )
         except Exception as exc:  # pragma: no cover - background defensive guard
             logger.exception("Background training failed ticker=%s error=%s", ticker, exc)
         finally:
@@ -1037,7 +1128,7 @@ def run_live_virtual_trader_now(
     tickers: list[str] | None = None,
     model_name: str | None = AUTO_TRADING_MODEL_NAME,
     period: str = "2y",
-    benchmark: str = "VOO",
+    benchmark: str | None = None,
     target_name: str = TRADING_TARGET_NAME,
     confidence_threshold: float = 0.55,
     max_position_size_pct: float = 0.25,
@@ -1045,6 +1136,7 @@ def run_live_virtual_trader_now(
     take_profit_pct: float | None = None,
     min_predicted_return_pct: float = 0.0,
     signal_cooldown_minutes: float = 60.0,
+    market: str = "US",
 ) -> LiveStatus:
     """Run one live decision cycle and persist simulated actions."""
     clean_user_id = str(user_id).strip()
@@ -1053,7 +1145,13 @@ def run_live_virtual_trader_now(
     if not 0 < max_position_size_pct <= 1:
         raise LiveVirtualTraderError("max_position_size_pct must be within (0, 1].")
 
-    symbols = _resolve_user_tickers(clean_user_id, tickers)
+    clean_market = normalize_market(market)
+    market_config = MARKET_CONFIGS[clean_market]
+    benchmark = resolve_security(
+        benchmark or market_config.default_benchmark,
+        clean_market,
+    ).ticker
+    symbols = _resolve_user_tickers(clean_user_id, tickers, clean_market)
     lifecycle_service = get_model_lifecycle_service()
     ledger = get_account_ledger_service()
     store = get_live_virtual_trader_store()
@@ -1061,6 +1159,7 @@ def run_live_virtual_trader_now(
         clean_user_id,
         limit=24,
         event_types=["monthly_contribution", "manual_deposit", "withdrawal"],
+        market=clean_market,
     )
 
     decisions: list[dict[str, Any]] = []
@@ -1083,6 +1182,7 @@ def run_live_virtual_trader_now(
                 benchmark=benchmark,
                 include_news_sentiment=True,
                 sentiment_model="finbert",
+                market=clean_market,
             ).sort_values("date")
             if feature_df.empty:
                 failed_symbols.append(symbol)
@@ -1105,7 +1205,7 @@ def run_live_virtual_trader_now(
                 feature_df
             ).iloc[-1]
             latest_price_cache[symbol] = float(latest_row["close"])
-            snapshot = get_live_market_snapshot(symbol, period="3mo")
+            snapshot = get_live_market_snapshot(symbol, period="3mo", market=clean_market)
             valuation_cache[symbol] = snapshot
             latest_price_cache[symbol] = float(snapshot["close"])
             data_quality_cache[symbol] = _assess_market_data_quality(
@@ -1117,12 +1217,20 @@ def run_live_virtual_trader_now(
             logger.warning("Live trader ticker=%s skipped due to data error: %s", symbol, exc)
             continue
 
-    account = ledger.build_account_summary(clean_user_id, latest_prices=latest_price_cache)
+    account = ledger.build_account_summary(
+        clean_user_id,
+        latest_prices=latest_price_cache,
+        market=clean_market,
+    )
     held_positions = account["holdings"]
     extra_symbols = [item["ticker"] for item in held_positions if item["ticker"] not in latest_price_cache]
     if extra_symbols:
-        latest_price_cache.update(_latest_prices_for_symbols(extra_symbols))
-        account = ledger.build_account_summary(clean_user_id, latest_prices=latest_price_cache)
+        latest_price_cache.update(_latest_prices_for_symbols(extra_symbols, clean_market))
+        account = ledger.build_account_summary(
+            clean_user_id,
+            latest_prices=latest_price_cache,
+            market=clean_market,
+        )
 
     holdings_by_ticker = {item["ticker"]: item for item in account["holdings"]}
     portfolio_risk = _build_portfolio_risk_state(account)
@@ -1133,6 +1241,7 @@ def run_live_virtual_trader_now(
             continue
         current_price = float(latest_price_cache[symbol])
         snapshot = valuation_cache.get(symbol, {})
+        board_lot = get_hk_board_lot(symbol) if clean_market == "HK" else 1
         data_quality = data_quality_cache.get(
             symbol,
             {
@@ -1155,6 +1264,7 @@ def run_live_virtual_trader_now(
 
             registry_candidates = lifecycle_service.resolve_runtime_model_candidates(
                 ticker=symbol,
+                market=clean_market,
                 period=period,
                 target_name=target_name,
                 requested_model_name=None if auto_model_selection else requested_model_name,
@@ -1170,6 +1280,7 @@ def run_live_virtual_trader_now(
             for candidate_period in candidate_periods:
                 for candidate in list_compatible_saved_model_candidates(
                     ticker=symbol,
+                    market=clean_market,
                     period=candidate_period,
                     target_name=target_name,
                     requested_model_name=(
@@ -1252,6 +1363,7 @@ def run_live_virtual_trader_now(
                 try:
                     bundle = load_trained_model_bundle(
                         ticker=candidate_ticker,
+                        market=clean_market,
                         period=candidate_period,
                         target_name=target_name,
                         model_name=candidate_model_name,
@@ -1341,17 +1453,28 @@ def run_live_virtual_trader_now(
                     ticker=symbol,
                     period=period,
                     benchmark=benchmark,
+                    market=clean_market,
                 )
                 logger.info(
                     "Model missing -> using fallback%s",
-                    " -> training scheduled" if _AUTO_TRAIN_ON_MODEL_MISS else "",
+                    " -> training scheduled"
+                    if (_AUTO_TRAIN_ON_MODEL_MISS or clean_market == "HK")
+                    else "",
                 )
 
-            benchmark_shadow = _build_benchmark_shadow_prediction(
-                ticker=symbol,
-                latest_row=latest_row,
-                stationary_latest_row=stationary_latest_row_cache.get(symbol),
-                benchmark=benchmark,
+            benchmark_shadow = (
+                _build_benchmark_shadow_prediction(
+                    ticker=symbol,
+                    latest_row=latest_row,
+                    stationary_latest_row=stationary_latest_row_cache.get(symbol),
+                    benchmark=benchmark,
+                )
+                if clean_market == "US"
+                else {
+                    "status": "unavailable",
+                    "reason": "hk_benchmark_shadow_not_enabled",
+                    "benchmark": benchmark,
+                }
             )
             if benchmark_shadow.get("status") == "available":
                 benchmark_shadow["forward_evidence"] = (
@@ -1378,7 +1501,7 @@ def run_live_virtual_trader_now(
             if position or bullish:
                 try:
                     external_context = build_external_market_context(
-                        symbol,
+                        resolve_security(symbol, clean_market).provider_symbol,
                         company_name=snapshot.get("company_name"),
                     )
                 except Exception as exc:  # pragma: no cover - provider guard
@@ -1397,6 +1520,7 @@ def run_live_virtual_trader_now(
                     get_model_feedback_service().get_context_adjustment(
                         factors=list(context_score["factors"]),
                         ticker=symbol,
+                        market=clean_market,
                     )
                 )
             except Exception as exc:  # pragma: no cover - feedback guard
@@ -1448,7 +1572,10 @@ def run_live_virtual_trader_now(
 
             if position and float(position["quantity"]) > 0:
                 entry = float(position["avg_entry_price"])
-                whole_holding_quantity = math.floor(float(position["quantity"]))
+                lot_size = int(board_lot or 1)
+                whole_holding_quantity = (
+                    math.floor(float(position["quantity"]) / lot_size) * lot_size
+                )
                 quantity = float(whole_holding_quantity)
                 if whole_holding_quantity < MIN_TRADE_QUANTITY:
                     action, reason = "hold", "holding_position"
@@ -1471,9 +1598,17 @@ def run_live_virtual_trader_now(
                             reason=reason,
                         )
                     )
+                    if clean_market == "HK":
+                        quantity = float(math.floor(quantity / lot_size) * lot_size)
+                        if quantity < lot_size:
+                            action, reason, quantity = "hold", "board_lot_constraint", 0.0
             else:
                 if bullish and _confidence_ok(confidence_score, confidence_threshold):
-                    account = ledger.build_account_summary(clean_user_id, latest_prices=latest_price_cache)
+                    account = ledger.build_account_summary(
+                        clean_user_id,
+                        latest_prices=latest_price_cache,
+                        market=clean_market,
+                    )
                     cash_available = float(account["cash"])
                     equity = float(account["total_account_value"])
                     holdings_count = len(account["holdings"])
@@ -1489,15 +1624,24 @@ def run_live_virtual_trader_now(
                         cash_available,
                         float(equity * effective_position_size_pct),
                     )
-                    trade_admin_fee_usd = get_trade_admin_fee_usd()
-                    affordable_quantity = math.floor(
-                        (allocation - trade_admin_fee_usd) / current_price
+                    trade_fee = (
+                        TRADE_ADMIN_FEE_HKD
+                        if clean_market == "HK"
+                        else get_trade_admin_fee_usd()
+                    )
+                    raw_affordable_quantity = math.floor(
+                        (allocation - trade_fee) / current_price
                         if current_price > 0
                         else 0.0
                     )
+                    lot_size = int(board_lot or 1)
+                    affordable_quantity = (
+                        math.floor(raw_affordable_quantity / lot_size) * lot_size
+                    )
                     context_ok = context_score["score"] >= MIN_CONTEXT_SCORE_FOR_BUY
                     if (
-                        affordable_quantity >= MIN_TRADE_QUANTITY
+                        affordable_quantity >= lot_size
+                        and board_lot is not None
                         and concentration_ok
                         and valuation_ok
                         and volatility_ok
@@ -1511,7 +1655,9 @@ def run_live_virtual_trader_now(
                     else:
                         action = "no_action"
                         reason = (
-                            "market_data_quality_block"
+                            "board_lot_metadata_unavailable"
+                            if board_lot is None
+                            else "market_data_quality_block"
                             if not data_quality["trade_safe"]
                             else "portfolio_drawdown_pause"
                             if not portfolio_risk["buy_allowed"]
@@ -1524,21 +1670,33 @@ def run_live_virtual_trader_now(
                 elif not _confidence_ok(confidence_score, confidence_threshold):
                     action, reason = "no_action", "confidence_below_threshold"
 
+            order_interval_summary = (
+                f"board-lot interval {board_lot} shares"
+                if clean_market == "HK" and board_lot is not None
+                else "board-lot metadata unavailable"
+                if clean_market == "HK"
+                else "whole-share interval 1"
+            )
+            trade_cost_summary = (
+                f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f}"
+                if clean_market == "HK"
+                else f"trade cost USD {get_trade_admin_fee_usd():.2f}"
+            )
             threshold_summary = (
                 f"Thresholds: confidence {confidence_score:.0%} vs {confidence_threshold:.0%}; "
                 f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
-                f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
+                f"{order_interval_summary}; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                 f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
-                f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f} (~USD {get_trade_admin_fee_usd():.2f}); "
+                f"{trade_cost_summary}; "
                 f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
                 f"context score {context_score['score']:.0f}/100."
                 if confidence_score is not None
                 else (
                     f"Thresholds: confidence unavailable; required {confidence_threshold:.0%}; "
                     f"max position {max_position_size_pct:.0%}; stop loss {stop_loss_pct:.0%}; "
-                    f"whole-share interval 1; minimum quantity {MIN_TRADE_QUANTITY:g}; "
+                    f"{order_interval_summary}; minimum quantity {MIN_TRADE_QUANTITY:g}; "
                     f"normal sell size {PARTIAL_SELL_FRACTION:.0%}; "
-                    f"trade cost HKD {TRADE_ADMIN_FEE_HKD:.0f} (~USD {get_trade_admin_fee_usd():.2f}); "
+                    f"{trade_cost_summary}; "
                     f"volatility20 {volatility:.1f}%; PE {pe_ratio if pe_ratio is not None else 'N/A'}; "
                     f"context score {context_score['score']:.0f}/100."
                 )
@@ -1551,6 +1709,10 @@ def run_live_virtual_trader_now(
                     "position multiplier "
                     f"{portfolio_risk['position_size_multiplier']:.0%}."
                 )
+            threshold_summary += (
+                f" Market {clean_market}; currency {market_config.currency}; "
+                f"board lot {board_lot if board_lot is not None else 'unavailable'}."
+            )
             threshold_summary += (
                 f" Market data {data_quality['status']}"
                 + (
@@ -1569,7 +1731,12 @@ def run_live_virtual_trader_now(
                 )
             )
 
-            latest_trade_for_symbol = store.list_trades(clean_user_id, limit=1, ticker=symbol)
+            latest_trade_for_symbol = store.list_trades(
+                clean_user_id,
+                limit=1,
+                ticker=symbol,
+                market=clean_market,
+            )
             if action in {"buy", "sell"} and latest_trade_for_symbol:
                 previous = latest_trade_for_symbol[0]
                 now_dt = datetime.now(UTC)
@@ -1608,6 +1775,7 @@ def run_live_virtual_trader_now(
                             "decision_source": decision_source,
                             "overall_score": overall_score_cache.get(symbol),
                         },
+                        market=clean_market,
                     )
                 except AccountLedgerError as exc:
                     action, reason = "no_action", f"ledger_rejected_buy:{exc}"
@@ -1631,6 +1799,7 @@ def run_live_virtual_trader_now(
                             "decision_source": decision_source,
                             "overall_score": overall_score_cache.get(symbol),
                         },
+                        market=clean_market,
                     )
                 except AccountLedgerError as exc:
                     action, reason = "no_action", f"ledger_rejected_sell:{exc}"
@@ -1639,6 +1808,7 @@ def run_live_virtual_trader_now(
             account = ledger.build_account_summary(
                 clean_user_id,
                 latest_prices=latest_price_cache,
+                market=clean_market,
             )
             updated_pos = {item["ticker"]: item for item in account["holdings"]}.get(symbol)
             holdings_after = float(updated_pos["quantity"]) if updated_pos else 0.0
@@ -1657,6 +1827,8 @@ def run_live_virtual_trader_now(
             trade_payload = {
                 "timestamp": now_ts,
                 "user_id": clean_user_id,
+                "market": clean_market,
+                "currency": market_config.currency,
                 "ticker": symbol,
                 "action": action,
                 "quantity": float(quantity),
@@ -1741,6 +1913,10 @@ def run_live_virtual_trader_now(
                     "missing_context": context_score["missing_context"],
                     "portfolio_risk": portfolio_risk,
                     "model_load_errors": model_load_errors,
+                    "market": clean_market,
+                    "currency": market_config.currency,
+                    "provider_symbol": resolve_security(symbol, clean_market).provider_symbol,
+                    "board_lot": board_lot,
                 },
             }
             store.append_trade(trade_payload)
@@ -1776,11 +1952,13 @@ def run_live_virtual_trader_now(
     account = ledger.build_account_summary(
         clean_user_id,
         latest_prices=latest_price_cache,
+        market=clean_market,
     )
     live_curve = build_live_equity_curve(
         user_id=clean_user_id,
         latest_prices=latest_price_cache,
         limit=240,
+        market=clean_market,
     )
     holdings = account["holdings"]
     final_portfolio_risk = _build_portfolio_risk_state(account)
@@ -1798,9 +1976,15 @@ def run_live_virtual_trader_now(
 
     return LiveStatus(
         user_id=clean_user_id,
+        market=clean_market,
+        currency=market_config.currency,
+        currency_symbol=market_config.currency_symbol,
         model_name=AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
         generated_at_utc=_utc_now(),
         account={
+            "market": clean_market,
+            "currency": market_config.currency,
+            "currency_symbol": market_config.currency_symbol,
             "snapshot_timestamp": account["as_of"],
             "curve_last_point_timestamp": live_curve["curve_last_point_timestamp"],
             "cash": float(account["cash"]),
@@ -1835,26 +2019,35 @@ def get_live_virtual_trader_status(
     tickers: list[str] | None = None,
     model_name: str | None = AUTO_TRADING_MODEL_NAME,
     auto_run: bool = False,
+    market: str = "US",
 ) -> LiveStatus:
+    clean_market = normalize_market(market)
+    market_config = MARKET_CONFIGS[clean_market]
     if auto_run:
-        return run_live_virtual_trader_now(user_id=user_id, tickers=tickers, model_name=model_name)
+        return run_live_virtual_trader_now(
+            user_id=user_id,
+            tickers=tickers,
+            model_name=model_name,
+            market=clean_market,
+        )
 
     clean_user_id = str(user_id).strip()
     if not clean_user_id:
         raise LiveVirtualTraderError("user_id is required.")
 
-    symbols = _resolve_user_tickers(clean_user_id, tickers)
+    symbols = _resolve_user_tickers(clean_user_id, tickers, clean_market)
     ledger = get_account_ledger_service()
 
     store = get_live_virtual_trader_store()
     # Read-only status should be quick. A full live run evaluates the whole
     # universe; a status refresh only needs current valuation for open holdings.
-    account = ledger.build_account_summary(clean_user_id)
+    account = ledger.build_account_summary(clean_user_id, market=clean_market)
     latest_prices = dict(account.get("latest_prices") or {})
     live_curve = build_live_equity_curve(
         user_id=clean_user_id,
         latest_prices=latest_prices,
         limit=240,
+        market=clean_market,
     )
     holdings = account["holdings"]
     portfolio_risk = _build_portfolio_risk_state(account)
@@ -1865,11 +2058,13 @@ def get_live_virtual_trader_status(
         clean_user_id,
         limit=20,
         ticker=trade_filter,
+        **({"market": clean_market} if clean_market != "US" else {}),
     )
     contribution_events = ledger.list_events(
         clean_user_id,
         limit=24,
         event_types=["monthly_contribution", "manual_deposit", "withdrawal"],
+        market=clean_market,
     )
     logger.info(
         "Live trader status consistency profile_id=%s summary_cash=%.2f summary_holdings=%.2f summary_total=%.2f curve_latest=%.2f curve_ts=%s",
@@ -1883,9 +2078,15 @@ def get_live_virtual_trader_status(
 
     return LiveStatus(
         user_id=clean_user_id,
+        market=clean_market,
+        currency=market_config.currency,
+        currency_symbol=market_config.currency_symbol,
         model_name=str(model_name or AUTO_TRADING_MODEL_NAME).strip().lower(),
         generated_at_utc=_utc_now(),
         account={
+            "market": clean_market,
+            "currency": market_config.currency,
+            "currency_symbol": market_config.currency_symbol,
             "snapshot_timestamp": account["as_of"],
             "curve_last_point_timestamp": live_curve["curve_last_point_timestamp"],
             "cash": float(account["cash"]),
@@ -1923,20 +2124,29 @@ def list_live_virtual_trader_trades(
     user_id: str,
     limit: int = 50,
     ticker: str | None = None,
+    market: str = "US",
 ) -> dict[str, Any]:
     clean_user_id = str(user_id).strip()
     if not clean_user_id:
         raise LiveVirtualTraderError("user_id is required.")
     store = get_live_virtual_trader_store()
-    trades = store.list_trades(clean_user_id, limit=limit, ticker=ticker)
+    clean_market = normalize_market(market)
+    trades = store.list_trades(
+        clean_user_id,
+        limit=limit,
+        ticker=ticker,
+        market=clean_market,
+    )
     return {
         "user_id": clean_user_id,
+        "market": clean_market,
         "count": len(trades),
         "trades": trades,
         "contribution_application_history": get_account_ledger_service().list_events(
             clean_user_id,
             limit=100,
             event_types=["monthly_contribution", "manual_deposit", "withdrawal"],
+            market=clean_market,
         ),
     }
 

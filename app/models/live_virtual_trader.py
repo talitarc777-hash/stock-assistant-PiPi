@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.models.ticker_classification import ClassifiedTickerResponse
@@ -11,12 +13,15 @@ class LiveTraderRunRequest(BaseModel):
     """Request body for running live simulated trader now."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
     tickers: list[str] | None = None
     model_name: str | None = Field(default=None, min_length=1, max_length=80)
     auto_run: bool = True
 
 
 class LiveTraderDecisionResponse(ClassifiedTickerResponse):
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
     timestamp: str
     user_id: str
     action: str
@@ -38,6 +43,10 @@ class LiveTraderDecisionResponse(ClassifiedTickerResponse):
 
 
 class LiveTraderHoldingResponse(ClassifiedTickerResponse):
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
+    board_lot: int | None = None
     user_id: str | None = None
     quantity: float
     avg_entry_price: float
@@ -62,6 +71,9 @@ class LiveTraderContributionEventResponse(BaseModel):
 
 
 class LiveTraderAccountResponse(BaseModel):
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     snapshot_timestamp: str | None = None
     curve_last_point_timestamp: str | None = None
     cash: float
@@ -88,6 +100,9 @@ class LiveTraderEquityPointResponse(BaseModel):
 
 class LiveTraderStatusResponse(BaseModel):
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     model_name: str
     generated_at_utc: str
     account: LiveTraderAccountResponse
@@ -103,6 +118,7 @@ class LiveTraderStatusResponse(BaseModel):
 
 class LiveTraderTradesResponse(BaseModel):
     user_id: str
+    market: Literal["US", "HK"] = "US"
     count: int
     trades: list[LiveTraderDecisionResponse]
     contribution_application_history: list[dict]
@@ -112,6 +128,7 @@ class LiveTraderSyncResponse(BaseModel):
     """One lightweight, read-only snapshot used for web/Discord synchronization."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
     synced_at_utc: str
     watchlist: list[str] = Field(default_factory=list)
     using_system_default_watchlist: bool = False

@@ -35,6 +35,19 @@ class MarketHoursServiceTests(unittest.TestCase):
         self.assertFalse(state.is_market_open)
         self.assertEqual(state.interval_seconds, 3600)
 
+    def test_hk_session_includes_lunch_break(self) -> None:
+        morning_utc = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+        lunch_utc = datetime(2026, 8, 10, 4, 30, tzinfo=UTC)
+        afternoon_utc = datetime(2026, 8, 10, 6, 0, tzinfo=UTC)
+
+        self.assertTrue(is_market_open(morning_utc, "HK"))
+        self.assertFalse(is_market_open(lunch_utc, "HK"))
+        self.assertTrue(is_market_open(afternoon_utc, "HK"))
+        self.assertEqual(
+            get_market_hours_state(morning_utc, "HK").timezone,
+            "Asia/Hong_Kong",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

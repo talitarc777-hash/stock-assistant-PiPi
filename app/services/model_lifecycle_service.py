@@ -29,6 +29,7 @@ from app.services.model_feedback_service import ModelFeedbackService
 from app.services.model_training import TrainingRunResult, train_baseline_models_for_ticker
 from app.services.research_pipeline import build_feature_dataset
 from app.services.universe_service import get_active_universe
+from app.services.market_config import normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,57 @@ class ModelLifecycleService:
                 """
                 CREATE INDEX IF NOT EXISTS idx_model_registry_lookup
                 ON model_registry(ticker, period, target_name, status, is_validated, last_evaluated_at_utc)
+                """
+            )
+            # Keep the original US registry untouched for rollback compatibility.
+            # New code uses this market-keyed registry and copies legacy rows once.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_model_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    market TEXT NOT NULL DEFAULT 'US',
+                    ticker TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    target_name TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    is_validated INTEGER NOT NULL DEFAULT 0,
+                    validation_score REAL,
+                    stale_after_days INTEGER NOT NULL DEFAULT 30,
+                    retrain_type TEXT,
+                    last_trained_at_utc TEXT,
+                    last_evaluated_at_utc TEXT,
+                    last_promoted_at_utc TEXT,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(market, ticker, period, target_name, model_name)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO market_model_registry (
+                    market, ticker, period, target_name, model_name, status,
+                    is_validated, validation_score, stale_after_days, retrain_type,
+                    last_trained_at_utc, last_evaluated_at_utc, last_promoted_at_utc,
+                    metrics_json, notes, created_at, updated_at
+                )
+                SELECT 'US', ticker, period, target_name, model_name, status,
+                       is_validated, validation_score, stale_after_days, retrain_type,
+                       last_trained_at_utc, last_evaluated_at_utc, last_promoted_at_utc,
+                       metrics_json, notes, created_at, updated_at
+                FROM model_registry
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_market_model_registry_lookup
+                ON market_model_registry(
+                    market, ticker, period, target_name, status,
+                    is_validated, last_evaluated_at_utc
+                )
                 """
             )
             conn.execute(
@@ -575,24 +627,27 @@ class ModelLifecycleService:
         last_trained_at_utc: str | None,
         last_evaluated_at_utc: str | None,
         last_promoted_at_utc: str | None = None,
+        market: str = "US",
     ) -> None:
         clean_status = str(status).strip().lower()
         if clean_status not in MODEL_REGISTRY_STATUSES:
             raise ModelLifecycleError(f"Unsupported model status: {status}")
 
         now = _utc_now_iso()
-        clean_ticker = str(ticker).strip().upper()
+        identity = resolve_security(ticker, market)
+        clean_market = identity.market
+        clean_ticker = identity.ticker
         clean_model = str(model_name).strip().lower()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO model_registry (
-                    ticker, period, target_name, model_name, status, is_validated,
+                INSERT INTO market_model_registry (
+                    market, ticker, period, target_name, model_name, status, is_validated,
                     validation_score, stale_after_days, retrain_type,
                     last_trained_at_utc, last_evaluated_at_utc, last_promoted_at_utc,
                     metrics_json, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(ticker, period, target_name, model_name) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market, ticker, period, target_name, model_name) DO UPDATE SET
                     status = excluded.status,
                     is_validated = excluded.is_validated,
                     validation_score = excluded.validation_score,
@@ -600,12 +655,13 @@ class ModelLifecycleService:
                     retrain_type = excluded.retrain_type,
                     last_trained_at_utc = excluded.last_trained_at_utc,
                     last_evaluated_at_utc = excluded.last_evaluated_at_utc,
-                    last_promoted_at_utc = COALESCE(excluded.last_promoted_at_utc, model_registry.last_promoted_at_utc),
+                    last_promoted_at_utc = COALESCE(excluded.last_promoted_at_utc, market_model_registry.last_promoted_at_utc),
                     metrics_json = excluded.metrics_json,
                     notes = excluded.notes,
                     updated_at = excluded.updated_at
                 """,
                 (
+                    clean_market,
                     clean_ticker,
                     str(period).strip(),
                     str(target_name).strip(),
@@ -633,15 +689,18 @@ class ModelLifecycleService:
         period: str,
         target_name: str,
         keep_model_name: str,
+        market: str = "US",
     ) -> None:
+        identity = resolve_security(ticker, market)
         with self._connect() as conn:
             conn.execute(
                 """
-                UPDATE model_registry
+                UPDATE market_model_registry
                 SET status = 'archived',
                     notes = 'Superseded by a newer promoted production model.',
                     updated_at = ?
-                WHERE ticker = ?
+                WHERE market = ?
+                  AND ticker = ?
                   AND period = ?
                   AND target_name = ?
                   AND status = 'production'
@@ -649,7 +708,8 @@ class ModelLifecycleService:
                 """,
                 (
                     _utc_now_iso(),
-                    str(ticker).strip().upper(),
+                    identity.market,
+                    identity.ticker,
                     str(period).strip(),
                     str(target_name).strip(),
                     str(keep_model_name).strip().lower(),
@@ -664,6 +724,7 @@ class ModelLifecycleService:
         gate_version = int(metrics_summary.get("validation_gate_version") or 0)
         validation_evidence_current = gate_version >= VALIDATION_GATE_VERSION
         return {
+            "market": row["market"],
             "ticker": row["ticker"],
             "period": row["period"],
             "target_name": row["target_name"],
@@ -692,13 +753,15 @@ class ModelLifecycleService:
         ticker: str | None = None,
         period: str | None = None,
         target_name: str | None = None,
+        market: str = "US",
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM model_registry WHERE 1=1"
-        params: list[Any] = []
+        clean_market = normalize_market(market)
+        sql = "SELECT * FROM market_model_registry WHERE market = ?"
+        params: list[Any] = [clean_market]
         if ticker:
             sql += " AND ticker = ?"
-            params.append(str(ticker).strip().upper())
+            params.append(resolve_security(ticker, clean_market).ticker)
         if period:
             sql += " AND period = ?"
             params.append(str(period).strip())
@@ -717,20 +780,23 @@ class ModelLifecycleService:
         ticker: str,
         period: str = DEFAULT_PERIOD,
         target_name: str = DEFAULT_TARGET_NAME,
+        market: str = "US",
     ) -> dict[str, Any] | None:
+        identity = resolve_security(ticker, market)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT *
-                FROM model_registry
-                WHERE ticker = ?
+                FROM market_model_registry
+                WHERE market = ?
+                  AND ticker = ?
                   AND period = ?
                   AND target_name = ?
                   AND status = 'production'
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (str(ticker).strip().upper(), str(period).strip(), str(target_name).strip()),
+                (identity.market, identity.ticker, str(period).strip(), str(target_name).strip()),
             ).fetchone()
         if row is None:
             return None
@@ -743,13 +809,16 @@ class ModelLifecycleService:
         ticker: str,
         period: str = DEFAULT_PERIOD,
         target_name: str = DEFAULT_TARGET_NAME,
+        market: str = "US",
     ) -> dict[str, Any] | None:
+        identity = resolve_security(ticker, market)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT *
-                FROM model_registry
-                WHERE ticker = ?
+                FROM market_model_registry
+                WHERE market = ?
+                  AND ticker = ?
                   AND period = ?
                   AND target_name = ?
                   AND status = 'candidate'
@@ -757,7 +826,7 @@ class ModelLifecycleService:
                 ORDER BY validation_score DESC, updated_at DESC
                 LIMIT 1
                 """,
-                (str(ticker).strip().upper(), str(period).strip(), str(target_name).strip()),
+                (identity.market, identity.ticker, str(period).strip(), str(target_name).strip()),
             ).fetchone()
         return None if row is None else self._row_to_registry_item(row)
 
@@ -769,6 +838,7 @@ class ModelLifecycleService:
         target_name: str,
         model_name: str,
         validation_score: float,
+        market: str = "US",
     ) -> bool:
         if validation_score < PRODUCTION_MIN_SCORE:
             return False
@@ -792,6 +862,7 @@ class ModelLifecycleService:
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
         )
         prod_score = (
             float(current_prod["validation_score"])
@@ -813,6 +884,7 @@ class ModelLifecycleService:
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
             limit=20,
         )
         candidate_row = next(
@@ -828,6 +900,7 @@ class ModelLifecycleService:
             period=period,
             target_name=target_name,
             keep_model_name=model_name,
+            market=market,
         )
         self._upsert_registry(
             ticker=ticker,
@@ -849,6 +922,7 @@ class ModelLifecycleService:
             ),
             last_evaluated_at_utc=_utc_now_iso(),
             last_promoted_at_utc=_utc_now_iso(),
+            market=market,
         )
         logger.info(
             "Promoted production model ticker=%s period=%s target=%s model=%s score=%.4f",
@@ -918,6 +992,7 @@ class ModelLifecycleService:
     def register_training_result(self, result: TrainingRunResult, retrain_type: str) -> dict[str, Any]:
         """Insert/refresh registry row for one training result and attempt promotion."""
         metrics_summary = dict(result.metrics or {})
+        market = normalize_market(metrics_summary.get("market") or "US")
         task_type = str(metrics_summary.get("task_type", result.task_type)).lower()
         base_score = self._validation_score(
             metrics_summary=metrics_summary,
@@ -928,6 +1003,7 @@ class ModelLifecycleService:
             ticker=result.ticker,
             model_period=result.period,
             model_name=result.model_name,
+            market=market,
         )
         score = self.feedback_service.blend_validation_with_feedback(
             validation_score=base_score,
@@ -1013,6 +1089,7 @@ class ModelLifecycleService:
             notes="Generated by automatic lifecycle training workflow.",
             last_trained_at_utc=metrics_summary.get("generated_at_utc") or _utc_now_iso(),
             last_evaluated_at_utc=_utc_now_iso(),
+            market=market,
         )
 
         promoted = False
@@ -1023,9 +1100,11 @@ class ModelLifecycleService:
                 target_name=result.target_name,
                 model_name=result.model_name,
                 validation_score=score,
+                market=market,
             )
 
         return {
+            "market": market,
             "ticker": result.ticker,
             "period": result.period,
             "target_name": result.target_name,
@@ -1047,7 +1126,10 @@ class ModelLifecycleService:
             return 0
 
         files = sorted(
-            base_dir.glob("*/*/*/*/metrics_summary.json"),
+            {
+                *base_dir.glob("*/*/*/*/metrics_summary.json"),
+                *base_dir.glob("HK/*/*/*/*/metrics_summary.json"),
+            },
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )[: max(1, int(limit))]
@@ -1055,7 +1137,14 @@ class ModelLifecycleService:
         for metrics_path in files:
             try:
                 relative = metrics_path.relative_to(base_dir)
-                ticker, period, target_name, model_name, _ = relative.parts
+                if relative.parts[0] == "HK" and len(relative.parts) == 6:
+                    market = "HK"
+                    ticker, period, target_name, model_name, _ = relative.parts[1:]
+                elif len(relative.parts) == 5:
+                    market = "US"
+                    ticker, period, target_name, model_name, _ = relative.parts
+                else:
+                    continue
                 metrics_summary = _safe_json_load(metrics_path.read_text(encoding="utf-8"), {})
                 task_type = str(metrics_summary.get("task_type", "")).lower()
                 base_score = self._validation_score(
@@ -1067,6 +1156,7 @@ class ModelLifecycleService:
                     ticker=ticker,
                     model_period=period,
                     model_name=model_name,
+                    market=market,
                 )
                 score = self.feedback_service.blend_validation_with_feedback(
                     validation_score=base_score,
@@ -1144,6 +1234,7 @@ class ModelLifecycleService:
                     ticker=ticker,
                     period=period,
                     target_name=target_name,
+                    market=market,
                     limit=20,
                 )
                 existing = next(
@@ -1184,6 +1275,7 @@ class ModelLifecycleService:
                     notes="Synced from saved artifact with outcome feedback.",
                     last_trained_at_utc=metrics_summary.get("generated_at_utc"),
                     last_evaluated_at_utc=_utc_now_iso(),
+                    market=market,
                 )
                 synced += 1
             except Exception as exc:  # pragma: no cover - defensive guard
@@ -1438,9 +1530,11 @@ class ModelLifecycleService:
         """Refresh registry scores and promote reliable challengers."""
         rows = [
             row
+            for market in ("US", "HK")
             for target in (TRADING_TARGET_NAME, OUTPERFORMANCE_TARGET_NAME)
             for row in self.list_registry(
                 target_name=target,
+                market=market,
                 limit=max(1, int(limit)),
             )
             if row["status"] in {"candidate", "production"}
@@ -1458,6 +1552,7 @@ class ModelLifecycleService:
                 ticker=row["ticker"],
                 model_period=row["period"],
                 model_name=row["model_name"],
+                market=row.get("market") or "US",
             )
             combined_score = (
                 base_score
@@ -1520,6 +1615,7 @@ class ModelLifecycleService:
                 last_trained_at_utc=row.get("last_trained_at_utc"),
                 last_evaluated_at_utc=_utc_now_iso(),
                 last_promoted_at_utc=row.get("last_promoted_at_utc"),
+                market=row.get("market") or "US",
             )
             updated += 1
             if effective_status == "candidate" and validated:
@@ -1529,6 +1625,7 @@ class ModelLifecycleService:
                     target_name=row["target_name"],
                     model_name=row["model_name"],
                     validation_score=combined_score,
+                    market=row.get("market") or "US",
                 ):
                     promoted += 1
         return {"updated": updated, "promoted": promoted}
@@ -1634,9 +1731,11 @@ class ModelLifecycleService:
         target_name: str = DEFAULT_TARGET_NAME,
         requested_model_name: str | None = None,
         periods: tuple[str, ...] | list[str] | None = None,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         """Return validated runtime candidates ranked across training windows."""
-        clean_ticker = str(ticker).strip().upper()
+        clean_market = normalize_market(market)
+        clean_ticker = resolve_security(ticker, clean_market).ticker
         requested_periods = tuple(
             dict.fromkeys(
                 str(item).strip()
@@ -1648,12 +1747,18 @@ class ModelLifecycleService:
         attempts: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
 
-        registry_rows = self.list_registry(target_name=clean_target, limit=1000)
+        registry_rows = self.list_registry(
+            target_name=clean_target,
+            market=clean_market,
+            limit=1000,
+        )
         eligible_rows = [
             row
             for row in registry_rows
             if row["period"] in requested_periods
-            and row["ticker"] in {clean_ticker, "GLOBAL"}
+            and row["ticker"] in (
+                {clean_ticker, "GLOBAL"} if clean_market == "US" else {clean_ticker}
+            )
             and row["status"] in {"production", "candidate"}
             and bool(row["is_validated"])
             and int(
@@ -1665,6 +1770,7 @@ class ModelLifecycleService:
                 ticker=row["ticker"],
                 model_period=row["period"],
                 model_name=row["model_name"],
+                market=clean_market,
             )
             metrics_summary = dict(row.get("metrics_summary") or {})
             base_score = float(
@@ -1699,6 +1805,7 @@ class ModelLifecycleService:
             seen.add(key)
             attempts.append(
                 {
+                    "market": clean_market,
                     "ticker": key[0],
                     "period": key[1],
                     "model_name": key[2],
@@ -1730,6 +1837,7 @@ class ModelLifecycleService:
                 if key not in seen:
                     attempts.append(
                         {
+                            "market": clean_market,
                             "ticker": key[0],
                             "period": key[1],
                             "model_name": key[2],
@@ -1748,12 +1856,14 @@ class ModelLifecycleService:
         ticker: str,
         period: str,
         target_name: str,
+        market: str = "US",
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         rows = self.list_registry(
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
             limit=max(1, int(limit)),
         )
         metrics: list[dict[str, Any]] = []
@@ -1762,6 +1872,7 @@ class ModelLifecycleService:
             value = self._extract_metrics_value(summary)
             metrics.append(
                 {
+                    "market": row["market"],
                     "ticker": row["ticker"],
                     "model_name": row["model_name"],
                     "status": row["status"],

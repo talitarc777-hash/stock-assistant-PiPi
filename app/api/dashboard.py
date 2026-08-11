@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -23,6 +24,7 @@ from app.services.market_data import (
     MarketDataError,
     get_price_history,
 )
+from app.services.market_config import resolve_security
 from app.services.scoring import ScoringInputError, score_from_indicators
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,10 @@ class ChartDataResponse(BaseModel):
     """Response model for /chart-data."""
 
     ticker: str
+    market: str = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
     period: str
     points: int
     series: list[ChartSeriesPoint]
@@ -142,6 +148,7 @@ def chart_data(
         pattern=PERIOD_PATTERN,
         description="History period, e.g. 1y, 5y, max",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> ChartDataResponse:
     """
     Return chart-ready OHLCV + indicator series with ISO dates.
@@ -155,7 +162,7 @@ def chart_data(
     """
     logger.info("Request /chart-data ticker=%s period=%s", ticker, period)
     try:
-        price_df = get_price_history(ticker=ticker, period=period)
+        price_df = get_price_history(ticker=ticker, period=period, market=market)
         indicators_df = add_technical_indicators(price_df)
     except InvalidTickerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -201,8 +208,13 @@ def chart_data(
         ScoreSeriesPoint(**to_json_safe_dict(row)) for row in score_df.to_dict(orient="records")
     ]
 
+    identity = resolve_security(ticker, market)
     return ChartDataResponse(
-        ticker=ticker.strip().upper(),
+        ticker=identity.ticker,
+        market=identity.market,
+        provider_symbol=identity.provider_symbol,
+        currency=identity.currency,
+        currency_symbol=identity.currency_symbol,
         period=period,
         points=len(series),
         series=series,

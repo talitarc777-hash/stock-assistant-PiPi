@@ -21,6 +21,12 @@ from typing import Any
 from app.core.settings import get_settings
 from app.models.account_ledger import LEDGER_EVENT_TYPES
 from app.services.market_data import get_price_history
+from app.services.market_config import (
+    MARKET_CONFIGS,
+    get_hk_board_lot,
+    normalize_market,
+    resolve_security,
+)
 from app.services.monthly_contribution_service import (
     START_MONTH,
     MonthlyContributionStore,
@@ -115,8 +121,9 @@ class AccountLedgerService:
         self._latest_price_ttl_seconds = 120.0
         self._initialize()
 
-    def _get_latest_price_cached(self, ticker: str) -> float:
-        clean_ticker = str(ticker).strip().upper()
+    def _get_latest_price_cached(self, ticker: str, market: str = "US") -> float:
+        identity = resolve_security(ticker, market)
+        clean_ticker = f"{identity.market}:{identity.ticker}"
         now_ts = datetime.now(UTC).timestamp()
         with self._latest_price_cache_lock:
             cached = self._latest_price_cache.get(clean_ticker)
@@ -125,7 +132,7 @@ class AccountLedgerService:
                 if expires_at > now_ts:
                     return float(value)
                 self._latest_price_cache.pop(clean_ticker, None)
-        df = get_price_history(clean_ticker, period="3mo")
+        df = get_price_history(identity.ticker, period="3mo", market=identity.market)
         latest_close = float(df.sort_values("date").iloc[-1]["close"])
         with self._latest_price_cache_lock:
             self._latest_price_cache[clean_ticker] = (
@@ -148,6 +155,19 @@ class AccountLedgerService:
         ).fetchone()
         return row is not None
 
+    @staticmethod
+    def _table_has_column(
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+    ) -> bool:
+        return any(
+            str(row["name"]) == str(column_name)
+            for row in connection.execute(
+                f"PRAGMA table_info({table_name})"
+            ).fetchall()
+        )
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -168,10 +188,20 @@ class AccountLedgerService:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(account_ledger_events)").fetchall()
+            }
+            if "market" not in columns:
+                conn.execute(
+                    "ALTER TABLE account_ledger_events "
+                    "ADD COLUMN market TEXT NOT NULL DEFAULT 'US'"
+                )
+            conn.execute("DROP INDEX IF EXISTS idx_ledger_unique_monthly")
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_unique_monthly
-                ON account_ledger_events(user_id, event_type, reference_month)
+                ON account_ledger_events(user_id, market, event_type, reference_month)
                 WHERE event_type = 'monthly_contribution'
                 """
             )
@@ -179,6 +209,12 @@ class AccountLedgerService:
                 """
                 CREATE INDEX IF NOT EXISTS idx_ledger_user_created
                 ON account_ledger_events(user_id, created_at, id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ledger_user_market_created
+                ON account_ledger_events(user_id, market, created_at, id)
                 """
             )
             conn.commit()
@@ -197,8 +233,10 @@ class AccountLedgerService:
         reference_month: str | None = None,
         metadata: dict[str, Any] | None = None,
         created_at: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         clean_user_id = _clean_user_id(user_id)
+        clean_market = normalize_market(market)
         normalized_type = str(event_type).strip().lower()
         if normalized_type not in LEDGER_EVENT_TYPES:
             raise AccountLedgerError(f"Unsupported event_type: {event_type}.")
@@ -216,8 +254,8 @@ class AccountLedgerService:
                     """
                     INSERT INTO account_ledger_events (
                         user_id, event_type, amount, ticker, quantity, price, reason,
-                        source, reference_month, created_at, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source, reference_month, created_at, metadata_json, market
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         clean_user_id,
@@ -231,6 +269,7 @@ class AccountLedgerService:
                         payload_month,
                         payload_created_at,
                         json.dumps(payload_metadata, ensure_ascii=False),
+                        clean_market,
                     ),
                 )
                 event_id = int(cursor.lastrowid)
@@ -243,8 +282,9 @@ class AccountLedgerService:
             raise AccountLedgerError("Failed to persist ledger event.") from exc
 
         logger.info(
-            "Ledger event created user_id=%s type=%s amount=%.2f ticker=%s month=%s source=%s",
+            "Ledger event created user_id=%s market=%s type=%s amount=%.2f ticker=%s month=%s source=%s",
             clean_user_id,
+            clean_market,
             normalized_type,
             float(amount),
             normalized_ticker or "",
@@ -271,6 +311,7 @@ class AccountLedgerService:
         return {
             "id": int(row["id"]),
             "user_id": row["user_id"],
+            "market": row["market"] if "market" in row.keys() else "US",
             "event_type": row["event_type"],
             "amount": float(row["amount"]),
             "ticker": row["ticker"],
@@ -289,10 +330,12 @@ class AccountLedgerService:
         limit: int = 200,
         offset: int = 0,
         event_types: list[str] | None = None,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         clean_user_id = _clean_user_id(user_id)
-        sql = "SELECT * FROM account_ledger_events WHERE user_id = ?"
-        params: list[Any] = [clean_user_id]
+        clean_market = normalize_market(market)
+        sql = "SELECT * FROM account_ledger_events WHERE user_id = ? AND market = ?"
+        params: list[Any] = [clean_user_id, clean_market]
         if event_types:
             normalized = [item.strip().lower() for item in event_types if item.strip()]
             if normalized:
@@ -312,6 +355,7 @@ class AccountLedgerService:
         limit: int = 200,
         offset: int = 0,
         event_types: list[str] | None = None,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         """Return immutable account history rows with running balance context.
 
@@ -325,7 +369,11 @@ class AccountLedgerService:
             for item in (event_types or [])
             if str(item).strip()
         }
-        chronological_events = self.list_events_chronological(user_id=user_id)
+        clean_market = normalize_market(market)
+        chronological_events = self.list_events_chronological(
+            user_id=user_id,
+            market=clean_market,
+        )
         running_cash = 0.0
         running_quantities: dict[str, float] = {}
         history_rows: list[dict[str, Any]] = []
@@ -354,6 +402,7 @@ class AccountLedgerService:
             history_row = {
                 "id": int(event["id"]),
                 "user_id": event["user_id"],
+                "market": clean_market,
                 "event_type": event["event_type"],
                 "created_at": event["created_at"],
                 "ticker": event.get("ticker"),
@@ -375,8 +424,9 @@ class AccountLedgerService:
 
         newest_first = list(reversed(history_rows))
         logger.info(
-            "Account history rebuilt user_id=%s events=%d returned=%d",
+            "Account history rebuilt user_id=%s market=%s events=%d returned=%d",
             _clean_user_id(user_id),
+            clean_market,
             len(history_rows),
             min(len(newest_first), max(1, int(limit))),
         )
@@ -388,11 +438,13 @@ class AccountLedgerService:
         self,
         user_id: str,
         event_types: list[str] | None = None,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         """Return immutable ledger events oldest-first for rebuilding curves/state."""
         clean_user_id = _clean_user_id(user_id)
-        sql = "SELECT * FROM account_ledger_events WHERE user_id = ?"
-        params: list[Any] = [clean_user_id]
+        clean_market = normalize_market(market)
+        sql = "SELECT * FROM account_ledger_events WHERE user_id = ? AND market = ?"
+        params: list[Any] = [clean_user_id, clean_market]
         if event_types:
             normalized = [item.strip().lower() for item in event_types if item.strip()]
             if normalized:
@@ -411,6 +463,7 @@ class AccountLedgerService:
         amount: float,
         source: str = "web",
         reason: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         normalized_month = _clean_month(month)
         numeric_amount = float(amount)
@@ -424,6 +477,7 @@ class AccountLedgerService:
             source=source,
             reference_month=normalized_month,
             metadata={"month": normalized_month},
+            market=market,
         )
 
     def create_manual_deposit(
@@ -432,6 +486,7 @@ class AccountLedgerService:
         amount: float,
         source: str = "web",
         reason: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         numeric_amount = float(amount)
         if numeric_amount <= 0:
@@ -442,6 +497,7 @@ class AccountLedgerService:
             amount=numeric_amount,
             reason=reason or "manual deposit",
             source=source,
+            market=market,
         )
 
     def create_withdrawal(
@@ -450,12 +506,13 @@ class AccountLedgerService:
         amount: float,
         source: str = "web",
         reason: str | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         numeric_amount = float(amount)
         if numeric_amount <= 0:
             raise AccountLedgerError("amount must be greater than 0.")
 
-        summary = self.build_account_summary(user_id=user_id)
+        summary = self.build_account_summary(user_id=user_id, market=market)
         if summary["cash"] < numeric_amount:
             raise AccountLedgerError("Insufficient cash for withdrawal.")
         return self._insert_event(
@@ -464,6 +521,7 @@ class AccountLedgerService:
             amount=-numeric_amount,
             reason=reason or "withdrawal",
             source=source,
+            market=market,
         )
 
     def create_trade_event(
@@ -477,7 +535,10 @@ class AccountLedgerService:
         source: str = "trader",
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
+        clean_market = normalize_market(market)
+        identity = resolve_security(ticker, clean_market)
         normalized_action = str(action).strip().lower()
         if normalized_action not in {"buy", "sell"}:
             raise AccountLedgerError("trade action must be buy or sell.")
@@ -490,12 +551,21 @@ class AccountLedgerService:
         if not numeric_quantity.is_integer():
             raise AccountLedgerError("quantity must be a whole number.")
         numeric_quantity = float(int(numeric_quantity))
+        board_lot = get_hk_board_lot(identity.ticker) if clean_market == "HK" else 1
+        if clean_market == "HK" and board_lot is None:
+            raise AccountLedgerError(
+                "Board-lot metadata is unavailable for this HK ticker; trade was not submitted."
+            )
+        if board_lot and int(numeric_quantity) % int(board_lot) != 0:
+            raise AccountLedgerError(
+                f"HK quantity must be a multiple of the {board_lot}-share board lot."
+            )
         if numeric_price <= 0:
             raise AccountLedgerError("price must be greater than 0.")
 
         gross_amount = numeric_quantity * numeric_price
         hkd_per_usd_rate = float(get_settings().hkd_per_usd_rate)
-        fee_amount = get_trade_admin_fee_usd()
+        fee_amount = TRADE_ADMIN_FEE_HKD if clean_market == "HK" else get_trade_admin_fee_usd()
         if normalized_action == "buy":
             total_cost = gross_amount + fee_amount
             clean_user_id = _clean_user_id(user_id)
@@ -504,19 +574,19 @@ class AccountLedgerService:
                     """
                     SELECT COALESCE(SUM(amount), 0) AS cash
                     FROM account_ledger_events
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND market = ?
                     """,
-                    (clean_user_id,),
+                    (clean_user_id, clean_market),
                 ).fetchone()
             cash_available = float(row["cash"] if row is not None else 0.0)
             if cash_available < total_cost:
                 raise AccountLedgerError(
-                    "Insufficient USD cash for the trade value and converted HKD 50 administrative cost."
+                    f"Insufficient {MARKET_CONFIGS[clean_market].currency} cash for the trade value and fee."
                 )
             amount = -total_cost
         else:
-            holdings, _ = self._rebuild_holdings(user_id)
-            holding = holdings.get(str(ticker).strip().upper())
+            holdings, _ = self._rebuild_holdings(user_id, market=clean_market)
+            holding = holdings.get(identity.ticker)
             if holding is None or holding.quantity + 1e-8 < numeric_quantity:
                 raise AccountLedgerError("Insufficient holding quantity for sell trade.")
             amount = gross_amount - fee_amount
@@ -527,23 +597,27 @@ class AccountLedgerService:
             {
                 "fee_amount": fee_amount,
                 "fee_amount_hkd": TRADE_ADMIN_FEE_HKD,
-                "fee_currency": "USD",
+                "fee_currency": MARKET_CONFIGS[clean_market].currency,
                 "fee_original_currency": "HKD",
                 "hkd_per_usd_rate": hkd_per_usd_rate,
                 "gross_amount": gross_amount,
                 "minimum_trade_quantity": MIN_TRADE_QUANTITY,
+                "market": clean_market,
+                "provider_symbol": identity.provider_symbol,
+                "board_lot": board_lot,
             }
         )
         return self._insert_event(
             user_id=user_id,
             event_type=event_type,
             amount=amount,
-            ticker=ticker,
+            ticker=identity.ticker,
             quantity=numeric_quantity,
             price=numeric_price,
             reason=reason or f"{normalized_action} trade",
             source=source,
             metadata=event_metadata,
+            market=clean_market,
         )
 
     def list_monthly_contribution_records(self, user_id: str) -> list[dict[str, Any]]:
@@ -689,16 +763,22 @@ class AccountLedgerService:
                 )
         return rows
 
-    def _rebuild_holdings(self, user_id: str) -> tuple[dict[str, _HoldingState], float]:
+    def _rebuild_holdings(
+        self,
+        user_id: str,
+        market: str = "US",
+    ) -> tuple[dict[str, _HoldingState], float]:
         clean_user_id = _clean_user_id(user_id)
+        clean_market = normalize_market(market)
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM account_ledger_events
-                WHERE user_id = ? AND event_type IN ('buy_trade', 'sell_trade')
+                WHERE user_id = ? AND market = ?
+                  AND event_type IN ('buy_trade', 'sell_trade')
                 ORDER BY id ASC
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             ).fetchall()
 
         holdings: dict[str, _HoldingState] = {}
@@ -749,21 +829,28 @@ class AccountLedgerService:
         self,
         user_id: str,
         latest_prices: dict[str, float] | None = None,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         """Return current open holdings rebuilt from immutable buy/sell events."""
-        summary = self.build_account_summary(user_id=user_id, latest_prices=latest_prices)
+        summary = self.build_account_summary(
+            user_id=user_id,
+            latest_prices=latest_prices,
+            market=market,
+        )
         return summary["holdings"]
 
     def list_recent_trade_events(
         self,
         user_id: str,
         limit: int = 20,
+        market: str = "US",
     ) -> list[dict[str, Any]]:
         """Return recent executed buy/sell trades derived from immutable ledger rows."""
         history_rows = self.list_account_history(
             user_id=user_id,
             limit=max(limit * 3, limit),
             event_types=["buy_trade", "sell_trade"],
+            market=market,
         )
         trades: list[dict[str, Any]] = []
         for row in history_rows:
@@ -775,6 +862,7 @@ class AccountLedgerService:
                 {
                     "id": int(row["id"]),
                     "user_id": row["user_id"],
+                    "market": normalize_market(market),
                     "created_at": row["created_at"],
                     "event_type": row["event_type"],
                     "ticker": str(row.get("ticker") or "").upper(),
@@ -798,16 +886,18 @@ class AccountLedgerService:
         self,
         user_id: str,
         latest_prices: dict[str, float] | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         clean_user_id = _clean_user_id(user_id)
+        clean_market = normalize_market(market)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT COALESCE(SUM(amount), 0) AS cash
                 FROM account_ledger_events
-                WHERE user_id = ?
+                WHERE user_id = ? AND market = ?
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             ).fetchone()
             cash_value = float(row["cash"] if row is not None else 0.0)
 
@@ -815,19 +905,19 @@ class AccountLedgerService:
                 """
                 SELECT COALESCE(SUM(amount), 0) AS net_deposits
                 FROM account_ledger_events
-                WHERE user_id = ?
+                WHERE user_id = ? AND market = ?
                   AND event_type IN ('monthly_contribution', 'manual_deposit', 'withdrawal')
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             ).fetchone()
             net_deposits = float(net_row["net_deposits"] if net_row is not None else 0.0)
 
-        holdings_map, realized_pnl = self._rebuild_holdings(clean_user_id)
+        holdings_map, realized_pnl = self._rebuild_holdings(clean_user_id, market=clean_market)
         price_map = dict(latest_prices or {})
         if holdings_map:
             missing = [ticker for ticker in holdings_map if ticker not in price_map]
             for ticker in missing:
-                price_map[ticker] = self._get_latest_price_cached(ticker)
+                price_map[ticker] = self._get_latest_price_cached(ticker, clean_market)
 
         holdings_rows: list[dict[str, Any]] = []
         holdings_value = 0.0
@@ -841,6 +931,10 @@ class AccountLedgerService:
             holdings_rows.append(
                 {
                     "ticker": ticker,
+                    "market": clean_market,
+                    "currency": MARKET_CONFIGS[clean_market].currency,
+                    "currency_symbol": MARKET_CONFIGS[clean_market].currency_symbol,
+                    "board_lot": get_hk_board_lot(ticker) if clean_market == "HK" else 1,
                     "quantity": state.quantity,
                     "avg_entry_price": state.avg_entry_price,
                     "current_price": market_price,
@@ -857,8 +951,9 @@ class AccountLedgerService:
 
         snapshot_time = _utc_now()
         logger.info(
-            "Account summary rebuilt user_id=%s cash=%.2f holdings_value=%.2f total_equity=%.2f realized=%.2f unrealized=%.2f holdings=%d",
+            "Account summary rebuilt user_id=%s market=%s cash=%.2f holdings_value=%.2f total_equity=%.2f realized=%.2f unrealized=%.2f holdings=%d",
             clean_user_id,
+            clean_market,
             cash_value,
             holdings_value,
             cash_value + holdings_value,
@@ -869,6 +964,9 @@ class AccountLedgerService:
 
         return {
             "user_id": clean_user_id,
+            "market": clean_market,
+            "currency": MARKET_CONFIGS[clean_market].currency,
+            "currency_symbol": MARKET_CONFIGS[clean_market].currency_symbol,
             "as_of": snapshot_time,
             "last_updated": snapshot_time,
             # The live equity curve appends the same snapshot as its latest point,
@@ -889,13 +987,15 @@ class AccountLedgerService:
         user_id: str,
         *,
         reset_monthly_contributions: bool = True,
+        market: str = "US",
     ) -> dict[str, Any]:
-        """Delete one profile's simulated account records from persistent storage.
+        """Delete one profile-market's simulated account records from storage.
 
         This is intentionally profile-scoped and destructive. It does not touch
         other profiles or any model artifact files.
         """
         clean_user_id = _clean_user_id(user_id)
+        clean_market = normalize_market(market)
         deleted_ledger_rows = 0
         deleted_monthly_contribution_rows = 0
         deleted_live_trade_rows = 0
@@ -914,13 +1014,14 @@ class AccountLedgerService:
                     """
                     SELECT COUNT(1) AS cnt
                     FROM account_ledger_events
-                    WHERE user_id = ? AND event_type = 'monthly_contribution'
+                    WHERE user_id = ? AND market = ?
+                      AND event_type = 'monthly_contribution'
                     """,
-                    (clean_user_id,),
+                    (clean_user_id, clean_market),
                 ).fetchone()
                 cursor = conn.execute(
-                    "DELETE FROM account_ledger_events WHERE user_id = ?",
-                    (clean_user_id,),
+                    "DELETE FROM account_ledger_events WHERE user_id = ? AND market = ?",
+                    (clean_user_id, clean_market),
                 )
                 deleted_ledger_rows = int(cursor.rowcount or 0)
                 deleted_monthly_contribution_rows = (
@@ -930,59 +1031,75 @@ class AccountLedgerService:
                 cursor = conn.execute(
                     """
                     DELETE FROM account_ledger_events
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND market = ?
                       AND event_type IN ('manual_deposit', 'withdrawal', 'buy_trade', 'sell_trade', 'fee')
                     """,
-                    (clean_user_id,),
+                    (clean_user_id, clean_market),
                 )
                 deleted_ledger_rows = int(cursor.rowcount or 0)
                 cursor_mc = conn.execute(
                     """
                     SELECT COUNT(1) AS cnt
                     FROM account_ledger_events
-                    WHERE user_id = ? AND event_type = 'monthly_contribution'
+                    WHERE user_id = ? AND market = ?
+                      AND event_type = 'monthly_contribution'
                     """,
-                    (clean_user_id,),
+                    (clean_user_id, clean_market),
                 ).fetchone()
                 deleted_monthly_contribution_rows = 0 if cursor_mc is None else 0
 
             # Live trader persistent tables (if present).
             if self._table_exists(conn, "live_trader_trade_log"):
+                if self._table_has_column(conn, "live_trader_trade_log", "market"):
+                    cursor = conn.execute(
+                        "DELETE FROM live_trader_trade_log WHERE user_id = ? AND market = ?",
+                        (clean_user_id, clean_market),
+                    )
+                elif clean_market == "US":
+                    cursor = conn.execute(
+                        "DELETE FROM live_trader_trade_log WHERE user_id = ?",
+                        (clean_user_id,),
+                    )
+                else:
+                    cursor = None
+                if cursor is not None:
+                    deleted_live_trade_rows = int(cursor.rowcount or 0)
+            if self._table_exists(conn, "live_trader_positions_market"):
                 cursor = conn.execute(
-                    "DELETE FROM live_trader_trade_log WHERE user_id = ?",
-                    (clean_user_id,),
+                    "DELETE FROM live_trader_positions_market WHERE user_id = ? AND market = ?",
+                    (clean_user_id, clean_market),
                 )
-                deleted_live_trade_rows = int(cursor.rowcount or 0)
-            if self._table_exists(conn, "live_trader_positions"):
+                deleted_live_position_rows += int(cursor.rowcount or 0)
+            # The original table contains only legacy US positions.
+            if clean_market == "US" and self._table_exists(conn, "live_trader_positions"):
                 cursor = conn.execute(
                     "DELETE FROM live_trader_positions WHERE user_id = ?",
                     (clean_user_id,),
                 )
-                deleted_live_position_rows = int(cursor.rowcount or 0)
+                deleted_live_position_rows += int(cursor.rowcount or 0)
 
-            # Legacy trader cash service tables (if present).
-            if self._table_exists(conn, "live_trader_accounts"):
+            # Legacy cash/monthly tables contain only the original US account.
+            if clean_market == "US" and self._table_exists(conn, "live_trader_accounts"):
                 cursor = conn.execute(
                     "DELETE FROM live_trader_accounts WHERE user_id = ?",
                     (clean_user_id,),
                 )
                 deleted_trader_cash_rows = int(cursor.rowcount or 0)
-            if self._table_exists(conn, "live_trader_monthly_contributions"):
+            if clean_market == "US" and self._table_exists(conn, "live_trader_monthly_contributions"):
                 cursor = conn.execute(
                     "DELETE FROM live_trader_monthly_contributions WHERE user_id = ?",
                     (clean_user_id,),
                 )
                 deleted_trader_contribution_rows = int(cursor.rowcount or 0)
 
-            # Separate monthly contribution store used by historical simulation
-            # APIs. This must be cleared as part of a true profile reset.
-            if self._table_exists(conn, "monthly_contributions"):
+            # Historical monthly contribution inputs are USD/US-only.
+            if clean_market == "US" and self._table_exists(conn, "monthly_contributions"):
                 cursor = conn.execute(
                     "DELETE FROM monthly_contributions WHERE user_id = ?",
                     (clean_user_id,),
                 )
                 deleted_monthly_store_rows = int(cursor.rowcount or 0)
-            if self._table_exists(conn, "monthly_contribution_settings"):
+            if clean_market == "US" and self._table_exists(conn, "monthly_contribution_settings"):
                 cursor = conn.execute(
                     "DELETE FROM monthly_contribution_settings WHERE user_id = ?",
                     (clean_user_id,),
@@ -992,8 +1109,9 @@ class AccountLedgerService:
             conn.commit()
 
         logger.warning(
-            "Virtual account reset user_id=%s ledger=%d live_trades=%d live_positions=%d trader_cash=%d trader_monthly=%d monthly_store=%d monthly_input=%d reset_monthly_contributions=%s",
+            "Virtual account reset user_id=%s market=%s ledger=%d live_trades=%d live_positions=%d trader_cash=%d trader_monthly=%d monthly_store=%d monthly_input=%d reset_monthly_contributions=%s",
             clean_user_id,
+            clean_market,
             deleted_ledger_rows,
             deleted_live_trade_rows,
             deleted_live_position_rows,
@@ -1005,6 +1123,9 @@ class AccountLedgerService:
         )
         return {
             "user_id": clean_user_id,
+            "market": clean_market,
+            "currency": MARKET_CONFIGS[clean_market].currency,
+            "currency_symbol": MARKET_CONFIGS[clean_market].currency_symbol,
             "reset_completed": True,
             "deleted_ledger_rows": deleted_ledger_rows,
             "deleted_live_trade_rows": deleted_live_trade_rows,
@@ -1017,9 +1138,15 @@ class AccountLedgerService:
             "message": "Reset completed for this profile.",
         }
 
-    def reset_profile_trading_activity(self, user_id: str) -> dict[str, Any]:
-        """Remove simulated trades/holdings while preserving profile funding."""
+    def reset_profile_trading_activity(
+        self,
+        user_id: str,
+        *,
+        market: str = "US",
+    ) -> dict[str, Any]:
+        """Remove one market's trades/holdings while preserving its funding."""
         clean_user_id = _clean_user_id(user_id)
+        clean_market = normalize_market(market)
         deleted_ledger_trade_rows = 0
         deleted_live_trade_rows = 0
         deleted_live_position_rows = 0
@@ -1031,10 +1158,10 @@ class AccountLedgerService:
                 """
                 SELECT COUNT(1) AS cnt
                 FROM account_ledger_events
-                WHERE user_id = ?
+                WHERE user_id = ? AND market = ?
                   AND event_type IN ('monthly_contribution', 'manual_deposit', 'withdrawal')
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             ).fetchone()
             preserved_funding_event_rows = (
                 0 if funding_row is None else int(funding_row["cnt"] or 0)
@@ -1043,36 +1170,62 @@ class AccountLedgerService:
             cursor = conn.execute(
                 """
                 DELETE FROM account_ledger_events
-                WHERE user_id = ? AND event_type IN ('buy_trade', 'sell_trade', 'fee')
+                WHERE user_id = ? AND market = ?
+                  AND event_type IN ('buy_trade', 'sell_trade', 'fee')
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             )
             deleted_ledger_trade_rows = int(cursor.rowcount or 0)
 
             if self._table_exists(conn, "live_trader_trade_log"):
+                if self._table_has_column(conn, "live_trader_trade_log", "market"):
+                    cursor = conn.execute(
+                        "DELETE FROM live_trader_trade_log WHERE user_id = ? AND market = ?",
+                        (clean_user_id, clean_market),
+                    )
+                elif clean_market == "US":
+                    cursor = conn.execute(
+                        "DELETE FROM live_trader_trade_log WHERE user_id = ?",
+                        (clean_user_id,),
+                    )
+                else:
+                    cursor = None
+                if cursor is not None:
+                    deleted_live_trade_rows = int(cursor.rowcount or 0)
+            if self._table_exists(conn, "live_trader_positions_market"):
                 cursor = conn.execute(
-                    "DELETE FROM live_trader_trade_log WHERE user_id = ?",
-                    (clean_user_id,),
+                    "DELETE FROM live_trader_positions_market WHERE user_id = ? AND market = ?",
+                    (clean_user_id, clean_market),
                 )
-                deleted_live_trade_rows = int(cursor.rowcount or 0)
-            if self._table_exists(conn, "live_trader_positions"):
+                deleted_live_position_rows += int(cursor.rowcount or 0)
+            if clean_market == "US" and self._table_exists(conn, "live_trader_positions"):
                 cursor = conn.execute(
                     "DELETE FROM live_trader_positions WHERE user_id = ?",
                     (clean_user_id,),
                 )
-                deleted_live_position_rows = int(cursor.rowcount or 0)
+                deleted_live_position_rows += int(cursor.rowcount or 0)
             if self._table_exists(conn, "model_decision_feedback"):
-                cursor = conn.execute(
-                    "DELETE FROM model_decision_feedback WHERE user_id = ?",
-                    (clean_user_id,),
-                )
-                deleted_feedback_rows = int(cursor.rowcount or 0)
+                if self._table_has_column(conn, "model_decision_feedback", "market"):
+                    cursor = conn.execute(
+                        "DELETE FROM model_decision_feedback WHERE user_id = ? AND market = ?",
+                        (clean_user_id, clean_market),
+                    )
+                elif clean_market == "US":
+                    cursor = conn.execute(
+                        "DELETE FROM model_decision_feedback WHERE user_id = ?",
+                        (clean_user_id,),
+                    )
+                else:
+                    cursor = None
+                if cursor is not None:
+                    deleted_feedback_rows = int(cursor.rowcount or 0)
             conn.commit()
 
         logger.warning(
-            "Virtual trading activity reset user_id=%s ledger_trades=%d live_trades=%d "
+            "Virtual trading activity reset user_id=%s market=%s ledger_trades=%d live_trades=%d "
             "live_positions=%d feedback=%d preserved_funding=%d",
             clean_user_id,
+            clean_market,
             deleted_ledger_trade_rows,
             deleted_live_trade_rows,
             deleted_live_position_rows,
@@ -1081,6 +1234,9 @@ class AccountLedgerService:
         )
         return {
             "user_id": clean_user_id,
+            "market": clean_market,
+            "currency": MARKET_CONFIGS[clean_market].currency,
+            "currency_symbol": MARKET_CONFIGS[clean_market].currency_symbol,
             "reset_completed": True,
             "deleted_ledger_trade_rows": deleted_ledger_trade_rows,
             "deleted_live_trade_rows": deleted_live_trade_rows,
@@ -1090,23 +1246,40 @@ class AccountLedgerService:
             "message": "Trades and holdings cleared; deposits and contribution settings were preserved.",
         }
 
-    def get_profile_diagnostics(self, user_id: str) -> dict[str, Any]:
-        """Return profile-scoped persistence diagnostics for troubleshooting."""
+    def get_profile_diagnostics(
+        self,
+        user_id: str,
+        *,
+        market: str = "US",
+    ) -> dict[str, Any]:
+        """Return profile-and-market persistence diagnostics."""
         clean_user_id = _clean_user_id(user_id)
-        summary = self.build_account_summary(clean_user_id)
+        clean_market = normalize_market(market)
+        summary = self.build_account_summary(clean_user_id, market=clean_market)
         with self._connect() as conn:
             ledger_row = conn.execute(
-                "SELECT COUNT(1) AS cnt FROM account_ledger_events WHERE user_id = ?",
-                (clean_user_id,),
+                "SELECT COUNT(1) AS cnt FROM account_ledger_events WHERE user_id = ? AND market = ?",
+                (clean_user_id, clean_market),
             ).fetchone()
             trade_row = None
             position_row = None
             if self._table_exists(conn, "live_trader_trade_log"):
-                trade_row = conn.execute(
-                    "SELECT COUNT(1) AS cnt FROM live_trader_trade_log WHERE user_id = ?",
-                    (clean_user_id,),
+                if self._table_has_column(conn, "live_trader_trade_log", "market"):
+                    trade_row = conn.execute(
+                        "SELECT COUNT(1) AS cnt FROM live_trader_trade_log WHERE user_id = ? AND market = ?",
+                        (clean_user_id, clean_market),
+                    ).fetchone()
+                elif clean_market == "US":
+                    trade_row = conn.execute(
+                        "SELECT COUNT(1) AS cnt FROM live_trader_trade_log WHERE user_id = ?",
+                        (clean_user_id,),
+                    ).fetchone()
+            if self._table_exists(conn, "live_trader_positions_market"):
+                position_row = conn.execute(
+                    "SELECT COUNT(1) AS cnt FROM live_trader_positions_market WHERE user_id = ? AND market = ?",
+                    (clean_user_id, clean_market),
                 ).fetchone()
-            if self._table_exists(conn, "live_trader_positions"):
+            elif clean_market == "US" and self._table_exists(conn, "live_trader_positions"):
                 position_row = conn.execute(
                     "SELECT COUNT(1) AS cnt FROM live_trader_positions WHERE user_id = ?",
                     (clean_user_id,),
@@ -1115,13 +1288,17 @@ class AccountLedgerService:
                 """
                 SELECT COUNT(1) AS cnt
                 FROM account_ledger_events
-                WHERE user_id = ? AND event_type = 'monthly_contribution'
+                WHERE user_id = ? AND market = ?
+                  AND event_type = 'monthly_contribution'
                 """,
-                (clean_user_id,),
+                (clean_user_id, clean_market),
             ).fetchone()
 
         return {
             "user_id": clean_user_id,
+            "market": clean_market,
+            "currency": MARKET_CONFIGS[clean_market].currency,
+            "currency_symbol": MARKET_CONFIGS[clean_market].currency_symbol,
             "loaded_from_storage": True,
             "ledger_row_count": 0 if ledger_row is None else int(ledger_row["cnt"] or 0),
             "trade_row_count": 0 if trade_row is None else int(trade_row["cnt"] or 0),

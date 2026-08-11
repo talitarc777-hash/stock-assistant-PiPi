@@ -37,6 +37,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from app.core.settings import get_settings
 from app.services.prediction_explanations import build_prediction_explanation
 from app.services.research_pipeline import build_feature_dataset
+from app.services.market_config import model_security_root, resolve_security
 from app.services.market_regime import assess_market_regime
 from app.services.outperformance_economics import evaluate_outperformance_economics
 from app.services.research_pipeline import OUTPERFORMANCE_ROUND_TRIP_COST_PCT
@@ -502,10 +503,11 @@ def _save_training_artifacts(
     predictions_df: pd.DataFrame,
     evaluation_df: pd.DataFrame,
     output_dir: str | Path | None = None,
+    market: str = "US",
 ) -> TrainingArtifact:
     """Persist one model, its metadata, and predictions to disk."""
     base_dir = Path(output_dir or get_settings().research_models_dir)
-    artifact_dir = base_dir / ticker / period / target_name / model_name
+    artifact_dir = model_security_root(base_dir, market, ticker) / period / target_name / model_name
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = artifact_dir / "model.pkl"
@@ -543,8 +545,10 @@ def train_baseline_model(
     task_type: str,
     model_name: str,
     output_dir: str | Path | None = None,
+    market: str = "US",
 ) -> TrainingRunResult:
     """Train one baseline model with expanding-window validation only."""
+    identity = resolve_security(ticker, market)
     uses_stationary_features = task_type == "regression"
     if uses_stationary_features and "close" in dataset_df.columns:
         dataset_df = prepare_stationary_feature_dataset(dataset_df)
@@ -665,7 +669,9 @@ def train_baseline_model(
 
     metrics = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "ticker": ticker,
+        "market": identity.market,
+        "ticker": identity.ticker,
+        "provider_symbol": identity.provider_symbol,
         "period": period,
         "target_name": target_name,
         "task_type": task_type,
@@ -701,6 +707,7 @@ def train_baseline_model(
         predictions_df=predictions_df,
         evaluation_df=evaluation_df,
         output_dir=output_dir,
+        market=market,
     )
 
     logger.info(
@@ -734,15 +741,19 @@ def train_baseline_models_for_ticker(
     output_dir: str | Path | None = None,
     include_gradient_boosting: bool = True,
     target_names: tuple[str, ...] | list[str] | None = None,
+    market: str = "US",
 ) -> list[TrainingRunResult]:
     """Train baseline classification and regression models for one ticker."""
-    ticker_symbol = ticker.strip().upper()
+    identity = resolve_security(ticker, market)
+    ticker_symbol = identity.ticker
+    benchmark_symbol = resolve_security(benchmark, identity.market).ticker
     dataset_df = build_feature_dataset(
         ticker=ticker_symbol,
         period=period,
-        benchmark=benchmark,
+        benchmark=benchmark_symbol,
         include_news_sentiment=include_news_sentiment,
         sentiment_model=sentiment_model,
+        market=identity.market,
     )
 
     classification_models = _get_default_model_names("classification")
@@ -764,11 +775,12 @@ def train_baseline_models_for_ticker(
                     task_type="classification",
                     model_name=model_name,
                     output_dir=output_dir,
+                    market=identity.market,
                 )
             )
 
     if "target_5d_outperform" in selected_targets:
-        if ticker_symbol == str(benchmark).strip().upper():
+        if ticker_symbol == benchmark_symbol:
             if len(selected_targets) == 1:
                 raise ModelTrainingError(
                     "A benchmark cannot train an outperformance model against itself."
@@ -784,6 +796,7 @@ def train_baseline_models_for_ticker(
                     task_type="classification",
                     model_name=model_name,
                     output_dir=output_dir,
+                    market=identity.market,
                 )
                 result.metrics["feature_schema_version"] = 2
                 result.metrics["stationary_features"] = True
@@ -812,6 +825,7 @@ def train_baseline_models_for_ticker(
                 task_type="regression",
                 model_name=model_name,
                 output_dir=output_dir,
+                market=identity.market,
             )
             result.metrics["feature_schema_version"] = 2
             result.metrics["stationary_features"] = True

@@ -15,23 +15,23 @@ _HOLDINGS_CACHE: TTLCache[list[dict[str, Any]]] = TTLCache(max_items=300)
 _EQUITY_CURVE_CACHE: TTLCache[dict[str, Any]] = TTLCache(max_items=200)
 
 
-def _summary_key(user_id: str) -> str:
-    return f"summary:{str(user_id).strip()}"
+def _summary_key(user_id: str, market: str = "US") -> str:
+    return f"summary:{str(user_id).strip()}:{str(market).strip().upper()}"
 
 
-def _holdings_key(user_id: str) -> str:
-    return f"holdings:{str(user_id).strip()}"
+def _holdings_key(user_id: str, market: str = "US") -> str:
+    return f"holdings:{str(user_id).strip()}:{str(market).strip().upper()}"
 
 
-def _equity_curve_key(user_id: str, limit: int) -> str:
-    return f"equity:{str(user_id).strip()}:{int(limit)}"
+def _equity_curve_key(user_id: str, limit: int, market: str = "US") -> str:
+    return f"equity:{str(user_id).strip()}:{str(market).strip().upper()}:{int(limit)}"
 
 
 def clear_user_virtual_account_cache(user_id: str) -> None:
     """Clear all cached virtual-account read views for one user."""
     clean_user_id = str(user_id).strip()
-    _SUMMARY_CACHE.invalidate(_summary_key(clean_user_id))
-    _HOLDINGS_CACHE.invalidate(_holdings_key(clean_user_id))
+    _SUMMARY_CACHE.invalidate_prefix(f"summary:{clean_user_id}:")
+    _HOLDINGS_CACHE.invalidate_prefix(f"holdings:{clean_user_id}:")
     _EQUITY_CURVE_CACHE.invalidate_prefix(f"equity:{clean_user_id}:")
 
 
@@ -40,8 +40,9 @@ def get_cached_summary(
     loader: Callable[[], dict[str, Any]],
     *,
     ttl_seconds: float = 8.0,
+    market: str = "US",
 ) -> dict[str, Any]:
-    key = _summary_key(user_id)
+    key = _summary_key(user_id, market)
     cached = _SUMMARY_CACHE.get(key)
     if cached is not None:
         return cached
@@ -55,8 +56,9 @@ def get_cached_holdings(
     loader: Callable[[], list[dict[str, Any]]],
     *,
     ttl_seconds: float = 8.0,
+    market: str = "US",
 ) -> list[dict[str, Any]]:
-    key = _holdings_key(user_id)
+    key = _holdings_key(user_id, market)
     cached = _HOLDINGS_CACHE.get(key)
     if cached is not None:
         return cached
@@ -71,8 +73,9 @@ def get_cached_equity_curve(
     loader: Callable[[], dict[str, Any]],
     *,
     ttl_seconds: float = 10.0,
+    market: str = "US",
 ) -> dict[str, Any]:
-    key = _equity_curve_key(user_id, limit)
+    key = _equity_curve_key(user_id, limit, market)
     cached = _EQUITY_CURVE_CACHE.get(key)
     if cached is not None:
         return cached

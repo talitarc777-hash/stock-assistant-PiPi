@@ -10,6 +10,7 @@ function labelByMode(mode, en, zh) {
 
 export default function ResetTradingAccountButton({
   userId,
+  market = "US",
   languageMode,
   onResetComplete,
 }) {
@@ -31,7 +32,7 @@ export default function ResetTradingAccountButton({
     setMessage("");
     setError("");
     try {
-      const response = await postVirtualTradingActivityReset(userId);
+      const response = await postVirtualTradingActivityReset(userId, market);
       setMessage(
         labelByMode(
           languageMode,

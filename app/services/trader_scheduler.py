@@ -249,6 +249,7 @@ class TraderSchedulerService:
         model_name: str | None,
         tickers: list[str] | None = None,
         max_attempts: int = 2,
+        market: str = "US",
     ) -> LiveStatus:
         """Run live trader with a tiny retry budget for transient data-fetch failures."""
         last_error: Exception | None = None
@@ -259,6 +260,7 @@ class TraderSchedulerService:
                     user_id=user_id,
                     tickers=tickers,
                     model_name=model_name,
+                    market=market,
                 )
             except Exception as exc:  # pragma: no cover - runtime defensive guard
                 last_error = exc
@@ -366,6 +368,7 @@ class TraderSchedulerService:
         user_id: str,
         tickers: list[str] | None = None,
         model_name: str | None = None,
+        market: str = "US",
     ) -> LiveStatus:
         """Run one immediate manual cycle using the same lock as scheduler runs."""
         clean_user_id = str(user_id).strip()
@@ -384,9 +387,13 @@ class TraderSchedulerService:
             self._cadence_seconds = state.interval_seconds
 
         try:
-            contribution_event = get_account_ledger_service().apply_recurring_monthly_contribution_if_due(
-                clean_user_id,
-                source="scheduler",
+            contribution_event = (
+                get_account_ledger_service().apply_recurring_monthly_contribution_if_due(
+                    clean_user_id,
+                    source="scheduler",
+                )
+                if str(market).strip().upper() == "US"
+                else None
             )
             if contribution_event is not None:
                 clear_user_virtual_account_cache(clean_user_id)
@@ -395,6 +402,7 @@ class TraderSchedulerService:
                 model_name=None,
                 tickers=tickers,
                 max_attempts=2,
+                market=market,
             )
             clear_user_virtual_account_cache(clean_user_id)
             tickers_processed = int(status.tickers_evaluated)

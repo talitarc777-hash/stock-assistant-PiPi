@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -38,6 +39,7 @@ def get_virtual_trader_live_sync(
     user_id: str = Query(..., min_length=1, max_length=120),
     recent_trade_limit: int = Query(20, ge=1, le=100),
     decision_limit: int = Query(100, ge=1, le=200),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderSyncResponse:
     """Return all frequently refreshed trader data without executing a model."""
     started = perf_counter()
@@ -47,19 +49,23 @@ def get_virtual_trader_live_sync(
             tickers=None,
             model_name=AUTO_TRADING_MODEL_NAME,
             auto_run=False,
+            **({"market": market} if market != "US" else {}),
         )
         recent_trades = get_account_ledger_service().list_recent_trade_events(
             user_id=user_id,
             limit=recent_trade_limit,
+            **({"market": market} if market != "US" else {}),
         )
         decisions_payload = list_live_virtual_trader_trades(
             user_id=user_id,
             limit=decision_limit,
             ticker=None,
+            **({"market": market} if market != "US" else {}),
         )
         watchlist, using_system_default, _profile = get_user_watchlist(user_id=user_id)
         payload = LiveTraderSyncResponse(
             user_id=user_id,
+            market=market,
             synced_at_utc=datetime.now(UTC).replace(microsecond=0).isoformat(),
             watchlist=watchlist,
             using_system_default_watchlist=using_system_default,
@@ -88,6 +94,7 @@ def get_virtual_trader_live_status(
     ticker: str | None = Query(default=None, min_length=1, max_length=15),
     model_name: str | None = Query(default=None, min_length=1, max_length=80),
     auto_run: bool = Query(False),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderStatusResponse:
     """Return current live virtual trader status, with optional immediate run."""
     started = perf_counter()
@@ -98,6 +105,7 @@ def get_virtual_trader_live_status(
                 user_id=user_id,
                 tickers=tickers,
                 model_name=AUTO_TRADING_MODEL_NAME,
+                **({"market": market} if market != "US" else {}),
             )
             clear_user_virtual_account_cache(user_id)
         else:
@@ -106,6 +114,7 @@ def get_virtual_trader_live_status(
                 tickers=tickers,
                 model_name=AUTO_TRADING_MODEL_NAME,
                 auto_run=False,
+                **({"market": market} if market != "US" else {}),
             )
         elapsed_ms = (perf_counter() - started) * 1000.0
         logger.info(
@@ -132,6 +141,7 @@ def get_virtual_trader_status_alias(
     ticker: str | None = Query(default=None, min_length=1, max_length=15),
     model_name: str | None = Query(default=None, min_length=1, max_length=80),
     auto_run: bool = Query(False),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderStatusResponse:
     """Alias endpoint for live status to keep API naming simple for clients."""
     return get_virtual_trader_live_status(
@@ -139,6 +149,7 @@ def get_virtual_trader_status_alias(
         ticker=ticker,
         model_name=model_name,
         auto_run=auto_run,
+        market=market,
     )
 
 
@@ -146,10 +157,12 @@ def get_virtual_trader_status_alias(
 def run_virtual_trader_now(request: LiveTraderRunRequest) -> LiveTraderStatusResponse:
     """Run live virtual trader decisions using the best available trading model."""
     try:
+        market_kwargs = {"market": request.market} if request.market != "US" else {}
         status = get_trader_scheduler_service().run_user_now(
             user_id=request.user_id,
             tickers=request.tickers,
             model_name=AUTO_TRADING_MODEL_NAME,
+            **market_kwargs,
         )
         clear_user_virtual_account_cache(request.user_id)
         return LiveTraderStatusResponse(**status.__dict__)
@@ -167,6 +180,7 @@ def get_virtual_trader_live_trades(
     user_id: str = Query(..., min_length=1, max_length=120),
     ticker: str | None = Query(default=None, min_length=1, max_length=15),
     limit: int = Query(50, ge=1, le=500),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderTradesResponse:
     """Return recent live simulated trade/decision records."""
     started = perf_counter()
@@ -175,6 +189,7 @@ def get_virtual_trader_live_trades(
             user_id=user_id,
             limit=limit,
             ticker=ticker.strip().upper() if ticker else None,
+            **({"market": market} if market != "US" else {}),
         )
         payload["count"] = len(payload.get("trades", []))
         elapsed_ms = (perf_counter() - started) * 1000.0
@@ -198,9 +213,15 @@ def get_virtual_trader_trades_alias(
     user_id: str = Query(..., min_length=1, max_length=120),
     ticker: str | None = Query(default=None, min_length=1, max_length=15),
     limit: int = Query(50, ge=1, le=500),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderTradesResponse:
     """Alias endpoint for live trades."""
-    return get_virtual_trader_live_trades(user_id=user_id, ticker=ticker, limit=limit)
+    return get_virtual_trader_live_trades(
+        user_id=user_id,
+        ticker=ticker,
+        limit=limit,
+        market=market,
+    )
 
 
 @router.get("/virtual-trader/decisions", response_model=LiveTraderTradesResponse)
@@ -208,6 +229,12 @@ def get_virtual_trader_decisions_alias(
     user_id: str = Query(..., min_length=1, max_length=120),
     ticker: str | None = Query(default=None, min_length=1, max_length=15),
     limit: int = Query(20, ge=1, le=500),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveTraderTradesResponse:
     """Decisions view currently mapped to live trade/decision log stream."""
-    return get_virtual_trader_live_trades(user_id=user_id, ticker=ticker, limit=limit)
+    return get_virtual_trader_live_trades(
+        user_id=user_id,
+        ticker=ticker,
+        limit=limit,
+        market=market,
+    )

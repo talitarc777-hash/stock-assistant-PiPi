@@ -29,6 +29,7 @@ export default function TransactionHistoryTable({
   hasMore = false,
   onLoadMore = null,
   errorMessage = "",
+  currencySymbol = "$",
 }) {
   const [filter, setFilter] = useState("all");
 
@@ -100,11 +101,11 @@ export default function TransactionHistoryTable({
                   </td>
                   <td>
                     {event.price !== null && event.price !== undefined
-                      ? formatMoney(event.price)
+                      ? `${currencySymbol}${formatMoney(event.price)}`
                       : "-"}
                   </td>
-                  <td>{formatMoney(event.cash_change)}</td>
-                  <td>{formatMoney(event.cash_balance_after)}</td>
+                  <td>{currencySymbol}{formatMoney(event.cash_change)}</td>
+                  <td>{currencySymbol}{formatMoney(event.cash_balance_after)}</td>
                   <td>{event.reason || "-"}</td>
                 </tr>
               ))

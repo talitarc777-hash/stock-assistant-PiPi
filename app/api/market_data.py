@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.services.market_data import (
 )
 from app.services.indicators import IndicatorInputError, add_technical_indicators
 from app.services.live_market_data_service import get_live_market_snapshot
+from app.services.market_config import resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,10 @@ class PriceHistorySummary(BaseModel):
     """Metadata summary for a ticker request."""
 
     ticker: str
+    market: str = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
     period: str
     rows: int
     start_date: str
@@ -83,6 +89,10 @@ class IndicatorsResponse(BaseModel):
     """Response payload for /indicators."""
 
     ticker: str
+    market: str = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
     period: str
     latest_close: float
     latest_snapshot: IndicatorRow
@@ -93,6 +103,11 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     """Typed response for near-live market snapshot endpoint."""
 
     fetched_at_utc: str
+    market: str = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
+    board_lot: int | None = None
     price_timestamp: str
     close: float
     open: float
@@ -125,11 +140,12 @@ def price_history(
         pattern=PERIOD_PATTERN,
         description="History period, e.g. 1y, 5y, max",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> PriceHistoryResponse:
     """Get cleaned OHLCV history and return a summary with latest 10 rows."""
     logger.info("Request /price-history ticker=%s period=%s", ticker, period)
     try:
-        df = get_price_history(ticker=ticker, period=period)
+        df = get_price_history(ticker=ticker, period=period, market=market)
     except InvalidTickerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EmptyDataError as exc:
@@ -144,8 +160,13 @@ def price_history(
     latest_df = df.tail(10).copy()
     latest_df["date"] = latest_df["date"].dt.strftime("%Y-%m-%d")
 
+    identity = resolve_security(ticker, market)
     summary = PriceHistorySummary(
-        ticker=ticker.strip().upper(),
+        ticker=identity.ticker,
+        market=identity.market,
+        provider_symbol=identity.provider_symbol,
+        currency=identity.currency,
+        currency_symbol=identity.currency_symbol,
         period=period,
         rows=int(len(df)),
         start_date=df.iloc[0]["date"].strftime("%Y-%m-%d"),
@@ -176,11 +197,12 @@ def indicators(
         pattern=PERIOD_PATTERN,
         description="History period, e.g. 1y, 5y, max",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> IndicatorsResponse:
     """Get latest indicator snapshot plus recent indicator rows."""
     logger.info("Request /indicators ticker=%s period=%s", ticker, period)
     try:
-        price_df = get_price_history(ticker=ticker, period=period)
+        price_df = get_price_history(ticker=ticker, period=period, market=market)
         indicators_df = add_technical_indicators(price_df)
     except InvalidTickerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -201,8 +223,13 @@ def indicators(
     latest_row["date"] = latest_row["date"].strftime("%Y-%m-%d")
     latest_30_df["date"] = latest_30_df["date"].dt.strftime("%Y-%m-%d")
 
+    identity = resolve_security(ticker, market)
     return IndicatorsResponse(
-        ticker=ticker.strip().upper(),
+        ticker=identity.ticker,
+        market=identity.market,
+        provider_symbol=identity.provider_symbol,
+        currency=identity.currency,
+        currency_symbol=identity.currency_symbol,
         period=period,
         latest_close=float(latest_row["close"]),
         latest_snapshot=IndicatorRow(**to_json_safe_dict(latest_row.to_dict())),
@@ -227,10 +254,11 @@ def market_data_live_snapshot(
         pattern=PERIOD_PATTERN,
         description="History period for fallback context, e.g. 3mo",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> LiveMarketSnapshotResponse:
     """Return latest near-live market snapshot (provider-delayed if applicable)."""
     try:
-        snapshot = get_live_market_snapshot(ticker=ticker, period=period)
+        snapshot = get_live_market_snapshot(ticker=ticker, period=period, market=market)
         return LiveMarketSnapshotResponse(**to_json_safe_dict(snapshot))
     except (InvalidTickerError, EmptyDataError, MarketDataError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.ticker_classification import (
@@ -25,6 +27,7 @@ class AccountLedgerEventResponse(OptionalClassifiedTickerResponse):
 
     id: int
     user_id: str
+    market: Literal["US", "HK"] = "US"
     event_type: str
     amount: float
     quantity: float | None = None
@@ -40,6 +43,9 @@ class AccountLedgerListResponse(BaseModel):
     """Ledger list response for one user."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     count: int
     limit: int | None = None
     offset: int | None = None
@@ -52,6 +58,7 @@ class VirtualAccountHistoryEventResponse(OptionalClassifiedTickerResponse):
 
     id: int
     user_id: str
+    market: Literal["US", "HK"] = "US"
     event_type: str
     created_at: str
     quantity: float | None = None
@@ -71,6 +78,9 @@ class VirtualAccountHistoryResponse(BaseModel):
     """Full immutable account history for one profile."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     count: int
     limit: int | None = None
     offset: int | None = None
@@ -82,6 +92,10 @@ class VirtualHoldingResponse(ClassifiedTickerResponse):
     """Derived holding state from immutable buy/sell ledger events."""
 
     quantity: float
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
+    board_lot: int | None = None
     avg_entry_price: float
     current_price: float
     market_value: float
@@ -94,6 +108,9 @@ class VirtualAccountHoldingsResponse(BaseModel):
     """Current holdings derived from immutable trade history."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     count: int
     holdings: list[VirtualHoldingResponse]
 
@@ -103,6 +120,7 @@ class VirtualAccountRecentTradeResponse(ClassifiedTickerResponse):
 
     id: int
     user_id: str
+    market: Literal["US", "HK"] = "US"
     created_at: str
     event_type: str
     quantity: float
@@ -121,6 +139,9 @@ class VirtualAccountRecentTradesResponse(BaseModel):
     """Recent buy/sell activity for one profile."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     count: int
     trades: list[VirtualAccountRecentTradeResponse]
 
@@ -129,6 +150,9 @@ class VirtualAccountSummaryResponse(BaseModel):
     """Derived account summary rebuilt from immutable ledger history."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     as_of: str
     last_updated: str | None = None
     curve_last_point_timestamp: str | None = None
@@ -157,6 +181,9 @@ class VirtualAccountEquityCurveResponse(BaseModel):
     """Profile-level equity curve plus latest consistency metadata."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     last_updated: str
     curve_last_point_timestamp: str | None = None
     latest_total_equity: float
@@ -168,6 +195,7 @@ class VirtualAccountDepositRequest(BaseModel):
     """Request payload to create a manual deposit event."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
     amount: float = Field(gt=0)
     reason: str | None = Field(default=None, max_length=200)
     source: str = Field(default="web", min_length=2, max_length=40)
@@ -177,6 +205,7 @@ class VirtualAccountWithdrawalRequest(BaseModel):
     """Request payload to create a withdrawal event."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
     amount: float = Field(gt=0)
     reason: str | None = Field(default=None, max_length=200)
     source: str = Field(default="web", min_length=2, max_length=40)
@@ -186,6 +215,7 @@ class VirtualAccountResetRequest(BaseModel):
     """Request payload for destructive profile-scoped account reset."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
     confirm_reset: bool = False
     reset_monthly_contributions: bool = True
 
@@ -194,6 +224,9 @@ class VirtualAccountResetResponse(BaseModel):
     """Response after resetting one profile's virtual account data."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     reset_completed: bool
     deleted_ledger_rows: int
     deleted_live_trade_rows: int
@@ -202,6 +235,7 @@ class VirtualAccountResetResponse(BaseModel):
     deleted_trader_contribution_rows: int
     deleted_monthly_contribution_rows: int
     deleted_monthly_store_rows: int
+    deleted_monthly_input_rows: int = 0
     message: str
 
 
@@ -209,6 +243,7 @@ class VirtualTradingActivityResetRequest(BaseModel):
     """Request payload for removing trades while preserving account funding."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
     confirm_reset: bool = False
 
 
@@ -216,6 +251,9 @@ class VirtualTradingActivityResetResponse(BaseModel):
     """Response after clearing one profile's simulated trades and holdings."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     reset_completed: bool
     deleted_ledger_trade_rows: int
     deleted_live_trade_rows: int
@@ -229,6 +267,9 @@ class VirtualAccountDiagnosticsResponse(BaseModel):
     """Profile-scoped persistence diagnostics snapshot."""
 
     user_id: str
+    market: Literal["US", "HK"] = "US"
+    currency: str = "USD"
+    currency_symbol: str = "$"
     loaded_from_storage: bool
     ledger_row_count: int
     trade_row_count: int

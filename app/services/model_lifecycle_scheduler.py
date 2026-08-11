@@ -442,6 +442,7 @@ class ModelLifecycleSchedulerService:
         ticker: str = "VOO",
         period: str = DEFAULT_PERIOD,
         target_name: str = DEFAULT_TARGET_NAME,
+        market: str = "US",
         log_limit: int = 8,
     ) -> dict[str, Any]:
         lifecycle = get_model_lifecycle_service()
@@ -449,6 +450,7 @@ class ModelLifecycleSchedulerService:
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
         )
         active_triggers = _safe_json_load(
             lifecycle.get_state("last_active_triggers_json"),
@@ -459,6 +461,7 @@ class ModelLifecycleSchedulerService:
             ticker=ticker,
             period=period,
             target_name=target_name,
+            market=market,
             limit=5,
         )
         with self._state_lock:

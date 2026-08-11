@@ -48,7 +48,7 @@ function businessSummaryText(profile, languageMode) {
   return labelByMode(languageMode, en, zh);
 }
 
-export default function HoldingsTable({ languageMode, holdings = [] }) {
+export default function HoldingsTable({ languageMode, holdings = [], market = "US", currencySymbol = "$" }) {
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [companyProfile, setCompanyProfile] = useState(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
@@ -78,8 +78,8 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
     setIsLoadingChart(true);
 
     const [profileResult, chartResult] = await Promise.allSettled([
-      fetchLiveMarketSnapshot(holding.ticker),
-      fetchChartData(holding.ticker, CHART_RANGES["1M"].period),
+      fetchLiveMarketSnapshot(holding.ticker, "3mo", market),
+      fetchChartData(holding.ticker, CHART_RANGES["1M"].period, market),
     ]);
 
     if (profileResult.status === "fulfilled") {
@@ -112,7 +112,8 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
     try {
       const payload = await fetchChartData(
         selectedHolding.ticker,
-        CHART_RANGES[rangeKey].period
+        CHART_RANGES[rangeKey].period,
+        market
       );
       setChartCache((current) => ({
         ...current,
@@ -155,6 +156,7 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
             <tr>
               <th>{labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}</th>
               <th>{labelByMode(languageMode, "Quantity", "\u6301\u6709\u6578\u91cf")}</th>
+              {market === "HK" ? <th>{labelByMode(languageMode, "Board Lot", "\u6bcf\u624b\u80a1\u6578")}</th> : null}
               <th>{labelByMode(languageMode, "Average Cost", "\u5e73\u5747\u6210\u672c")}</th>
               <th>{labelByMode(languageMode, "Current Price", "\u73fe\u50f9")}</th>
               <th>{labelByMode(languageMode, "Market Value", "\u5e02\u503c")}</th>
@@ -184,16 +186,17 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
                     </button>
                   </td>
                   <td>{Number(holding.quantity || 0).toFixed(0)}</td>
-                  <td>{formatMoney(holding.avg_entry_price)}</td>
-                  <td>{formatMoney(holding.current_price)}</td>
-                  <td>{formatMoney(holding.market_value)}</td>
-                  <td>{formatMoney(holding.unrealized_pnl)}</td>
+                  {market === "HK" ? <td>{holding.board_lot || "N/A"}</td> : null}
+                  <td>{currencySymbol}{formatMoney(holding.avg_entry_price)}</td>
+                  <td>{currencySymbol}{formatMoney(holding.current_price)}</td>
+                  <td>{currencySymbol}{formatMoney(holding.market_value)}</td>
+                  <td>{currencySymbol}{formatMoney(holding.unrealized_pnl)}</td>
                   <td>{formatPercent(holding.unrealized_pnl_pct)}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={market === "HK" ? 8 : 7}>
                   {labelByMode(languageMode, "No open holdings yet.", "\u76ee\u524d\u5c1a\u672a\u6709\u6301\u5009\u3002")}
                 </td>
               </tr>
@@ -262,7 +265,7 @@ export default function HoldingsTable({ languageMode, holdings = [] }) {
                   </div>
                   <div>
                     <span>{labelByMode(languageMode, "Current price", "\u73fe\u50f9")}</span>
-                    <strong>{formatMoney(companyProfile.close)}</strong>
+                    <strong>{currencySymbol}{formatMoney(companyProfile.close)}</strong>
                   </div>
                   <div>
                     <span>{labelByMode(languageMode, "Daily change", "\u55ae\u65e5\u8b8a\u52d5")}</span>
