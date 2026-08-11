@@ -19,10 +19,32 @@ default. For example:
 GET /market-data/live-snapshot?market=HK&ticker=0700
 GET /chart-data?market=HK&ticker=0700&period=1y
 GET /virtual-trader/live-status?market=HK&user_id=demo-user
-POST /virtual-trader/run-now {"user_id":"demo-user","market":"HK","tickers":["0700"]}
+POST /virtual-trader/run-now {"user_id":"demo-user","market":"HK"}
 GET /model-lifecycle/registry?market=HK&ticker=0700&target_name=target_5d_return
 GET /model-lifecycle/feedback?market=HK&ticker=0700&model_period=2y&model_name=linear_regression
 ```
+
+Omitting `tickers` from `POST /virtual-trader/run-now` is the normal UI flow:
+the backend resolves and processes the user's complete active HK watchlist. An
+explicit ticker array remains supported for tests and administration.
+
+## Active universe and decision display
+
+HK now uses the same persisted profile-watchlist mechanism as US. The additive
+`user_profiles.hk_watchlist` column stores each user's enrolled HK tickers. An
+empty value safely resolves to the starter universe `0005`, `0700`, `1810`,
+`3690`, and `9988`; existing profiles and all historical records are preserved.
+
+- `GET /user-watchlist?user_id=demo-user&market=HK` lists the active universe.
+- `POST /user-watchlist/add` validates the code against the cached official
+  HKEX list, persists it, and queues missing model training.
+- `POST /user-watchlist/remove` deactivates a code without deleting its model,
+  decision, position, or feedback history.
+- The HK dropdown selects charts/details only. It does not filter the persisted
+  latest-decision table or the scope of **Update decisions**.
+- The decision table displays the actual selected model and period. A rule
+  fallback is displayed as `Backup rules` with `Training pending` or `Fallback`,
+  never as though `auto_best` were a trained model family.
 
 ## Persistence and migration
 
@@ -38,12 +60,21 @@ models.
 
 ## Training and feedback
 
-If an activated HK ticker has no compatible artifact, one background training
-job is queued for that exact `HK + ticker + period`. Duplicate jobs are
-suppressed. The trained results use the same model families, feature pipeline,
+If an activated HK ticker has no current compatible artifact, one background
+training job is queued for that exact `HK + ticker + period`. Duplicate jobs
+are suppressed, and one serial worker drains the queue so several new tickers
+cannot start uncontrolled parallel training on the NanoPi. Current unvalidated
+artifacts are not retrained every decision cycle; stale/missing models are
+handled by activation and lifecycle rules. The trained results use the same model families, feature pipeline,
 walk-forward validation, lifecycle gates, and promotion scoring as US models.
 No model from another HK ticker or from the US market is accepted as an HK
 fallback.
+
+The existing trader scheduler is shared by US and HK. It keeps independent due
+times using `America/New_York` and `Asia/Hong_Kong`, including the HK lunch
+break, and processes every active ticker for each due market. The lifecycle
+scheduler runs HK active-ticker `2y`, `5y`, and `10y` workflows on the same
+daily, weekly, and monthly pattern as US, after each market's local close.
 
 An eligible HK model decision is recorded with `market=HK`. It matures only
 when five later rows exist in that ticker's Yahoo daily history. Because rows
@@ -97,6 +128,15 @@ sudo systemctl restart stock-assistant-api
 sudo systemctl status stock-assistant-api --no-pager -l
 curl -sS "http://127.0.0.1:8000/market-data/hk-security-metadata?ticker=1810" | python3 -m json.tool
 curl -sS "http://127.0.0.1:8000/market-data/hkex-metadata-status" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/user-watchlist?user_id=demo-user&market=HK" | python3 -m json.tool
+curl -sS -X POST "http://127.0.0.1:8000/virtual-trader/run-now" -H "Content-Type: application/json" -d '{"user_id":"demo-user","market":"HK"}' | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/virtual-trader/live-trades?user_id=demo-user&market=HK&limit=100" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/virtual-trader/scheduler-status" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/model-lifecycle/registry?market=HK&ticker=0700&target_name=target_5d_return&limit=100" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/model-lifecycle/registry?market=HK&ticker=1810&target_name=target_5d_return&limit=100" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/model-lifecycle/registry?market=HK&ticker=9988&target_name=target_5d_return&limit=100" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/model-lifecycle/feedback?market=HK&ticker=0700&model_period=2y&model_name=linear_regression&limit=100" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/virtual-trader/live-status?user_id=demo-user&market=US" | python3 -m json.tool
 ```
 
 The metadata database and tables are created automatically on the first status

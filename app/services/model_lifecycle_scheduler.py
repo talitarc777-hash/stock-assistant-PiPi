@@ -21,10 +21,12 @@ from app.services.model_lifecycle_service import (
     get_model_lifecycle_service,
 )
 from app.services.model_feedback_service import get_model_feedback_service
+from app.services.market_config import normalize_market
 
 logger = logging.getLogger(__name__)
 
 _EASTERN = ZoneInfo("America/New_York")
+_HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 _DAILY_AFTER_CLOSE = time(16, 30)
 _WEEKLY_AFTER_CLOSE = time(17, 0)
 _MONTHLY_AFTER_CLOSE = time(17, 30)
@@ -66,8 +68,20 @@ def _week_key(dt_et: datetime) -> str:
     return f"{iso.year:04d}-W{iso.week:02d}"
 
 
-def _combine_et(day: date, value: time) -> datetime:
-    return datetime(day.year, day.month, day.day, value.hour, value.minute, tzinfo=_EASTERN)
+def _combine_local(day: date, value: time, timezone: ZoneInfo) -> datetime:
+    return datetime(
+        day.year,
+        day.month,
+        day.day,
+        value.hour,
+        value.minute,
+        tzinfo=timezone,
+    )
+
+
+def _state_key(name: str, market: str) -> str:
+    clean_market = normalize_market(market)
+    return name if clean_market == "US" else f"{name}:{clean_market}"
 
 
 class ModelLifecycleSchedulerBusyError(Exception):
@@ -131,7 +145,12 @@ class ModelLifecycleSchedulerService:
             if self._stop_event.wait(_CADENCE_SECONDS):
                 break
 
-    def _due_workflow(self, now_et: datetime) -> tuple[str, str] | None:
+    def _due_workflow(
+        self,
+        now_et: datetime,
+        market: str = "US",
+    ) -> tuple[str, str] | None:
+        clean_market = normalize_market(market)
         lifecycle = get_model_lifecycle_service()
         day_key = now_et.date().isoformat()
         week_key = _week_key(now_et)
@@ -141,43 +160,60 @@ class ModelLifecycleSchedulerService:
         if (
             now_et.weekday() == 4
             and now_et.time() >= _WEEKLY_AFTER_CLOSE
-            and lifecycle.get_state("weekly_done_key") != week_key
+            and lifecycle.get_state(_state_key("weekly_done_key", clean_market)) != week_key
         ):
             return ("weekly_full", f"scheduled_weekly_close:{week_key}")
 
         if (
             now_et.date() == first_business
             and now_et.time() >= _MONTHLY_AFTER_CLOSE
-            and lifecycle.get_state("monthly_done_key") != month_key
+            and lifecycle.get_state(_state_key("monthly_done_key", clean_market)) != month_key
         ):
             return ("monthly_deep", f"scheduled_monthly_recalibration:{month_key}")
 
         if (
             _is_business_day(now_et.date())
             and now_et.time() >= _DAILY_AFTER_CLOSE
-            and lifecycle.get_state("daily_done_key") != day_key
+            and lifecycle.get_state(_state_key("daily_done_key", clean_market)) != day_key
         ):
             return ("daily_incremental", f"scheduled_daily_close:{day_key}")
 
         return None
 
-    def _mark_workflow_done(self, workflow_type: str, now_et: datetime) -> None:
+    def _mark_workflow_done(
+        self,
+        workflow_type: str,
+        now_et: datetime,
+        market: str = "US",
+    ) -> None:
+        clean_market = normalize_market(market)
         lifecycle = get_model_lifecycle_service()
         if workflow_type == "daily_incremental":
-            lifecycle.set_state("daily_done_key", now_et.date().isoformat())
+            lifecycle.set_state(
+                _state_key("daily_done_key", clean_market),
+                now_et.date().isoformat(),
+            )
         elif workflow_type == "weekly_full":
-            lifecycle.set_state("weekly_done_key", _week_key(now_et))
+            lifecycle.set_state(
+                _state_key("weekly_done_key", clean_market),
+                _week_key(now_et),
+            )
         elif workflow_type == "monthly_deep":
-            lifecycle.set_state("monthly_done_key", now_et.strftime("%Y-%m"))
+            lifecycle.set_state(
+                _state_key("monthly_done_key", clean_market),
+                now_et.strftime("%Y-%m"),
+            )
 
-    def _next_retrain_time_utc(self) -> str:
-        now_et = datetime.now(_EASTERN)
+    def _next_retrain_time_utc(self, market: str = "US") -> str:
+        clean_market = normalize_market(market)
+        timezone = _HONG_KONG if clean_market == "HK" else _EASTERN
+        now_et = datetime.now(timezone)
         candidates: list[datetime] = []
 
         # Next business-day daily run.
         d = now_et.date()
         while True:
-            daily_dt = _combine_et(d, _DAILY_AFTER_CLOSE)
+            daily_dt = _combine_local(d, _DAILY_AFTER_CLOSE, timezone)
             if _is_business_day(d) and daily_dt > now_et:
                 candidates.append(daily_dt)
                 break
@@ -187,16 +223,16 @@ class ModelLifecycleSchedulerService:
         wf = now_et.date()
         while wf.weekday() != 4:
             wf += timedelta(days=1)
-        weekly_dt = _combine_et(wf, _WEEKLY_AFTER_CLOSE)
+        weekly_dt = _combine_local(wf, _WEEKLY_AFTER_CLOSE, timezone)
         if weekly_dt <= now_et:
             wf += timedelta(days=7)
-            weekly_dt = _combine_et(wf, _WEEKLY_AFTER_CLOSE)
+            weekly_dt = _combine_local(wf, _WEEKLY_AFTER_CLOSE, timezone)
         candidates.append(weekly_dt)
 
         # Next first-business-day monthly run.
         my, mm = now_et.year, now_et.month
         monthly_day = _first_business_day(my, mm)
-        monthly_dt = _combine_et(monthly_day, _MONTHLY_AFTER_CLOSE)
+        monthly_dt = _combine_local(monthly_day, _MONTHLY_AFTER_CLOSE, timezone)
         if monthly_dt <= now_et:
             if mm == 12:
                 my += 1
@@ -204,7 +240,7 @@ class ModelLifecycleSchedulerService:
             else:
                 mm += 1
             monthly_day = _first_business_day(my, mm)
-            monthly_dt = _combine_et(monthly_day, _MONTHLY_AFTER_CLOSE)
+            monthly_dt = _combine_local(monthly_day, _MONTHLY_AFTER_CLOSE, timezone)
         candidates.append(monthly_dt)
 
         next_et = min(candidates)
@@ -345,15 +381,24 @@ class ModelLifecycleSchedulerService:
                     int(shadow_collection.get("recorded") or 0),
                     len(shadow_collection.get("errors") or []),
                 )
-            due = self._due_workflow(now_et)
+            due_workflows: list[tuple[str, datetime, str, str]] = []
+            for market, now_local in (
+                ("US", now_et),
+                ("HK", now_utc.astimezone(_HONG_KONG)),
+            ):
+                due = self._due_workflow(now_local, market)
+                if due:
+                    workflow_type, reason = due
+                    due_workflows.append((market, now_local, workflow_type, reason))
 
-            if due:
-                workflow_type, reason = due
-                lifecycle.run_training_workflow(
-                    workflow_type=workflow_type,
-                    trigger_reason=f"{source}:{reason}",
-                )
-                self._mark_workflow_done(workflow_type, now_et)
+            if due_workflows:
+                for market, now_local, workflow_type, reason in due_workflows:
+                    lifecycle.run_training_workflow(
+                        workflow_type=workflow_type,
+                        trigger_reason=f"{source}:{market}:{reason}",
+                        market=market,
+                    )
+                    self._mark_workflow_done(workflow_type, now_local, market)
             else:
                 if self._should_run_trigger_scan(now_utc):
                     active_triggers = lifecycle.detect_retrain_triggers(max_models=6)
@@ -395,6 +440,7 @@ class ModelLifecycleSchedulerService:
         workflow_type: str,
         trigger_reason: str = "manual_trigger",
         tickers: list[str] | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         acquired = self._run_lock.acquire(blocking=False)
         if not acquired:
@@ -417,6 +463,7 @@ class ModelLifecycleSchedulerService:
                 workflow_type=workflow_type,
                 trigger_reason=f"manual:{trigger_reason}",
                 tickers=tickers,
+                market=market,
             )
             with self._state_lock:
                 self._last_run_time_utc = _utc_now_iso()
@@ -472,7 +519,7 @@ class ModelLifecycleSchedulerService:
                 "last_run_time_utc": self._last_run_time_utc,
                 "next_run_time_utc": self._next_run_time_utc,
                 "last_retrain_time_utc": lifecycle.get_state("last_retrain_time_utc"),
-                "next_retrain_time_utc": self._next_retrain_time_utc(),
+                "next_retrain_time_utc": self._next_retrain_time_utc(market),
                 "last_workflow_type": lifecycle.get_state("last_workflow_type"),
                 "production_model": production,
                 "recent_metrics": recent_metrics,

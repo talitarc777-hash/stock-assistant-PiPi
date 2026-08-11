@@ -18,6 +18,7 @@ from app.models.user_profile import (
     UserProfileResetRequest,
     UserProfileSettingsUpdateRequest,
 )
+from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class UserProfileStore:
         settings = get_settings()
         self.db_path = Path(db_path or settings.profile_db_path)
         self.default_watchlist = _normalize_watchlist(settings.default_watchlist)
+        self.default_hk_watchlist = list(MARKET_CONFIGS["HK"].default_tickers)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -139,6 +141,7 @@ class UserProfileStore:
                     compact_mode INTEGER NOT NULL,
                     selected_evaluation_model TEXT NOT NULL DEFAULT 'logistic_regression',
                     default_watchlist TEXT NOT NULL,
+                    hk_watchlist TEXT NOT NULL DEFAULT '[]',
                     alert_enabled INTEGER NOT NULL,
                     alert_threshold_high INTEGER NOT NULL,
                     alert_threshold_low INTEGER NOT NULL,
@@ -172,6 +175,7 @@ class UserProfileStore:
                 "compact_mode": "INTEGER NOT NULL DEFAULT 0",
                 "selected_evaluation_model": "TEXT NOT NULL DEFAULT 'logistic_regression'",
                 "default_watchlist": f"TEXT NOT NULL DEFAULT {_quote_sql_string(_json_dump([]))}",
+                "hk_watchlist": f"TEXT NOT NULL DEFAULT {_quote_sql_string(_json_dump([]))}",
                 "alert_enabled": "INTEGER NOT NULL DEFAULT 1",
                 "alert_threshold_high": "INTEGER NOT NULL DEFAULT 80",
                 "alert_threshold_low": "INTEGER NOT NULL DEFAULT 45",
@@ -198,6 +202,7 @@ class UserProfileStore:
             "compact_mode": 0,
             "selected_evaluation_model": "logistic_regression",
             "default_watchlist": _json_dump([]),
+            "hk_watchlist": _json_dump([]),
             "alert_enabled": 1,
             "alert_threshold_high": 80,
             "alert_threshold_low": 45,
@@ -216,6 +221,7 @@ class UserProfileStore:
             compact_mode=bool(row["compact_mode"]),
             selected_evaluation_model=row["selected_evaluation_model"] or "logistic_regression",
             default_watchlist=_json_load(row["default_watchlist"]),
+            hk_watchlist=_json_load(row["hk_watchlist"]),
             alert_enabled=bool(row["alert_enabled"]),
             alert_threshold_high=int(row["alert_threshold_high"]),
             alert_threshold_low=int(row["alert_threshold_low"]),
@@ -250,10 +256,11 @@ class UserProfileStore:
                     """
                     INSERT INTO user_profiles (
                         user_id, display_name, preferred_language, compact_mode,
-                        selected_evaluation_model, default_watchlist, alert_enabled, alert_threshold_high,
+                        selected_evaluation_model, default_watchlist, hk_watchlist,
+                        alert_enabled, alert_threshold_high,
                         alert_threshold_low, alert_watchlist, preferred_delivery_source,
                         last_active_source, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload["user_id"],
@@ -262,6 +269,7 @@ class UserProfileStore:
                         payload["compact_mode"],
                         payload["selected_evaluation_model"],
                         payload["default_watchlist"],
+                        payload["hk_watchlist"],
                         payload["alert_enabled"],
                         payload["alert_threshold_high"],
                         payload["alert_threshold_low"],
@@ -354,6 +362,14 @@ class UserProfileStore:
             updates.append("default_watchlist = ?")
             params.append(_json_dump(_normalize_watchlist(request.default_watchlist)))
 
+        if request.hk_watchlist is not None:
+            normalized_hk = [
+                resolve_security(ticker, "HK").ticker
+                for ticker in request.hk_watchlist
+            ]
+            updates.append("hk_watchlist = ?")
+            params.append(_json_dump(_normalize_watchlist(normalized_hk)))
+
         if request.last_active_source is not None:
             if request.last_active_source not in VALID_ACTIVITY_SOURCES:
                 raise UserProfileValidationError("last_active_source must be discord or dashboard.")
@@ -394,6 +410,7 @@ class UserProfileStore:
                     compact_mode = ?,
                     selected_evaluation_model = ?,
                     default_watchlist = ?,
+                    hk_watchlist = ?,
                     alert_enabled = ?,
                     alert_threshold_high = ?,
                     alert_threshold_low = ?,
@@ -408,6 +425,7 @@ class UserProfileStore:
                     "bilingual",
                     0,
                     "logistic_regression",
+                    _json_dump([]),
                     _json_dump([]),
                     1,
                     80,
@@ -428,10 +446,17 @@ class UserProfileStore:
         logger.info("Reset user profile user_id=%s", request.user_id)
         return self.get_or_create_profile(request.user_id)
 
-    def get_effective_watchlist(self, user_id: str) -> tuple[list[str], bool, UserProfileResponse]:
+    def get_effective_watchlist(
+        self,
+        user_id: str,
+        market: str = "US",
+    ) -> tuple[list[str], bool, UserProfileResponse]:
         profile = self.get_or_create_profile(user_id=user_id)
-        watchlist = profile.default_watchlist or list(self.default_watchlist)
-        using_system_default = not bool(profile.default_watchlist)
+        clean_market = normalize_market(market)
+        stored = profile.hk_watchlist if clean_market == "HK" else profile.default_watchlist
+        defaults = self.default_hk_watchlist if clean_market == "HK" else self.default_watchlist
+        watchlist = list(stored or defaults)
+        using_system_default = not bool(stored)
         return watchlist, using_system_default, profile
 
     def add_watchlist_ticker(
@@ -440,22 +465,37 @@ class UserProfileStore:
         ticker: str,
         display_name: str | None = None,
         last_active_source: str | None = None,
+        market: str = "US",
     ) -> UserProfileResponse:
-        clean_ticker = _canonicalize_ticker(ticker)
+        clean_market = normalize_market(market)
+        clean_ticker = resolve_security(ticker, clean_market).ticker
         if not clean_ticker:
             raise UserProfileValidationError("Ticker cannot be empty.")
 
-        watchlist, _, _ = self.get_effective_watchlist(user_id=user_id)
+        watchlist, _, _ = self.get_effective_watchlist(
+            user_id=user_id,
+            market=clean_market,
+        )
         updated_watchlist = _normalize_watchlist(watchlist + [clean_ticker])
+        update_fields = (
+            {"hk_watchlist": updated_watchlist}
+            if clean_market == "HK"
+            else {"default_watchlist": updated_watchlist}
+        )
         profile = self.update_profile_settings(
             UserProfileSettingsUpdateRequest(
                 user_id=user_id,
                 display_name=display_name,
-                default_watchlist=updated_watchlist,
                 last_active_source=last_active_source,
+                **update_fields,
             )
         )
-        logger.info("Added ticker to watchlist user_id=%s ticker=%s", user_id, clean_ticker)
+        logger.info(
+            "Added ticker to watchlist user_id=%s market=%s ticker=%s",
+            user_id,
+            clean_market,
+            clean_ticker,
+        )
         return profile
 
     def remove_watchlist_ticker(
@@ -464,28 +504,63 @@ class UserProfileStore:
         ticker: str,
         display_name: str | None = None,
         last_active_source: str | None = None,
+        market: str = "US",
     ) -> UserProfileResponse:
-        clean_ticker = _canonicalize_ticker(ticker)
+        clean_market = normalize_market(market)
+        clean_ticker = resolve_security(ticker, clean_market).ticker
         if not clean_ticker:
             raise UserProfileValidationError("Ticker cannot be empty.")
 
-        watchlist, _, _ = self.get_effective_watchlist(user_id=user_id)
+        watchlist, _, _ = self.get_effective_watchlist(
+            user_id=user_id,
+            market=clean_market,
+        )
         updated_watchlist = [item for item in watchlist if item != clean_ticker]
         if not updated_watchlist:
             raise UserProfileValidationError(
                 "Watchlist cannot be empty. Add another ticker before removing the last one."
             )
 
+        update_fields = (
+            {"hk_watchlist": updated_watchlist}
+            if clean_market == "HK"
+            else {"default_watchlist": updated_watchlist}
+        )
         profile = self.update_profile_settings(
             UserProfileSettingsUpdateRequest(
                 user_id=user_id,
                 display_name=display_name,
-                default_watchlist=updated_watchlist,
                 last_active_source=last_active_source,
+                **update_fields,
             )
         )
-        logger.info("Removed ticker from watchlist user_id=%s ticker=%s", user_id, clean_ticker)
+        logger.info(
+            "Removed ticker from watchlist user_id=%s market=%s ticker=%s",
+            user_id,
+            clean_market,
+            clean_ticker,
+        )
         return profile
+
+    def list_effective_watchlist_tickers(self, market: str = "US") -> list[str]:
+        """Return the de-duplicated active universe across persisted profiles."""
+        clean_market = normalize_market(market)
+        with self._connect() as connection:
+            user_ids = [
+                str(row["user_id"])
+                for row in connection.execute("SELECT user_id FROM user_profiles")
+            ]
+        if not user_ids:
+            return list(
+                self.default_hk_watchlist
+                if clean_market == "HK"
+                else self.default_watchlist
+            )
+        values: list[str] = []
+        for user_id in user_ids:
+            watchlist, _, _ = self.get_effective_watchlist(user_id, market=clean_market)
+            values.extend(watchlist)
+        return list(dict.fromkeys(values))
 
     def update_alert_settings(
         self,

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 LanguageMode = Literal["en", "zh", "bilingual"]
 ActivitySource = Literal["discord", "dashboard"]
 DeliverySource = Literal["discord", "dashboard"]
+MarketCode = Literal["US", "HK"]
 
 
 def _normalize_ticker_values(values: list[str]) -> list[str]:
@@ -49,6 +50,7 @@ class UserProfileResponse(BaseModel):
     compact_mode: bool = False
     selected_evaluation_model: str = "logistic_regression"
     default_watchlist: list[str] = Field(default_factory=list)
+    hk_watchlist: list[str] = Field(default_factory=list)
     alert_enabled: bool = True
     alert_threshold_high: int = Field(default=80, ge=0, le=100)
     alert_threshold_low: int = Field(default=45, ge=0, le=100)
@@ -58,7 +60,7 @@ class UserProfileResponse(BaseModel):
     created_at: str
     updated_at: str
 
-    @field_validator("default_watchlist", "alert_watchlist", mode="before")
+    @field_validator("default_watchlist", "hk_watchlist", "alert_watchlist", mode="before")
     @classmethod
     def validate_watchlists(cls, value: list[str] | None) -> list[str]:
         return _normalize_ticker_values(value or [])
@@ -73,9 +75,10 @@ class UserProfileSettingsUpdateRequest(BaseModel):
     compact_mode: bool | None = None
     selected_evaluation_model: str | None = Field(default=None, min_length=1, max_length=80)
     default_watchlist: list[str] | None = None
+    hk_watchlist: list[str] | None = None
     last_active_source: ActivitySource | None = None
 
-    @field_validator("default_watchlist", mode="before")
+    @field_validator("default_watchlist", "hk_watchlist", mode="before")
     @classmethod
     def validate_default_watchlist(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
@@ -95,6 +98,7 @@ class UserWatchlistResponse(BaseModel):
     """Response model for resolved user watchlists."""
 
     user_id: str
+    market: MarketCode = "US"
     watchlist: list[str]
     using_system_default: bool
     last_active_source: ActivitySource | None = None
@@ -104,6 +108,7 @@ class UserWatchlistAddRequest(BaseModel):
     """Request body for adding one ticker to a user watchlist."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: MarketCode = "US"
     ticker: str = Field(min_length=1, max_length=20)
     display_name: str | None = Field(default=None, max_length=120)
     last_active_source: ActivitySource | None = None
@@ -113,6 +118,7 @@ class UserWatchlistRemoveRequest(BaseModel):
     """Request body for removing one ticker from a user watchlist."""
 
     user_id: str = Field(min_length=1, max_length=120)
+    market: MarketCode = "US"
     ticker: str = Field(min_length=1, max_length=20)
     display_name: str | None = Field(default=None, max_length=120)
     last_active_source: ActivitySource | None = None

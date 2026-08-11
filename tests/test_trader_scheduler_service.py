@@ -59,23 +59,37 @@ class TraderSchedulerServiceTests(unittest.TestCase):
             SimpleNamespace(user_id="u1"),
             SimpleNamespace(user_id="u2"),
         ]
-        mock_live_run.side_effect = [self._live_status("u1"), self._live_status("u2")]
+        mock_live_run.side_effect = [
+            self._live_status("u1"),
+            self._live_status("u1"),
+            self._live_status("u2"),
+            self._live_status("u2"),
+        ]
 
         service.run_cycle(source="test", raise_if_busy=True)
         status = service.get_status(recent_hours=24)
 
         self.assertEqual(mock_live_run.call_args_list[0].kwargs["model_name"], None)
         self.assertEqual(mock_live_run.call_args_list[1].kwargs["model_name"], None)
+        self.assertEqual(
+            [call.kwargs["market"] for call in mock_live_run.call_args_list],
+            ["US", "HK", "US", "HK"],
+        )
         self.assertEqual(status["total_runs"], 1)
         self.assertEqual(status["last_users_processed"], 2)
-        self.assertEqual(status["last_tickers_processed"], 4)
+        self.assertEqual(status["last_tickers_processed"], 8)
         self.assertEqual(status["last_tickers_failed"], 0)
         self.assertEqual(status["last_fallback_used"], 0)
-        self.assertEqual(status["last_decisions_executed"], 2)
+        self.assertEqual(status["last_decisions_executed"], 4)
         self.assertTrue(status["recent_runs"])
         self.assertEqual(status["recent_runs"][0]["source"], "test")
         self.assertEqual(status["recent_runs"][0]["status"], "success")
         self.assertEqual(status["recent_runs"][0]["errors"], 0)
+        self.assertEqual(
+            status["recent_runs"][0]["markets"]["HK"]["tickers_processed"],
+            4,
+        )
+        self.assertIn("HK", status["market_states"])
 
     def test_run_user_now_raises_busy_when_locked(self) -> None:
         service = TraderSchedulerService()

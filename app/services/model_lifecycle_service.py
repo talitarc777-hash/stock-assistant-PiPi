@@ -29,7 +29,7 @@ from app.services.model_feedback_service import ModelFeedbackService
 from app.services.model_training import TrainingRunResult, train_baseline_models_for_ticker
 from app.services.research_pipeline import build_feature_dataset
 from app.services.universe_service import get_active_universe
-from app.services.market_config import normalize_market, resolve_security
+from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -1301,11 +1301,15 @@ class ModelLifecycleService:
         }
 
     @staticmethod
-    def _normalize_tickers(values: list[str]) -> list[str]:
+    def _normalize_tickers(values: list[str], market: str = "US") -> list[str]:
+        clean_market = normalize_market(market)
         seen: set[str] = set()
         output: list[str] = []
         for value in values:
-            symbol = str(value).strip().upper()
+            try:
+                symbol = resolve_security(value, clean_market).ticker
+            except ValueError:
+                continue
             if not symbol or symbol in seen:
                 continue
             seen.add(symbol)
@@ -1398,16 +1402,39 @@ class ModelLifecycleService:
         workflow_type: str,
         trigger_reason: str,
         tickers: list[str] | None = None,
+        market: str = "US",
     ) -> dict[str, Any]:
         """Run one automatic training workflow and update registry/promotion."""
+        clean_market = normalize_market(market)
         config = self._workflow_config(workflow_type)
         run_id = self._insert_run_log_start(workflow_type, trigger_reason)
 
-        universe = self._normalize_tickers(
-            tickers or get_active_universe(limit=int(config["universe_limit"]))
-        )
-        default_watchlist = self._normalize_tickers(get_settings().default_watchlist)
-        universe = self._normalize_tickers(default_watchlist + universe)
+        if tickers is not None:
+            source_tickers = tickers
+        elif clean_market == "HK":
+            # Reuse the persistent profile-watchlist mechanism and train only
+            # active/enrolled HK securities, never the entire HKEX list.
+            from app.services.user_profile_service import (
+                get_user_profile_store,
+            )
+
+            source_tickers = get_user_profile_store().list_effective_watchlist_tickers(
+                market="HK"
+            )
+        else:
+            source_tickers = get_active_universe(
+                limit=int(config["universe_limit"])
+            )
+        universe = self._normalize_tickers(source_tickers, clean_market)
+        if clean_market == "US":
+            default_watchlist = self._normalize_tickers(
+                get_settings().default_watchlist,
+                clean_market,
+            )
+            universe = self._normalize_tickers(
+                default_watchlist + universe,
+                clean_market,
+            )
         if not universe:
             self._complete_run_log(
                 run_id=run_id,
@@ -1415,7 +1442,10 @@ class ModelLifecycleService:
                 processed_tickers=0,
                 successful_models=0,
                 failed_models=0,
-                details={"message": "No tickers available for model workflow."},
+                details={
+                    "message": "No tickers available for model workflow.",
+                    "market": clean_market,
+                },
                 error_message="No tickers available.",
             )
             raise ModelLifecycleError("No tickers available for model workflow.")
@@ -1432,9 +1462,10 @@ class ModelLifecycleService:
                     results = train_baseline_models_for_ticker(
                         ticker=ticker,
                         period=training_period,
-                        benchmark=str(config["benchmark"]),
+                        benchmark=MARKET_CONFIGS[clean_market].default_benchmark,
                         include_gradient_boosting=bool(config["include_gradient"]),
                         target_names=(TRADING_TARGET_NAME,),
+                        market=clean_market,
                     )
                     for result in results:
                         outcome = self.register_training_result(result=result, retrain_type=workflow_type)
@@ -1460,6 +1491,7 @@ class ModelLifecycleService:
             workflow_status = "failed"
 
         details = {
+            "market": clean_market,
             "periods": list(periods),
             "include_gradient": bool(config["include_gradient"]),
             "promotion_count": promotion_count,
@@ -1479,7 +1511,8 @@ class ModelLifecycleService:
         self.set_state("last_workflow_status", workflow_status)
 
         logger.info(
-            "Model lifecycle workflow complete type=%s trigger=%s tickers=%d success=%d failed=%d promoted=%d",
+            "Model lifecycle workflow complete market=%s type=%s trigger=%s tickers=%d success=%d failed=%d promoted=%d",
+            clean_market,
             workflow_type,
             trigger_reason,
             len(universe),
@@ -1761,6 +1794,7 @@ class ModelLifecycleService:
             )
             and row["status"] in {"production", "candidate"}
             and bool(row["is_validated"])
+            and (clean_market != "HK" or not bool(row.get("is_stale")))
             and int(
                 (row.get("metrics_summary") or {}).get("validation_gate_version") or 0
             ) >= VALIDATION_GATE_VERSION

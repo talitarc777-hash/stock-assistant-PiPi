@@ -45,6 +45,30 @@ class UserProfileStoreTests(unittest.TestCase):
         self.assertTrue(using_system_default)
         self.assertEqual(watchlist, self.store.default_watchlist)
 
+    def test_hk_active_watchlist_defaults_and_changes_are_persistent(self) -> None:
+        watchlist, using_system_default, profile = self.store.get_effective_watchlist(
+            "demo-user",
+            market="HK",
+        )
+        self.assertTrue(using_system_default)
+        self.assertEqual(watchlist, ["0005", "0700", "1810", "3690", "9988"])
+        self.assertEqual(profile.hk_watchlist, [])
+
+        self.store.add_watchlist_ticker("demo-user", "388", market="HK")
+        self.store.remove_watchlist_ticker("demo-user", "0700.HK", market="HK")
+        reloaded = UserProfileStore(db_path=str(self.db_path))
+        persisted, using_system_default, profile = reloaded.get_effective_watchlist(
+            "demo-user",
+            market="HK",
+        )
+
+        self.assertFalse(using_system_default)
+        self.assertEqual(
+            persisted,
+            ["0005", "1810", "3690", "9988", "0388"],
+        )
+        self.assertEqual(profile.hk_watchlist, persisted)
+
     def test_watchlist_updates_normalize_special_tickers(self) -> None:
         profile = self.store.update_profile_settings(
             UserProfileSettingsUpdateRequest(
@@ -193,6 +217,7 @@ class UserProfileStoreTests(unittest.TestCase):
 
         self.assertEqual(profile.selected_evaluation_model, "logistic_regression")
         self.assertEqual(profile.preferred_language, "bilingual")
+        self.assertEqual(profile.hk_watchlist, [])
         self.assertEqual(watchlist, ["VOO"])
         self.assertFalse(using_default)
 

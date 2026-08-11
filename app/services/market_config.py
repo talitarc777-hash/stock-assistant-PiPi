@@ -53,7 +53,7 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         currency_symbol="HK$",
         timezone="Asia/Hong_Kong",
         default_benchmark="2800",
-        default_tickers=("0700", "9988"),
+        default_tickers=("0005", "0700", "1810", "3690", "9988"),
     ),
 }
 

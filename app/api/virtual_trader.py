@@ -62,7 +62,10 @@ def get_virtual_trader_live_sync(
             ticker=None,
             **({"market": market} if market != "US" else {}),
         )
-        watchlist, using_system_default, _profile = get_user_watchlist(user_id=user_id)
+        watchlist, using_system_default, _profile = get_user_watchlist(
+            user_id=user_id,
+            market=market,
+        )
         payload = LiveTraderSyncResponse(
             user_id=user_id,
             market=market,

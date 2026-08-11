@@ -11,7 +11,13 @@ test("Virtual Trader exposes one shared US/HK market interface", () => {
   assert.match(pageSource, /normalizeHkTickerInput/);
   assert.match(pageSource, /HK Virtual Trader/);
   assert.match(pageSource, /currencySymbol = market === "HK" \? "HK\$" : "\$"/);
-  assert.match(pageSource, /market === "HK" \? \[selectedTicker\] : null/);
+  assert.match(pageSource, /runLiveVirtualTraderNow\(\s*profileId,\s*null,\s*AUTO_TRADING_MODEL,\s*market/s);
+  assert.doesNotMatch(pageSource, /market === "HK" \? \[selectedTicker\] : null/);
+  assert.match(pageSource, /fetchUserWatchlist\(profileId, "HK"\)/);
+  assert.match(pageSource, /deactivateSelectedHkTicker/);
+  assert.match(pageSource, /decisionModelText/);
+  assert.match(pageSource, /Training pending/);
+  assert.match(pageSource, /market === "HK" \? sortedRows : sortedRows\.slice\(0, 15\)/);
   assert.doesNotMatch(pageSource, /selectedMarket/);
 });
 

@@ -24,6 +24,7 @@ class TraderSchedulerRunLogResponse(BaseModel):
     note: str | None = None
     error_count: int = 0
     error_messages: list[str] = Field(default_factory=list)
+    markets: dict[str, dict] = Field(default_factory=dict)
 
 
 class TraderSchedulerStatusResponse(BaseModel):
@@ -44,6 +45,7 @@ class TraderSchedulerStatusResponse(BaseModel):
     last_fallback_used: int
     last_decisions_executed: int
     last_error_count: int = 0
+    market_states: dict[str, dict] = Field(default_factory=dict)
     recent_runs: list[TraderSchedulerRunLogResponse]
 
 

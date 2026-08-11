@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -74,4 +76,5 @@ class ModelLifecycleRunNowRequest(BaseModel):
     workflow_type: str = "daily_incremental"
     trigger_reason: str = "manual_trigger"
     tickers: list[str] | None = None
+    market: Literal["US", "HK"] = "US"
 

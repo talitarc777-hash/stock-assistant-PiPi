@@ -8,6 +8,7 @@ Simulation only:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -99,7 +100,9 @@ class LiveStatus:
 
 _AUTO_TRAIN_ON_MODEL_MISS = False
 _TRAINING_QUEUE: set[tuple[str, str, str]] = set()
+_TRAINING_JOBS: deque[dict[str, str]] = deque()
 _TRAINING_LOCK = Lock()
+_TRAINING_WORKER_ACTIVE = False
 TRADING_TARGET_NAME = "target_5d_return"
 BENCHMARK_SHADOW_TARGET_NAME = "target_5d_outperform"
 BENCHMARK_SHADOW_MODEL_NAME = "random_forest"
@@ -575,7 +578,14 @@ def _resolve_user_tickers(
         if values:
             return values
     if clean_market == "HK":
-        return list(MARKET_CONFIGS[clean_market].default_tickers)
+        watchlist, _, _ = get_user_profile_store().get_effective_watchlist(
+            user_id=user_id,
+            market=clean_market,
+        )
+        values = _normalize_tickers(watchlist, clean_market)
+        if not values:
+            raise LiveVirtualTraderError("No active HK tickers are configured.")
+        return values
     # Autonomous mode default: scan a broader active universe.
     values = _normalize_tickers(get_active_universe(limit=120), clean_market)
     # Keep user watchlist symbols included for continuity.
@@ -621,7 +631,8 @@ def _schedule_background_training_if_enabled(
     benchmark: str,
     market: str = "US",
 ) -> None:
-    """Optionally schedule non-blocking ticker training when model is missing."""
+    """Queue missing-model training on one conservative background worker."""
+    global _TRAINING_WORKER_ACTIVE
     clean_market = normalize_market(market)
     # Preserve the conservative US default. HK models are created lazily only
     # after a user activates that ticker, never by scanning the whole exchange.
@@ -633,35 +644,126 @@ def _schedule_background_training_if_enabled(
         if job_key in _TRAINING_QUEUE:
             return
         _TRAINING_QUEUE.add(job_key)
+        _TRAINING_JOBS.append(
+            {
+                "ticker": str(ticker),
+                "period": str(period),
+                "benchmark": str(benchmark),
+                "market": clean_market,
+            }
+        )
+        if _TRAINING_WORKER_ACTIVE:
+            return
+        _TRAINING_WORKER_ACTIVE = True
 
     def _worker() -> None:
-        try:
-            from app.services.model_training import train_baseline_models_for_ticker
-
-            results = train_baseline_models_for_ticker(
-                ticker=ticker,
-                period=period,
-                benchmark=benchmark,
-                include_gradient_boosting=True,
-                market=clean_market,
-            )
-            lifecycle = get_model_lifecycle_service()
-            for result in results:
-                lifecycle.register_training_result(result, retrain_type="lazy_activation")
-            logger.info(
-                "Background training completed market=%s ticker=%s period=%s models=%s",
-                clean_market,
-                ticker,
-                period,
-                len(results),
-            )
-        except Exception as exc:  # pragma: no cover - background defensive guard
-            logger.exception("Background training failed ticker=%s error=%s", ticker, exc)
-        finally:
+        global _TRAINING_WORKER_ACTIVE
+        while True:
             with _TRAINING_LOCK:
-                _TRAINING_QUEUE.discard(job_key)
+                if not _TRAINING_JOBS:
+                    _TRAINING_WORKER_ACTIVE = False
+                    return
+                job = _TRAINING_JOBS.popleft()
+            queued_key = (
+                f"{job['market']}:{job['ticker']}",
+                job["period"],
+                job["benchmark"],
+            )
+            try:
+                from app.services.model_training import train_baseline_models_for_ticker
 
-    Thread(target=_worker, name=f"train-{ticker}-{period}", daemon=True).start()
+                results = train_baseline_models_for_ticker(
+                    ticker=job["ticker"],
+                    period=job["period"],
+                    benchmark=job["benchmark"],
+                    include_gradient_boosting=True,
+                    market=job["market"],
+                )
+                lifecycle = get_model_lifecycle_service()
+                for result in results:
+                    lifecycle.register_training_result(
+                        result,
+                        retrain_type="lazy_activation",
+                    )
+                logger.info(
+                    "Background training completed market=%s ticker=%s period=%s models=%s",
+                    job["market"],
+                    job["ticker"],
+                    job["period"],
+                    len(results),
+                )
+            except Exception as exc:  # pragma: no cover - background defensive guard
+                logger.exception(
+                    "Background training failed market=%s ticker=%s error=%s",
+                    job["market"],
+                    job["ticker"],
+                    exc,
+                )
+            finally:
+                with _TRAINING_LOCK:
+                    _TRAINING_QUEUE.discard(queued_key)
+
+    Thread(target=_worker, name="virtual-trader-model-training", daemon=True).start()
+
+
+def ensure_active_ticker_model_training(
+    ticker: str,
+    *,
+    market: str = "HK",
+    period: str = "2y",
+) -> bool:
+    """Queue training only when an active ticker lacks current saved models."""
+    clean_market = normalize_market(market)
+    identity = resolve_security(ticker, clean_market)
+    benchmark = MARKET_CONFIGS[clean_market].default_benchmark
+    job_key = (f"{clean_market}:{identity.ticker}", period, benchmark)
+    with _TRAINING_LOCK:
+        if job_key in _TRAINING_QUEUE:
+            return True
+
+    lifecycle = get_model_lifecycle_service()
+    registry_rows = lifecycle.list_registry(
+        ticker=identity.ticker,
+        market=clean_market,
+        period=period,
+        target_name=TRADING_TARGET_NAME,
+        limit=20,
+    )
+    if any(
+        row.get("model_name") in TRADING_MODEL_NAMES
+        and not bool(row.get("is_stale"))
+        for row in registry_rows
+    ):
+        return False
+    # A compatible on-disk artifact also proves training completed. Registry
+    # synchronization/validation can occur independently; do not retrain the
+    # same unvalidated artifact every five-minute decision cycle.
+    if not registry_rows and list_compatible_saved_model_candidates(
+        ticker=identity.ticker,
+        market=clean_market,
+        period=period,
+        target_name=TRADING_TARGET_NAME,
+        limit=1,
+    ):
+        return False
+    if clean_market != "HK" and not _AUTO_TRAIN_ON_MODEL_MISS:
+        return False
+    _schedule_background_training_if_enabled(
+        ticker=identity.ticker,
+        period=period,
+        benchmark=benchmark,
+        market=clean_market,
+    )
+    return True
+
+
+def _reset_background_training_queue_for_tests() -> None:
+    """Clear lazy-training state for isolated unit tests."""
+    global _TRAINING_WORKER_ACTIVE
+    with _TRAINING_LOCK:
+        _TRAINING_QUEUE.clear()
+        _TRAINING_JOBS.clear()
+        _TRAINING_WORKER_ACTIVE = False
 
 
 def _build_rule_based_fallback(
@@ -688,6 +790,30 @@ def _build_rule_based_fallback(
         return (-1.0, 0.60, "regression", reason)
     reason = "fallback_rule_neutral_hold"
     return (0.0, 0.55, "regression", reason)
+
+
+def _decision_model_reporting(
+    *,
+    model_loaded: bool,
+    selected_model_name: str,
+    selected_period: str,
+    selected_version: str,
+    training_queued: bool = False,
+) -> tuple[str, str, str, str]:
+    """Return truthful persisted model identity and readiness fields."""
+    if model_loaded:
+        return (
+            str(selected_model_name),
+            str(selected_period),
+            str(selected_version),
+            "ready",
+        )
+    return (
+        "backup_rules",
+        "",
+        "fallback",
+        "training_pending" if training_queued else "fallback",
+    )
 
 
 def _safe_float(value: Any) -> float | None:
@@ -1261,6 +1387,8 @@ def run_live_virtual_trader_now(
             decision_source = "fallback_rule"
             model_fallback_reason = "fallback_rule_neutral_hold"
             model_loaded = False
+            decision_model_status = "ready"
+            training_queued = False
             model_load_errors: list[str] = []
 
             registry_candidates = lifecycle_service.resolve_runtime_model_candidates(
@@ -1278,18 +1406,20 @@ def run_live_virtual_trader_now(
             # explicitly requested, so automatic trading went straight from
             # an empty/invalid registry to the rule-based fallback.
             saved_candidates: list[dict[str, Any]] = []
-            for candidate_period in candidate_periods:
-                for candidate in list_compatible_saved_model_candidates(
-                    ticker=symbol,
-                    market=clean_market,
-                    period=candidate_period,
-                    target_name=target_name,
-                    requested_model_name=(
-                        None if auto_model_selection else requested_model_name
-                    ),
-                    limit=12,
-                ):
-                    saved_candidates.append({**candidate, "period": candidate_period})
+            # Preserve the existing US fallback hierarchy, where a compatible
+            # on-disk artifact can bridge a registry-sync gap. HK auto_best is
+            # stricter and only considers exact-ticker validated registry rows.
+            if not auto_model_selection or clean_market == "US":
+                for candidate_period in candidate_periods:
+                    for candidate in list_compatible_saved_model_candidates(
+                        ticker=symbol,
+                        market=clean_market,
+                        period=candidate_period,
+                        target_name=target_name,
+                        requested_model_name=requested_model_name,
+                        limit=12,
+                    ):
+                        saved_candidates.append({**candidate, "period": candidate_period})
 
             runtime_candidates: list[dict[str, Any]] = []
             seen_runtime: set[tuple[str, str, str]] = set()
@@ -1450,11 +1580,10 @@ def run_live_virtual_trader_now(
                     symbol,
                     model_fallback_reason,
                 )
-                _schedule_background_training_if_enabled(
-                    ticker=symbol,
-                    period=period,
-                    benchmark=benchmark,
+                training_queued = ensure_active_ticker_model_training(
+                    symbol,
                     market=clean_market,
+                    period=period,
                 )
                 logger.info(
                     "Model missing -> using fallback%s",
@@ -1462,6 +1591,18 @@ def run_live_virtual_trader_now(
                     if (_AUTO_TRAIN_ON_MODEL_MISS or clean_market == "HK")
                     else "",
                 )
+            (
+                decision_model_name,
+                decision_model_period,
+                decision_model_version,
+                decision_model_status,
+            ) = _decision_model_reporting(
+                model_loaded=model_loaded,
+                selected_model_name=decision_model_name,
+                selected_period=decision_model_period,
+                selected_version=decision_model_version,
+                training_queued=training_queued,
+            )
 
             benchmark_shadow = (
                 _build_benchmark_shadow_prediction(
@@ -1769,6 +1910,8 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
+                            "model_status": decision_model_status,
                             "model_period": decision_model_period,
                             "validation_score": decision_validation_score,
                             "confidence_score": confidence_score,
@@ -1793,6 +1936,8 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
+                            "model_status": decision_model_status,
                             "model_period": decision_model_period,
                             "validation_score": decision_validation_score,
                             "confidence_score": confidence_score,
@@ -1858,6 +2003,9 @@ def run_live_virtual_trader_now(
                     "industry": snapshot.get("industry"),
                     "volatility": volatility,
                     "decision_source": decision_source,
+                    "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
+                    "actual_model_name": decision_model_name if model_loaded else None,
+                    "model_status": decision_model_status,
                     "model_validation_status": (
                         "validated"
                         if decision_source in {

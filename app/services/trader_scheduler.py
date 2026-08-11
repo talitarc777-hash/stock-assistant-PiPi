@@ -1,9 +1,9 @@
 """Background scheduler for continuous live virtual trader simulation.
 
 This keeps infrastructure intentionally simple:
-- one in-process background thread
+- one in-process background thread for both supported markets
 - one in-memory lock to prevent overlapping runs
-- cadence changes by U.S. market-hours mode
+- independent cadence decisions for U.S. and Hong Kong market hours
 """
 
 from __future__ import annotations
@@ -16,11 +16,14 @@ from typing import Any
 
 from app.services.account_ledger_service import get_account_ledger_service
 from app.services.live_virtual_trader import LiveStatus, run_live_virtual_trader_now
+from app.services.market_config import normalize_market
 from app.services.market_hours_service import get_market_hours_state
 from app.services.user_profile_service import get_user_profile_store
 from app.services.virtual_account_cache import clear_user_virtual_account_cache
 
 logger = logging.getLogger(__name__)
+
+SCHEDULED_MARKETS = ("US", "HK")
 
 
 class TraderSchedulerBusyError(Exception):
@@ -85,6 +88,7 @@ class TraderSchedulerService:
         self._last_decisions_executed = 0
         self._last_error_count = 0
         self._consecutive_failures = 0
+        self._market_next_run_utc: dict[str, datetime] = {}
         # In-memory rolling buffer for recent scheduler/manual runs only.
         # This history resets on backend restart because it is not persisted yet.
         # At 5-minute cadence we expect ~288 rows/day; manual bursts or extreme
@@ -97,12 +101,22 @@ class TraderSchedulerService:
             if self._thread and self._thread.is_alive():
                 return
             self._stop_event.clear()
-            state = get_market_hours_state()
+            now_utc = datetime.now(UTC)
+            states = {
+                market: get_market_hours_state(now_utc, market)
+                for market in SCHEDULED_MARKETS
+            }
+            state = states["US"]
             self._mode = state.mode
-            self._cadence_seconds = state.interval_seconds
-            self._next_run_time_utc = (
-                datetime.now(UTC) + timedelta(seconds=self._cadence_seconds)
-            ).replace(microsecond=0).isoformat()
+            self._cadence_seconds = min(
+                market_state.interval_seconds for market_state in states.values()
+            )
+            # Both markets are due immediately after startup. Subsequent runs
+            # follow each market's independent open/closed cadence.
+            self._market_next_run_utc = {
+                market: now_utc for market in SCHEDULED_MARKETS
+            }
+            self._next_run_time_utc = now_utc.replace(microsecond=0).isoformat()
             self._thread = Thread(
                 target=self._run_loop,
                 name="stock-assistant-trader-scheduler",
@@ -127,6 +141,7 @@ class TraderSchedulerService:
             self._scheduler_started = False
             self._thread = None
             self._next_run_time_utc = None
+            self._market_next_run_utc = {}
         logger.info("Trader scheduler stopped")
 
     def _target_users_for_scheduler(self) -> list[str]:
@@ -150,6 +165,7 @@ class TraderSchedulerService:
         message: str,
         error_count: int = 0,
         error_messages: list[str] | None = None,
+        markets: dict[str, Any] | None = None,
     ) -> None:
         run_timestamp = _utc_now_iso()
         row = {
@@ -174,6 +190,7 @@ class TraderSchedulerService:
             "errors": int(error_count),
             "error_count": int(error_count),
             "error_messages": list(error_messages or []),
+            "markets": dict(markets or {}),
         }
         with self._state_lock:
             self._recent_runs.appendleft(row)
@@ -230,16 +247,44 @@ class TraderSchedulerService:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            self.run_cycle(source="scheduler", raise_if_busy=False)
-            state = get_market_hours_state()
+            now_utc = datetime.now(UTC)
             with self._state_lock:
-                self._mode = state.mode
-                self._cadence_seconds = state.interval_seconds
-                self._next_run_time_utc = (
-                    datetime.now(UTC) + timedelta(seconds=self._cadence_seconds)
-                ).replace(microsecond=0).isoformat()
-                cadence_seconds = self._cadence_seconds
-            if self._stop_event.wait(cadence_seconds):
+                due_markets = [
+                    market
+                    for market in SCHEDULED_MARKETS
+                    if self._market_next_run_utc.get(market, now_utc) <= now_utc
+                ]
+            if due_markets:
+                try:
+                    self.run_cycle(
+                        source="scheduler",
+                        raise_if_busy=False,
+                        markets=due_markets,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    logger.exception("Trader scheduler loop error=%s", exc)
+
+            recalculated_at = datetime.now(UTC)
+            with self._state_lock:
+                for market in due_markets:
+                    market_state = get_market_hours_state(recalculated_at, market)
+                    self._market_next_run_utc[market] = (
+                        recalculated_at
+                        + timedelta(seconds=market_state.interval_seconds)
+                    )
+                next_run = min(
+                    self._market_next_run_utc.values(),
+                    default=recalculated_at + timedelta(seconds=60),
+                )
+                us_state = get_market_hours_state(recalculated_at, "US")
+                self._mode = us_state.mode
+                self._cadence_seconds = max(
+                    1,
+                    int((next_run - recalculated_at).total_seconds()),
+                )
+                self._next_run_time_utc = next_run.replace(microsecond=0).isoformat()
+                wait_seconds = self._cadence_seconds
+            if self._stop_event.wait(wait_seconds):
                 break
 
     @staticmethod
@@ -280,8 +325,9 @@ class TraderSchedulerService:
         source: str = "scheduler",
         user_ids: list[str] | None = None,
         raise_if_busy: bool = True,
+        markets: list[str] | tuple[str, ...] | None = None,
     ) -> None:
-        """Execute one scheduler cycle for one or multiple users."""
+        """Execute one scheduler cycle for users across each requested market."""
         acquired = self._run_lock.acquire(blocking=False)
         if not acquired:
             self._record_skip(source, "previous_run_still_executing")
@@ -289,7 +335,10 @@ class TraderSchedulerService:
                 raise TraderSchedulerBusyError("Trader is already running. Try again shortly.")
             return
 
-        state = get_market_hours_state()
+        clean_markets = list(
+            dict.fromkeys(normalize_market(value) for value in (markets or SCHEDULED_MARKETS))
+        )
+        state = get_market_hours_state(market=clean_markets[0])
         with self._state_lock:
             self._running = True
             self._mode = state.mode
@@ -303,36 +352,81 @@ class TraderSchedulerService:
         decisions_executed = 0
         error_count = 0
         error_messages: list[str] = []
+        market_results: dict[str, dict[str, Any]] = {
+            market: {
+                "users_processed": 0,
+                "tickers_processed": 0,
+                "tickers_failed": 0,
+                "fallback_used": 0,
+                "decisions_executed": 0,
+                "errors": 0,
+                "mode": get_market_hours_state(market=market).mode,
+            }
+            for market in clean_markets
+        }
         ledger = get_account_ledger_service()
         try:
             for user_id in users:
                 clean_user_id = str(user_id).strip()
                 if not clean_user_id:
                     continue
+                user_processed = False
                 try:
+                    # Recurring contributions remain a US-account feature and
+                    # are applied once even when both market cycles are due.
                     contribution_event = ledger.apply_recurring_monthly_contribution_if_due(
                         clean_user_id,
                         source="scheduler",
-                    )
+                    ) if "US" in clean_markets else None
                     if contribution_event is not None:
                         clear_user_virtual_account_cache(clean_user_id)
-                    status = self._run_live_trader_with_retry(
-                        user_id=clean_user_id,
-                        model_name=None,
-                        max_attempts=2,
-                    )
-                    # Live runs can mutate positions/cash; always clear read caches.
-                    clear_user_virtual_account_cache(clean_user_id)
-                    user_decisions = list(status.latest_decisions)
-                    users_processed += 1
-                    tickers_processed += int(status.tickers_evaluated)
-                    tickers_failed += int(status.tickers_failed)
-                    fallback_used += int(status.fallback_used_count)
-                    decisions_executed += self._count_executed_decisions(user_decisions)
                 except Exception as exc:  # pragma: no cover - runtime defensive guard
                     error_count += 1
-                    error_messages.append(f"{clean_user_id}: {str(exc)}")
-                    logger.exception("Trader cycle failed user_id=%s error=%s", clean_user_id, exc)
+                    error_messages.append(f"US/{clean_user_id}/contribution: {str(exc)}")
+                    logger.exception(
+                        "Trader contribution failed user_id=%s error=%s",
+                        clean_user_id,
+                        exc,
+                    )
+
+                for clean_market in clean_markets:
+                    try:
+                        status = self._run_live_trader_with_retry(
+                            user_id=clean_user_id,
+                            model_name=None,
+                            max_attempts=2,
+                            market=clean_market,
+                        )
+                        clear_user_virtual_account_cache(clean_user_id)
+                        user_decisions = list(status.latest_decisions)
+                        evaluated = int(status.tickers_evaluated)
+                        failed = int(status.tickers_failed)
+                        fallback = int(status.fallback_used_count)
+                        executed = self._count_executed_decisions(user_decisions)
+                        tickers_processed += evaluated
+                        tickers_failed += failed
+                        fallback_used += fallback
+                        decisions_executed += executed
+                        market_results[clean_market]["users_processed"] += 1
+                        market_results[clean_market]["tickers_processed"] += evaluated
+                        market_results[clean_market]["tickers_failed"] += failed
+                        market_results[clean_market]["fallback_used"] += fallback
+                        market_results[clean_market]["decisions_executed"] += executed
+                        user_processed = True
+                    except Exception as exc:  # pragma: no cover - runtime defensive guard
+                        error_count += 1
+                        market_results[clean_market]["errors"] += 1
+                        error_messages.append(
+                            f"{clean_market}/{clean_user_id}: {str(exc)}"
+                        )
+                        logger.exception(
+                            "Trader cycle failed market=%s user_id=%s error=%s",
+                            clean_market,
+                            clean_user_id,
+                            exc,
+                        )
+                if user_processed:
+                    users_processed += 1
 
             message = (
                 "run_completed "
@@ -356,6 +450,7 @@ class TraderSchedulerService:
                 message=message,
                 error_count=error_count,
                 error_messages=error_messages,
+                markets=market_results,
             )
         finally:
             with self._state_lock:
@@ -380,7 +475,8 @@ class TraderSchedulerService:
             self._record_skip("manual", "previous_run_still_executing")
             raise TraderSchedulerBusyError("Trader is already running. Try again shortly.")
 
-        state = get_market_hours_state()
+        clean_market = normalize_market(market)
+        state = get_market_hours_state(market=clean_market)
         with self._state_lock:
             self._running = True
             self._mode = state.mode
@@ -392,7 +488,7 @@ class TraderSchedulerService:
                     clean_user_id,
                     source="scheduler",
                 )
-                if str(market).strip().upper() == "US"
+                if clean_market == "US"
                 else None
             )
             if contribution_event is not None:
@@ -402,7 +498,7 @@ class TraderSchedulerService:
                 model_name=None,
                 tickers=tickers,
                 max_attempts=2,
-                market=market,
+                market=clean_market,
             )
             clear_user_virtual_account_cache(clean_user_id)
             tickers_processed = int(status.tickers_evaluated)
@@ -421,6 +517,17 @@ class TraderSchedulerService:
                 message=f"manual_run_completed user_id={clean_user_id}",
                 error_count=0,
                 error_messages=[],
+                markets={
+                    clean_market: {
+                        "users_processed": 1,
+                        "tickers_processed": tickers_processed,
+                        "tickers_failed": tickers_failed,
+                        "fallback_used": fallback_used,
+                        "decisions_executed": decisions_executed,
+                        "errors": 0,
+                        "mode": state.mode,
+                    }
+                },
             )
             return status
         finally:
@@ -494,6 +601,23 @@ class TraderSchedulerService:
                 "last_decisions_executed": int(self._last_decisions_executed),
                 "last_error_count": int(self._last_error_count),
                 "recent_runs": normalized_recent_runs,
+                "market_states": {
+                    market: {
+                        "market": market,
+                        "timezone": market_state.timezone,
+                        "mode": market_state.mode,
+                        "cadence_seconds": market_state.interval_seconds,
+                        "next_run_time_utc": (
+                            self._market_next_run_utc.get(market).replace(
+                                microsecond=0
+                            ).isoformat()
+                            if self._market_next_run_utc.get(market)
+                            else None
+                        ),
+                    }
+                    for market in SCHEDULED_MARKETS
+                    for market_state in [get_market_hours_state(market=market)]
+                },
             }
 
     def get_health(self) -> dict[str, Any]:

@@ -248,6 +248,7 @@ def run_model_lifecycle_now(
             workflow_type=request.workflow_type,
             trigger_reason=request.trigger_reason,
             tickers=request.tickers,
+            market=request.market,
         )
         production_payload = payload.get("production_model")
         return ModelLifecycleStatusResponse(

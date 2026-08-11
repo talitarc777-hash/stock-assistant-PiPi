@@ -16,8 +16,8 @@ export async function updateUserProfileSettings(payload) {
   });
 }
 
-export async function fetchUserWatchlist(userId) {
-  return requestJson(`/user-watchlist?user_id=${encodeURIComponent(userId)}`, {
+export async function fetchUserWatchlist(userId, market = "US") {
+  return requestJson(`/user-watchlist?user_id=${encodeURIComponent(userId)}&market=${encodeURIComponent(market)}`, {
     timeoutMs: 12000,
     retries: 1,
   });

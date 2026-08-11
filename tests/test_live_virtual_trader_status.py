@@ -156,7 +156,7 @@ class LiveVirtualTraderStatusTests(unittest.TestCase):
             model_name="auto_best",
             auto_run=False,
         )
-        mock_watchlist.assert_called_once_with(user_id="demo")
+        mock_watchlist.assert_called_once_with(user_id="demo", market="US")
 
 
 if __name__ == "__main__":

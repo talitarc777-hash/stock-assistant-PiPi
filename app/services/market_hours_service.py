@@ -1,9 +1,10 @@
 """Market-hours helpers for scheduler cadence decisions.
 
 This module keeps the logic explicit and deterministic:
-- market open window: 9:30 AM to 4:00 PM America/New_York
+- US session: 9:30 AM to 4:00 PM America/New_York
+- HK sessions: 9:30 AM-12:00 PM and 1:00 PM-4:00 PM Asia/Hong_Kong
 - weekends are always treated as market closed
-- no exchange holiday calendar is applied yet (beginner-friendly baseline)
+- exchange holidays are safely handled downstream by observed market candles
 """
 
 from __future__ import annotations

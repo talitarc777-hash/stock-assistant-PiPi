@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from typing import Literal
 
 from app.models.user_profile import (
     AlertEnabledUsersResponse,
@@ -89,12 +90,17 @@ def reset_user_profile(
 @router.get("/user-watchlist", response_model=UserWatchlistResponse)
 def get_unified_user_watchlist(
     user_id: str = Query(..., min_length=1, max_length=120),
+    market: Literal["US", "HK"] = "US",
 ) -> UserWatchlistResponse:
     """Return the resolved user watchlist or the system default fallback."""
     try:
-        watchlist, using_system_default, profile = get_user_watchlist(user_id=user_id)
+        watchlist, using_system_default, profile = get_user_watchlist(
+            user_id=user_id,
+            market=market,
+        )
         return UserWatchlistResponse(
             user_id=user_id,
+            market=market,
             watchlist=watchlist,
             using_system_default=using_system_default,
             last_active_source=profile.last_active_source,
@@ -114,10 +120,13 @@ def add_unified_user_watchlist_ticker(
             ticker=request.ticker,
             display_name=request.display_name,
             last_active_source=request.last_active_source,
+            market=request.market,
         )
+        watchlist, _, _ = get_user_watchlist(profile.user_id, market=request.market)
         return UserWatchlistResponse(
             user_id=profile.user_id,
-            watchlist=profile.default_watchlist,
+            market=request.market,
+            watchlist=watchlist,
             using_system_default=False,
             last_active_source=profile.last_active_source,
         )
@@ -136,10 +145,13 @@ def remove_unified_user_watchlist_ticker(
             ticker=request.ticker,
             display_name=request.display_name,
             last_active_source=request.last_active_source,
+            market=request.market,
         )
+        watchlist, _, _ = get_user_watchlist(profile.user_id, market=request.market)
         return UserWatchlistResponse(
             user_id=profile.user_id,
-            watchlist=profile.default_watchlist,
+            market=request.market,
+            watchlist=watchlist,
             using_system_default=False,
             last_active_source=profile.last_active_source,
         )

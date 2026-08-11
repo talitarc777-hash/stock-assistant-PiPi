@@ -17,11 +17,17 @@ from app.models.account_ledger import (
     VirtualAccountResetRequest,
 )
 from app.services.live_virtual_trader import (
-    _TRAINING_QUEUE,
+    _reset_background_training_queue_for_tests,
+    _decision_model_reporting,
+    _resolve_user_tickers,
     _schedule_background_training_if_enabled,
+    ensure_active_ticker_model_training,
 )
 from app.services.model_feedback_service import ModelFeedbackService, _horizon_prices
-from app.services.model_lifecycle_service import ModelLifecycleService
+from app.services.model_lifecycle_service import (
+    VALIDATION_GATE_VERSION,
+    ModelLifecycleService,
+)
 from app.services.model_results import (
     _scan_saved_model_artifacts,
     list_compatible_saved_model_candidates,
@@ -53,7 +59,7 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
                 self.db_path.unlink()
             except PermissionError:
                 pass
-        _TRAINING_QUEUE.clear()
+        _reset_background_training_queue_for_tests()
         if self.artifact_path.exists():
             shutil.rmtree(self.artifact_path, ignore_errors=True)
 
@@ -245,6 +251,130 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
 
         self.assertEqual(len(service.list_registry(ticker="0700", market="US")), 1)
         self.assertEqual(len(service.list_registry(ticker="0700", market="HK")), 1)
+
+    def test_stale_hk_model_is_not_selected_by_auto_best(self) -> None:
+        service = ModelLifecycleService(db_path=str(self.db_path))
+        service._upsert_registry(
+            ticker="0700",
+            period="2y",
+            target_name="target_5d_return",
+            model_name="random_forest",
+            status="candidate",
+            is_validated=True,
+            validation_score=0.8,
+            stale_after_days=1,
+            retrain_type="test",
+            metrics_summary={"validation_gate_version": VALIDATION_GATE_VERSION},
+            notes="stale test",
+            last_trained_at_utc="2020-01-01T00:00:00+00:00",
+            last_evaluated_at_utc="2020-01-01T00:00:00+00:00",
+            market="HK",
+        )
+
+        self.assertEqual(
+            service.resolve_runtime_model_candidates(
+                ticker="0700",
+                market="HK",
+                period="2y",
+                periods=("2y",),
+                target_name="target_5d_return",
+            ),
+            [],
+        )
+
+    def test_actual_model_and_fallback_reporting_are_truthful(self) -> None:
+        self.assertEqual(
+            _decision_model_reporting(
+                model_loaded=True,
+                selected_model_name="random_forest",
+                selected_period="2y",
+                selected_version="v2",
+            ),
+            ("random_forest", "2y", "v2", "ready"),
+        )
+        self.assertEqual(
+            _decision_model_reporting(
+                model_loaded=False,
+                selected_model_name="auto_best",
+                selected_period="2y",
+                selected_version="selector",
+                training_queued=True,
+            ),
+            ("backup_rules", "", "fallback", "training_pending"),
+        )
+
+    @patch("app.services.live_virtual_trader.get_model_lifecycle_service")
+    @patch("app.services.live_virtual_trader._schedule_background_training_if_enabled")
+    def test_current_unvalidated_hk_artifact_is_not_retrained_every_cycle(
+        self,
+        schedule_mock,
+        lifecycle_factory,
+    ) -> None:
+        lifecycle_factory.return_value.list_registry.return_value = [
+            {
+                "model_name": "random_forest",
+                "is_stale": False,
+                "is_validated": False,
+            }
+        ]
+
+        queued = ensure_active_ticker_model_training("0700", market="HK", period="2y")
+
+        self.assertFalse(queued)
+        schedule_mock.assert_not_called()
+
+    @patch("app.services.live_virtual_trader.get_user_profile_store")
+    def test_hk_live_universe_uses_all_persisted_active_tickers(
+        self,
+        profile_store_mock,
+    ) -> None:
+        active = ["0005", "0700", "1810", "3690", "9988"]
+        profile_store_mock.return_value.get_effective_watchlist.return_value = (
+            active,
+            False,
+            None,
+        )
+
+        self.assertEqual(_resolve_user_tickers("u1", None, market="HK"), active)
+        profile_store_mock.return_value.get_effective_watchlist.assert_called_once_with(
+            user_id="u1",
+            market="HK",
+        )
+
+    @patch("app.services.user_profile_service.get_user_profile_store")
+    @patch("app.services.model_lifecycle_service.train_baseline_models_for_ticker")
+    def test_hk_lifecycle_trains_every_active_ticker_separately(
+        self,
+        train_mock,
+        profile_store_mock,
+    ) -> None:
+        active = ["0005", "0700", "1810", "3690", "9988"]
+        profile_store_mock.return_value.list_effective_watchlist_tickers.return_value = active
+        train_mock.return_value = [object()]
+        service = ModelLifecycleService(db_path=str(self.db_path))
+
+        with patch.object(
+            service,
+            "register_training_result",
+            return_value={"promoted": False},
+        ):
+            result = service.run_training_workflow(
+                workflow_type="daily_incremental",
+                trigger_reason="test:HK",
+                market="HK",
+            )
+
+        self.assertEqual(result["processed_tickers"], 5)
+        self.assertEqual(
+            [call.kwargs["ticker"] for call in train_mock.call_args_list],
+            active,
+        )
+        self.assertTrue(all(
+            call.kwargs["market"] == "HK"
+            and call.kwargs["benchmark"] == "2800"
+            and call.kwargs["period"] == "2y"
+            for call in train_mock.call_args_list
+        ))
 
     def test_hk_feedback_uses_five_observed_sessions_and_stays_market_specific(self) -> None:
         service = ModelFeedbackService(db_path=str(self.db_path))

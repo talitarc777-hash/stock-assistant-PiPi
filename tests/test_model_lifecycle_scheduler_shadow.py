@@ -86,6 +86,34 @@ class ModelLifecycleShadowSchedulerTests(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 1)
         self.assertNotIn("shadow_collection_done_key", lifecycle.state)
 
+    @patch("app.services.model_lifecycle_scheduler.get_model_lifecycle_service")
+    def test_us_and_hk_workflow_completion_keys_are_independent(
+        self,
+        lifecycle_factory,
+    ) -> None:
+        lifecycle = _LifecycleStub([])
+        lifecycle_factory.return_value = lifecycle
+        us_close = datetime(
+            2026, 7, 14, 16, 45, tzinfo=ZoneInfo("America/New_York")
+        )
+        hk_close = datetime(
+            2026, 7, 14, 16, 45, tzinfo=ZoneInfo("Asia/Hong_Kong")
+        )
+
+        self.assertEqual(
+            self.scheduler._due_workflow(us_close, "US")[0],
+            "daily_incremental",
+        )
+        self.scheduler._mark_workflow_done("daily_incremental", us_close, "US")
+        self.assertEqual(
+            self.scheduler._due_workflow(hk_close, "HK")[0],
+            "daily_incremental",
+        )
+        self.scheduler._mark_workflow_done("daily_incremental", hk_close, "HK")
+
+        self.assertEqual(lifecycle.state["daily_done_key"], "2026-07-14")
+        self.assertEqual(lifecycle.state["daily_done_key:HK"], "2026-07-14")
+
 
 if __name__ == "__main__":
     unittest.main()
