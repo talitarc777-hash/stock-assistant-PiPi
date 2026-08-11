@@ -16,7 +16,8 @@ from typing import Any
 import yfinance as yf
 
 from app.services.market_data import get_price_history
-from app.services.market_config import get_hk_board_lot, resolve_security
+from app.services.hkex_security_metadata import get_hk_security_metadata
+from app.services.market_config import resolve_security
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,10 @@ def get_live_market_snapshot(
     latest = history.iloc[-1]
     previous = history.iloc[-2] if len(history) >= 2 else latest
 
+    hkex_metadata = (
+        get_hk_security_metadata(symbol) if identity.market == "HK" else None
+    )
+
     latest_close = float(latest["close"])
     previous_close = float(previous["close"])
     daily_change_pct = ((latest_close / previous_close) - 1) * 100 if previous_close else 0.0
@@ -133,6 +138,9 @@ def get_live_market_snapshot(
     except Exception as exc:  # pragma: no cover - depends on upstream provider
         logger.info("Live valuation fetch skipped for %s: %s", provider_symbol, exc)
 
+    if hkex_metadata is not None and not company_name:
+        company_name = hkex_metadata.security_name
+
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     logger.info(
         "Live market snapshot market=%s ticker=%s provider_symbol=%s latest_date=%s close=%.2f change_pct=%.3f pe=%s",
@@ -151,7 +159,24 @@ def get_live_market_snapshot(
         "provider_symbol": provider_symbol,
         "currency": identity.currency,
         "currency_symbol": identity.currency_symbol,
-        "board_lot": get_hk_board_lot(symbol) if identity.market == "HK" else 1,
+        "board_lot": hkex_metadata.board_lot if hkex_metadata is not None else (
+            None if identity.market == "HK" else 1
+        ),
+        "security_name": (
+            hkex_metadata.security_name if hkex_metadata is not None else None
+        ),
+        "security_category": (
+            hkex_metadata.category if hkex_metadata is not None else None
+        ),
+        "security_subcategory": (
+            hkex_metadata.subcategory if hkex_metadata is not None else None
+        ),
+        "ccass_admitted": (
+            hkex_metadata.ccass_admitted if hkex_metadata is not None else None
+        ),
+        "hkex_source_as_of": (
+            hkex_metadata.source_as_of if hkex_metadata is not None else None
+        ),
         "fetched_at_utc": now,
         "price_timestamp": latest["date"].strftime("%Y-%m-%d"),
         "close": latest_close,

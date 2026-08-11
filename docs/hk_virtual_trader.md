@@ -56,8 +56,22 @@ market and ticker.
 - The HK account holds HKD cash and is separate from the USD account.
 - The UI displays `HK$`; US continues to display `$`.
 - Normal HK orders require a known security-specific board lot and a quantity
-  divisible by it. The initial supported metadata is `0700: 100` and `9988:
-  100`. Unknown board lots block buys instead of inventing a value.
+  divisible by it. Board lots are loaded from HKEX's official **Full List of
+  Securities** workbook rather than a manually maintained ticker map. The
+  workbook also supplies the security name, category, sub-category, CCASS
+  admission flag, trading currency, and expiry date where present.
+- The normalized cache uses SQLite table `hkex_securities` plus refresh state
+  table `hkex_metadata_state`. By default its file is
+  `hkex_security_metadata.db` beside `PROFILE_DB_PATH`; set
+  `HKEX_METADATA_DB_PATH` only when a different location is required.
+- The first HK metadata lookup populates the cache. A successful cache is
+  refreshed at most once every 24 hours (`HKEX_METADATA_REFRESH_HOURS`). A
+  temporary failure is logged and retried no more than once per hour while the
+  most recent valid cache continues to serve trades. A failed or malformed
+  refresh never clears the valid rows and no board-lot value is fabricated.
+- Only HK buys require board-lot metadata. Automated buys are rounded down to
+  a complete lot; a buy is blocked when the ticker is invalid or HKEX has no
+  reliable board lot after the cache/source check.
 - The shared trader rounds automated buy and partial-sell quantities down to a
   complete board lot.
 - Market orders remain the current execution type. The isolated HK spread
@@ -69,8 +83,8 @@ market and ticker.
 
 ## NanoPi deployment
 
-No new Python dependency or environment variable is required; `yfinance` was
-already part of the project.
+No new Python dependency or required environment variable is needed. The XLSX
+reader uses the Python standard library and the existing `requests` package.
 
 ```bash
 cd /srv/stock-assistant-PiPi
@@ -81,8 +95,11 @@ npm ci
 npm run build
 sudo systemctl restart stock-assistant-api
 sudo systemctl status stock-assistant-api --no-pager -l
+curl -sS "http://127.0.0.1:8000/market-data/hk-security-metadata?ticker=1810" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8000/market-data/hkex-metadata-status" | python3 -m json.tool
 ```
 
-The database migration runs when the API service starts. Back up the production
-database before deployment as normal; do not delete `data/user_profiles.db` or
-the existing model directory.
+The metadata database and tables are created automatically on the first status
+or lookup request. Back up the production profile database before deployment as
+normal; do not delete `data/user_profiles.db`, the HKEX cache, or the existing
+model directory.

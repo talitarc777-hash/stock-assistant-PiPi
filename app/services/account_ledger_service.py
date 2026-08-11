@@ -21,12 +21,8 @@ from typing import Any
 from app.core.settings import get_settings
 from app.models.account_ledger import LEDGER_EVENT_TYPES
 from app.services.market_data import get_price_history
-from app.services.market_config import (
-    MARKET_CONFIGS,
-    get_hk_board_lot,
-    normalize_market,
-    resolve_security,
-)
+from app.services.hkex_security_metadata import get_hk_board_lot
+from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
 from app.services.monthly_contribution_service import (
     START_MONTH,
     MonthlyContributionStore,
@@ -552,11 +548,16 @@ class AccountLedgerService:
             raise AccountLedgerError("quantity must be a whole number.")
         numeric_quantity = float(int(numeric_quantity))
         board_lot = get_hk_board_lot(identity.ticker) if clean_market == "HK" else 1
-        if clean_market == "HK" and board_lot is None:
+        if clean_market == "HK" and normalized_action == "buy" and board_lot is None:
             raise AccountLedgerError(
                 "Board-lot metadata is unavailable for this HK ticker; trade was not submitted."
             )
-        if board_lot and int(numeric_quantity) % int(board_lot) != 0:
+        if (
+            clean_market == "HK"
+            and normalized_action == "buy"
+            and board_lot
+            and int(numeric_quantity) % int(board_lot) != 0
+        ):
             raise AccountLedgerError(
                 f"HK quantity must be a multiple of the {board_lot}-share board lot."
             )

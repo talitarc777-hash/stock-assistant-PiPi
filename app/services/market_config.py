@@ -111,18 +111,6 @@ def model_security_root(base_dir, market: str, ticker: str):
     return base_dir / identity.market / identity.ticker
 
 
-# Seeded only for the acceptance-test securities. Unknown values deliberately
-# remain unavailable so the trader never invents a board lot.
-HK_BOARD_LOTS: dict[str, int] = {
-    "0700": 100,
-    "9988": 100,
-}
-
-
-def get_hk_board_lot(ticker: str) -> int | None:
-    return HK_BOARD_LOTS.get(normalize_hk_ticker(ticker))
-
-
 HK_PHASE_2_EFFECTIVE_DATE = date(2026, 8, 3)
 
 
@@ -160,4 +148,3 @@ def is_valid_hk_price(price: float | Decimal, *, on_date: date | None = None) ->
     value = Decimal(str(price))
     spread = hk_minimum_spread(value, on_date=on_date)
     return value % spread == 0
-

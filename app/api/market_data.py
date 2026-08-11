@@ -19,6 +19,10 @@ from app.services.market_data import (
 )
 from app.services.indicators import IndicatorInputError, add_technical_indicators
 from app.services.live_market_data_service import get_live_market_snapshot
+from app.services.hkex_security_metadata import (
+    get_hk_security_metadata,
+    get_hkex_metadata_service,
+)
 from app.services.market_config import resolve_security
 
 logger = logging.getLogger(__name__)
@@ -108,6 +112,11 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     currency: str = "USD"
     currency_symbol: str = "$"
     board_lot: int | None = None
+    security_name: str | None = None
+    security_category: str | None = None
+    security_subcategory: str | None = None
+    ccass_admitted: bool | None = None
+    hkex_source_as_of: str | None = None
     price_timestamp: str
     close: float
     open: float
@@ -124,6 +133,21 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     business_summary: str | None = None
     business_summary_zh: str | None = None
     data_freshness_note: str
+
+
+class HkSecurityMetadataResponse(BaseModel):
+    """Normalized security metadata from the cached official HKEX list."""
+
+    stock_code: str
+    security_name: str
+    board_lot: int | None
+    category: str | None = None
+    subcategory: str | None = None
+    ccass_admitted: bool | None = None
+    trading_currency: str | None = None
+    expiry_date: str | None = None
+    source_as_of: str
+    source_url: str
 
 
 @router.get("/price-history", response_model=PriceHistoryResponse)
@@ -265,3 +289,35 @@ def market_data_live_snapshot(
     except Exception as exc:  # pragma: no cover
         logger.exception("Unexpected error in /market-data/live-snapshot")
         raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
+
+
+@router.get(
+    "/market-data/hk-security-metadata",
+    response_model=HkSecurityMetadataResponse,
+)
+def hk_security_metadata(
+    ticker: str = Query(
+        ...,
+        min_length=1,
+        max_length=7,
+        pattern=r"^\d{1,4}(?:\.HK)?$",
+        description="HK stock code, e.g. 1810 or 1810.HK",
+    ),
+) -> HkSecurityMetadataResponse:
+    """Return one security from the daily cached official HKEX list."""
+    try:
+        metadata = get_hk_security_metadata(ticker)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if metadata is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No reliable HKEX metadata is available for this ticker.",
+        )
+    return HkSecurityMetadataResponse(**metadata.to_dict())
+
+
+@router.get("/market-data/hkex-metadata-status")
+def hkex_metadata_status() -> dict[str, object]:
+    """Expose cache freshness for deployment and operations checks."""
+    return get_hkex_metadata_service().status()

@@ -34,8 +34,20 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
         Path("data").mkdir(exist_ok=True)
         self.db_path = Path(f"data/test_hk_virtual_trader_{uuid4().hex}.db")
         self.artifact_path = Path(f"data/test_hk_models_{uuid4().hex}")
+        self.board_lot_patcher = patch(
+            "app.services.account_ledger_service.get_hk_board_lot",
+            side_effect=lambda ticker: {
+                "0005": 400,
+                "0700": 100,
+                "1810": 200,
+                "3690": 100,
+                "9988": 100,
+            }.get(str(ticker).replace(".HK", "").zfill(4)),
+        )
+        self.board_lot_lookup = self.board_lot_patcher.start()
 
     def tearDown(self) -> None:
+        self.board_lot_patcher.stop()
         if self.db_path.exists():
             try:
                 self.db_path.unlink()
@@ -67,16 +79,25 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
         self.assertEqual([item["ticker"] for item in hk["holdings"]], ["0700"])
         self.assertEqual(hk["holdings"][0]["board_lot"], 100)
 
-    def test_hk_orders_require_a_known_complete_board_lot(self) -> None:
+    def test_hk_buys_require_official_metadata_and_a_complete_board_lot(self) -> None:
         service = AccountLedgerService(db_path=str(self.db_path))
         service.create_manual_deposit("u1", 100_000, market="HK")
         with self.assertRaisesRegex(AccountLedgerError, "board lot"):
             service.create_trade_event(
                 user_id="u1", action="buy", ticker="0700", quantity=50, price=300, market="HK"
             )
+        trade = service.create_trade_event(
+            user_id="u1", action="buy", ticker="0005", quantity=400, price=50, market="HK"
+        )
+        self.assertEqual(trade["ticker"], "0005")
+        self.board_lot_lookup.side_effect = lambda _ticker: None
+        sale = service.create_trade_event(
+            user_id="u1", action="sell", ticker="0005", quantity=400, price=51, market="HK"
+        )
+        self.assertEqual(sale["event_type"], "sell_trade")
         with self.assertRaisesRegex(AccountLedgerError, "Board-lot metadata"):
             service.create_trade_event(
-                user_id="u1", action="buy", ticker="0005", quantity=100, price=50, market="HK"
+                user_id="u1", action="buy", ticker="1234", quantity=100, price=1, market="HK"
             )
 
     def test_account_requests_and_resets_are_market_scoped(self) -> None:

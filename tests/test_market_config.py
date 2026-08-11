@@ -8,7 +8,6 @@ import pandas as pd
 
 from app.services.market_config import (
     MarketValidationError,
-    get_hk_board_lot,
     hk_minimum_spread,
     is_valid_hk_price,
     resolve_security,
@@ -39,11 +38,6 @@ class MarketConfigTests(unittest.TestCase):
         self.assertEqual(identity.ticker, "VOO")
         self.assertEqual(identity.provider_symbol, "VOO")
         self.assertEqual(identity.currency, "USD")
-
-    def test_board_lots_are_security_specific_and_unknown_is_none(self) -> None:
-        self.assertEqual(get_hk_board_lot("700"), 100)
-        self.assertEqual(get_hk_board_lot("9988.HK"), 100)
-        self.assertIsNone(get_hk_board_lot("5"))
 
     def test_phase_two_minimum_spreads(self) -> None:
         effective = date(2026, 8, 3)

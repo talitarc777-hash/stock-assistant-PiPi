@@ -32,7 +32,8 @@ from app.services.equity_curve_service import build_live_equity_curve
 from app.services.external_market_context_service import build_external_market_context
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
-from app.services.market_config import MARKET_CONFIGS, get_hk_board_lot, normalize_market, resolve_security
+from app.services.hkex_security_metadata import get_hk_board_lot
+from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
 from app.services.market_regime import assess_market_regime
 from app.services.model_feedback_service import get_model_feedback_service
 from app.services.model_lifecycle_service import (

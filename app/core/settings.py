@@ -94,6 +94,8 @@ class Settings(BaseModel):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
     profile_db_path: str = "data/user_profiles.db"
+    hkex_metadata_db_path: str = "data/hkex_security_metadata.db"
+    hkex_metadata_refresh_hours: float = 24.0
     research_data_dir: str = "data/research"
     research_models_dir: str = "data/models"
     cors_allow_origins: list[str] = [
@@ -145,12 +147,23 @@ def get_settings() -> Settings:
         app_env=app_env,
         configured_path=os.getenv("PROFILE_DB_PATH", "data/user_profiles.db"),
     )
+    configured_hkex_path = (os.getenv("HKEX_METADATA_DB_PATH") or "").strip()
+    hkex_metadata_db_path = (
+        str(Path(configured_hkex_path).expanduser())
+        if configured_hkex_path
+        else str(Path(profile_db_path).with_name("hkex_security_metadata.db"))
+    )
     return Settings(
         app_name=os.getenv("APP_NAME", "Stock Assistant API"),
         app_env=app_env,
         app_host=os.getenv("APP_HOST", "127.0.0.1"),
         app_port=int(os.getenv("APP_PORT", "8000")),
         profile_db_path=profile_db_path,
+        hkex_metadata_db_path=hkex_metadata_db_path,
+        hkex_metadata_refresh_hours=max(
+            1.0,
+            float(os.getenv("HKEX_METADATA_REFRESH_HOURS", "24")),
+        ),
         research_data_dir=os.getenv("RESEARCH_DATA_DIR", "data/research"),
         research_models_dir=os.getenv("RESEARCH_MODELS_DIR", "data/models"),
         cors_allow_origins=_parse_csv_env(
