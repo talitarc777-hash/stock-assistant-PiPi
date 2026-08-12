@@ -60,3 +60,14 @@ export function rankTopScoredTickers(decisions = [], watchlistRows = [], limit =
     .sort((left, right) => right.score - left.score || left.ticker.localeCompare(right.ticker))
     .slice(0, safeLimit);
 }
+
+export function rankTopScoredTickersByMarket(
+  decisionsByMarket = {},
+  watchlistRowsByMarket = {},
+  limit = 10
+) {
+  return {
+    US: rankTopScoredTickers(decisionsByMarket.US, watchlistRowsByMarket.US, limit),
+    HK: rankTopScoredTickers(decisionsByMarket.HK, watchlistRowsByMarket.HK, limit),
+  };
+}

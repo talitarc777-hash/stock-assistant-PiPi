@@ -19,18 +19,27 @@ function formatPrice(value) {
   return Number.isFinite(value) ? value.toFixed(2) : "N/A";
 }
 
-export default function TopScoredTickersTable({ rows, languageMode, isLoading, error, onSelectTicker }) {
+export default function TopScoredTickersTable({
+  rowsByMarket = { US: [], HK: [] },
+  languageMode,
+  isLoading,
+  errorsByMarket = { US: "", HK: "" },
+  onSelectTicker,
+}) {
+  const [activeMarket, setActiveMarket] = useState("US");
   const [activeClass, setActiveClass] = useState("stock");
   const rankLabel = labelByMode(languageMode, "Rank", "排名");
   const tickerLabel = labelByMode(languageMode, "Ticker", "股票代號");
   const scoreLabel = labelByMode(languageMode, "Score", "評分");
   const meaningLabel = labelByMode(languageMode, "Meaning", "評分含義");
   const priceLabel = labelByMode(languageMode, "Latest price", "最新價格");
+  const marketRows = rowsByMarket[activeMarket] || [];
+  const error = errorsByMarket[activeMarket] || "";
   const classRows = useMemo(
-    () => rows
+    () => marketRows
       .filter((item) => resolveTickerClassification(item).primaryClass === activeClass)
       .slice(0, 10),
-    [activeClass, rows]
+    [activeClass, marketRows]
   );
   const activeClassLabel = activeClass === "etf"
     ? labelByMode(languageMode, "ETF", "ETF")
@@ -42,32 +51,57 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
       <p className="helper-text">
         {labelByMode(
           languageMode,
-          "Each tab independently shows the 10 highest-scoring ETFs or stocks. A high score describes the technical setup; it does not guarantee profit.",
-          "每個分頁獨立顯示評分最高的 10 隻 ETF 或股票。高評分代表技術形態較強，並不保證獲利。"
+          "Choose a market and asset type to see its 10 highest-scoring tickers. A high score describes the technical setup; it does not guarantee profit.",
+          "選擇市場及資產類別，以查看該組別評分最高的 10 隻股票。高評分代表技術形態較強，並不保證獲利。"
         )}
       </p>
-      <div className="top-score-tabs" role="tablist" aria-label={labelByMode(languageMode, "Ticker class", "股票類別")}>
-        {[
-          ["stock", labelByMode(languageMode, "Stock", "股票")],
-          ["etf", labelByMode(languageMode, "ETF", "ETF")],
-        ].map(([classKey, label]) => (
-          <button
-            key={classKey}
-            type="button"
-            role="tab"
-            aria-selected={activeClass === classKey}
-            className={activeClass === classKey ? "active" : ""}
-            onClick={() => setActiveClass(classKey)}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="top-score-filter-groups">
+        <div className="top-score-filter-group">
+          <span className="top-score-filter-label">{labelByMode(languageMode, "Market", "市場")}</span>
+          <div className="top-score-tabs" role="tablist" aria-label={labelByMode(languageMode, "Market", "市場")}>
+            {[
+              ["US", labelByMode(languageMode, "US", "美股")],
+              ["HK", labelByMode(languageMode, "HK", "港股")],
+            ].map(([marketKey, label]) => (
+              <button
+                key={marketKey}
+                type="button"
+                role="tab"
+                aria-selected={activeMarket === marketKey}
+                className={activeMarket === marketKey ? "active" : ""}
+                onClick={() => setActiveMarket(marketKey)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="top-score-filter-group">
+          <span className="top-score-filter-label">{labelByMode(languageMode, "Asset type", "資產類別")}</span>
+          <div className="top-score-tabs" role="tablist" aria-label={labelByMode(languageMode, "Ticker class", "股票類別")}>
+            {[
+              ["stock", labelByMode(languageMode, "Stock", "股票")],
+              ["etf", labelByMode(languageMode, "ETF", "ETF")],
+            ].map(([classKey, label]) => (
+              <button
+                key={classKey}
+                type="button"
+                role="tab"
+                aria-selected={activeClass === classKey}
+                className={activeClass === classKey ? "active" : ""}
+                onClick={() => setActiveClass(classKey)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
       {error ? <p className="helper-text warning-text">{error}</p> : null}
       {isLoading && !classRows.length ? (
         <p>{labelByMode(languageMode, "Loading top scores...", "正在載入最高評分股票...")}</p>
       ) : null}
-      {!isLoading && !rows.length ? (
+      {!isLoading && !marketRows.length ? (
         <p>
           {labelByMode(
             languageMode,
@@ -76,7 +110,7 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
           )}
         </p>
       ) : null}
-      {!isLoading && rows.length > 0 && !classRows.length ? (
+      {!isLoading && marketRows.length > 0 && !classRows.length ? (
         <p>
           {labelByMode(
             languageMode,
@@ -105,7 +139,7 @@ export default function TopScoredTickersTable({ rows, languageMode, isLoading, e
                     <button
                       type="button"
                       className="ticker-dashboard-link"
-                      onClick={() => onSelectTicker?.(item.ticker)}
+                      onClick={() => onSelectTicker?.(item.ticker, activeMarket)}
                     >
                       <span className="ticker-identity">
                         <strong className="ticker-symbol">{item.ticker}</strong>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { rankTopScoredTickers } from "./topScoredTickers.js";
+import { rankTopScoredTickers, rankTopScoredTickersByMarket } from "./topScoredTickers.js";
 
 test("ranks unique tickers by their newest market score", () => {
   const decisions = [
@@ -39,4 +39,21 @@ test("ignores decisions without a real overall score", () => {
   ];
 
   assert.deepEqual(rankTopScoredTickers(decisions).map((row) => row.ticker), ["CCC"]);
+});
+
+test("ranks US and HK scores independently without mixing market rows", () => {
+  const ranked = rankTopScoredTickersByMarket(
+    {
+      US: [{ ticker: "AAPL", metadata: { overall_score: 82 } }],
+      HK: [{ ticker: "0700", metadata: { overall_score: 91 } }],
+    },
+    {
+      US: [{ ticker: "MSFT", score_breakdown: { total_score: 88 } }],
+      HK: [],
+    },
+    10
+  );
+
+  assert.deepEqual(ranked.US.map((row) => row.ticker), ["MSFT", "AAPL"]);
+  assert.deepEqual(ranked.HK.map((row) => row.ticker), ["0700"]);
 });

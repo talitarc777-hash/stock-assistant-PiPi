@@ -81,6 +81,11 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   assert.match(topScoreSource, /resolveTickerClassification/);
   assert.match(topScoreSource, /slice\(0, 10\)/);
   assert.match(topScoreSource, /role="tablist"/);
+  assert.match(topScoreSource, /activeMarket/);
+  assert.match(topScoreSource, /\["US", labelByMode/);
+  assert.match(topScoreSource, /\["HK", labelByMode/);
+  assert.match(appSource, /fetchLiveVirtualTraderTrades\(profileId, null, 200, market\)/);
+  assert.match(appSource, /rankTopScoredTickersByMarket/);
   assert.match(traderSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /onClick=\{\(\) => onSelectTicker/);

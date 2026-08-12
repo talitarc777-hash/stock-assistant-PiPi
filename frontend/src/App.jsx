@@ -29,7 +29,7 @@ import {
   normalizeProfileId,
   setStoredProfileId,
 } from "./services/profileStorage";
-import { rankTopScoredTickers } from "./utils/topScoredTickers";
+import { rankTopScoredTickersByMarket } from "./utils/topScoredTickers";
 import "./styles.css";
 
 const DEFAULT_PERIOD = "5y";
@@ -176,7 +176,7 @@ function CurrentAlertsPanel({ languageMode, alertScan, isLoading }) {
 
 function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpdated }) {
   const [watchlistRows, setWatchlistRows] = useState([]);
-  const [marketDecisionRows, setMarketDecisionRows] = useState([]);
+  const [marketDecisionRows, setMarketDecisionRows] = useState({ US: [], HK: [] });
   const [selectedTicker, setSelectedTicker] = useState("");
   const [analyzeData, setAnalyzeData] = useState(null);
   const [chartData, setChartData] = useState(null);
@@ -188,7 +188,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
   const [error, setError] = useState("");
-  const [topScoresError, setTopScoresError] = useState("");
+  const [topScoresError, setTopScoresError] = useState({ US: "", HK: "" });
 
   async function loadWatchlist() {
     if (!currentWatchlist.length) {
@@ -277,22 +277,28 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
 
   async function loadTopScores() {
     setIsLoadingTopScores(true);
-    setTopScoresError("");
-    try {
-      const payload = await fetchLiveVirtualTraderTrades(profileId, null, 200);
-      setMarketDecisionRows(payload.trades || []);
-    } catch {
-      setMarketDecisionRows([]);
-      setTopScoresError(
-        formatBilingualLabel(
-          languageMode,
-          "The latest broad-market scan is unavailable; current watchlist scores are shown instead.",
-          "最新廣泛市場掃描暫時無法使用；現改為顯示目前觀察名單評分。"
-        )
+    setTopScoresError({ US: "", HK: "" });
+    const markets = ["US", "HK"];
+    const results = await Promise.allSettled(
+      markets.map((market) => fetchLiveVirtualTraderTrades(profileId, null, 200, market))
+    );
+    const nextRows = { US: [], HK: [] };
+    const nextErrors = { US: "", HK: "" };
+    results.forEach((result, index) => {
+      const market = markets[index];
+      if (result.status === "fulfilled") {
+        nextRows[market] = result.value.trades || [];
+        return;
+      }
+      nextErrors[market] = formatBilingualLabel(
+        languageMode,
+        `The latest ${market} market scan is unavailable${market === "US" ? "; current watchlist scores are shown instead" : ""}.`,
+        `暫時無法載入最新${market === "US" ? "美股" : "港股"}市場掃描${market === "US" ? "；現改為顯示目前觀察清單評分" : ""}。`
       );
-    } finally {
-      setIsLoadingTopScores(false);
-    }
+    });
+    setMarketDecisionRows(nextRows);
+    setTopScoresError(nextErrors);
+    setIsLoadingTopScores(false);
   }
 
   async function loadAlerts() {
@@ -350,9 +356,22 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   );
 
   const topScoredTickers = useMemo(
-    () => rankTopScoredTickers(marketDecisionRows, watchlistRows, 200),
+    () => rankTopScoredTickersByMarket(
+      marketDecisionRows,
+      { US: watchlistRows, HK: [] },
+      200
+    ),
     [marketDecisionRows, watchlistRows]
   );
+
+  function selectTopScoredTicker(ticker, market) {
+    const normalizedTicker = String(ticker || "").trim().toUpperCase();
+    setSelectedTicker(
+      market === "HK" && normalizedTicker && !normalizedTicker.endsWith(".HK")
+        ? `${normalizedTicker}.HK`
+        : normalizedTicker
+    );
+  }
 
   const watchlistClassificationByTicker = useMemo(
     () => Object.fromEntries(watchlistRows.map((item) => [item.ticker, item])),
@@ -379,6 +398,9 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
             value={selectedTicker}
             onChange={(event) => setSelectedTicker(event.target.value)}
           >
+            {selectedTicker && !watchlistRows.some((row) => row.ticker === selectedTicker) ? (
+              <option value={selectedTicker}>{selectedTicker}</option>
+            ) : null}
             {watchlistRows.map((row) => (
               <option key={row.ticker} value={row.ticker}>
                 {row.ticker}
@@ -415,11 +437,11 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
       ) : null}
 
       <TopScoredTickersTable
-        rows={topScoredTickers}
+        rowsByMarket={topScoredTickers}
         languageMode={languageMode}
         isLoading={isLoadingWatchlist || isLoadingTopScores}
-        error={topScoresError}
-        onSelectTicker={setSelectedTicker}
+        errorsByMarket={topScoresError}
+        onSelectTicker={selectTopScoredTicker}
       />
 
       <div className="layout-grid">

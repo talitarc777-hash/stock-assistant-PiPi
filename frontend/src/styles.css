@@ -335,7 +335,25 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  margin: 4px 0 0;
+}
+
+.top-score-filter-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   margin: 8px 0 12px;
+}
+
+.top-score-filter-group {
+  min-width: 0;
+}
+
+.top-score-filter-label {
+  display: block;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .top-score-tabs button {
