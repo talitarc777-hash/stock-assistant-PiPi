@@ -1,0 +1,80 @@
+{
+  "generated_at_utc": "2026-08-13T02:12:38.004509+00:00",
+  "market": "HK",
+  "ticker": "GLOBAL",
+  "provider_symbol": "GLOBAL",
+  "period": "2y",
+  "target_name": "target_5d_return",
+  "task_type": "regression",
+  "model_name": "linear_regression",
+  "row_count": 2430,
+  "feature_count": 38,
+  "time_series_splits": 5,
+  "validation_method": "purged_walk_forward_with_calibrated_abstention_and_regime_filter",
+  "validation_scheme_version": 5,
+  "validation_gap_rows": 5,
+  "validation_note": "Random train/test shuffling is avoided because time-series evaluation must preserve time order and keep future data out of the training window. A target-horizon gap purges training labels whose future price window would overlap the test fold. Regression trade eligibility is calibrated on a trailing inner holdout, also separated by the target-horizon gap. A fixed prediction-time stress policy blocks new positions during severe selloffs, drawdowns, or volatility.",
+  "fold_sizes": [
+    {
+      "fold": 1,
+      "train_rows": 380,
+      "test_rows": 405,
+      "training_class_count": null,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": 9.443096404266644
+    },
+    {
+      "fold": 2,
+      "train_rows": 785,
+      "test_rows": 405,
+      "training_class_count": null,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": 0.0
+    },
+    {
+      "fold": 3,
+      "train_rows": 1190,
+      "test_rows": 405,
+      "training_class_count": null,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": 0.0
+    },
+    {
+      "fold": 4,
+      "train_rows": 1595,
+      "test_rows": 405,
+      "training_class_count": null,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": 1.8167032858324184
+    },
+    {
+      "fold": 5,
+      "train_rows": 2000,
+      "test_rows": 405,
+      "training_class_count": null,
+      "single_class_fallback": false,
+      "prediction_uncertainty_pct": 0.0
+    }
+  ],
+  "metrics": {
+    "mae": 22.021512289697462,
+    "rmse": 400.48000068284693,
+    "r2": -5030.3977550903555,
+    "direction_accuracy": 0.5012345679012346,
+    "absolute_error_80_pct": 9.704530195547392,
+    "absolute_error_95_pct": 17.607945508172147
+  },
+  "prediction_abstention_threshold_pct": 0.0,
+  "prediction_abstention_calibration": "inner_time_ordered_balanced_accuracy_and_return",
+  "feature_schema_version": 2,
+  "stationary_features": true,
+  "pooled_training": true,
+  "training_tickers": [
+    "0005",
+    "0700",
+    "1810",
+    "3690",
+    "9988"
+  ],
+  "pooled_stationary_features": true
+}

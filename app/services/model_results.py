@@ -12,7 +12,12 @@ from functools import lru_cache
 import pandas as pd
 
 from app.core.settings import get_settings
-from app.services.market_config import model_security_root, normalize_market, resolve_security
+from app.services.market_config import (
+    model_security_root,
+    normalize_market,
+    resolve_model_identity,
+    resolve_security,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,7 @@ def list_compatible_saved_model_candidates(
         "logistic_regression",
         "random_forest",
         "gradient_boosting",
+        "ridge_regression",
         "linear_regression",
     ]
     rank_map = {name: idx for idx, name in enumerate(preferred_model_order)}
@@ -143,8 +149,12 @@ def list_compatible_saved_model_candidates(
         if row["ticker"] == clean_ticker:
             append_row(row, "saved_exact_ticker_model")
     if identity.market == "HK":
-        # HK models are always security-specific. Never reuse another HK
-        # issuer's fitted model merely because its feature schema matches.
+        # Never reuse one issuer's fitted model for another issuer. A GLOBAL
+        # model is different: it is explicitly trained and validated across
+        # several HK securities using scale-independent features.
+        for row in sorted(rows, key=sort_key):
+            if row["ticker"] == "GLOBAL":
+                append_row(row, "saved_global_model")
         return output[: max(1, int(limit))]
     for row in sorted(rows, key=sort_key):
         if row["ticker"] == "GLOBAL":
@@ -164,7 +174,7 @@ def _resolve_model_artifact_dir(
     market: str = "US",
 ) -> Path:
     """Resolve one saved model artifact directory."""
-    identity = resolve_security(ticker, market)
+    identity = resolve_model_identity(ticker, market)
     artifact_dir = model_security_root(
         _get_models_base_dir(base_dir), identity.market, identity.ticker
     ) / period / target_name / model_name
@@ -383,6 +393,7 @@ def load_model_accuracy_summary(
     model_name: str = "logistic_regression",
     window: int = 20,
     base_dir: str | Path | None = None,
+    market: str = "US",
 ) -> dict[str, Any]:
     """Load saved model metrics plus a rolling-accuracy series."""
     artifact_dir = _resolve_model_artifact_dir(
@@ -391,6 +402,7 @@ def load_model_accuracy_summary(
         target_name=target_name,
         model_name=model_name,
         base_dir=base_dir,
+        market=market,
     )
     metrics = _read_json_file(artifact_dir / "metrics_summary.json")
     evaluation_df = _read_csv_file(artifact_dir / "evaluation_table.csv")

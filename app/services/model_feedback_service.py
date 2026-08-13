@@ -15,7 +15,7 @@ import pandas as pd
 from app.core.settings import get_settings
 from app.services.account_ledger_service import TRADE_ADMIN_FEE_HKD, get_trade_admin_fee_usd
 from app.services.market_data import get_price_history
-from app.services.market_config import normalize_market, resolve_security
+from app.services.market_config import normalize_market, resolve_model_identity, resolve_security
 
 logger = logging.getLogger(__name__)
 PriceLoader = Callable[[str, str], pd.DataFrame]
@@ -446,8 +446,7 @@ class ModelFeedbackService:
         if source not in MODEL_FEEDBACK_ELIGIBLE_SOURCES:
             return False
         model_ticker = str(metadata.get("model_ticker") or ticker).strip().upper()
-        if market == "HK":
-            model_ticker = resolve_security(model_ticker, market).ticker
+        model_ticker = resolve_model_identity(model_ticker, market).ticker
         task_type = str(metadata.get("task_type") or "unknown").strip().lower()
         decision_key = "|".join(
             (
@@ -603,6 +602,51 @@ class ModelFeedbackService:
                 MODEL_FEEDBACK_ELIGIBLE_SOURCES,
             ).fetchone()
         return int(row["count"] or 0)
+
+    def get_pipeline_status(self, market: str = "US") -> dict[str, Any]:
+        """Return observable queue coverage without overstating model quality."""
+        clean_market = normalize_market(market)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN status = 'evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
+                    COUNT(DISTINCT ticker) AS ticker_count,
+                    MIN(CASE WHEN status = 'pending' THEN decision_date END) AS oldest_pending_date,
+                    MAX(CASE WHEN status = 'evaluated' THEN outcome_date END) AS latest_outcome_date
+                FROM model_decision_feedback
+                WHERE market = ?
+                  AND decision_source IN ({placeholders})
+                """,
+                (clean_market, *MODEL_FEEDBACK_ELIGIBLE_SOURCES),
+            ).fetchone()
+        counts = dict(row) if row else {}
+        oldest = counts.get("oldest_pending_date")
+        estimated_maturity = None
+        if oldest:
+            estimated_maturity = str(
+                (
+                    pd.Timestamp(oldest)
+                    + pd.offsets.BDay(int(get_settings().model_feedback_horizon_days))
+                ).date()
+            )
+        return {
+            "market": clean_market,
+            "total_observation_count": int(counts.get("total_count") or 0),
+            "pending_count": int(counts.get("pending_count") or 0),
+            "evaluated_count": int(counts.get("evaluated_count") or 0),
+            "ticker_count": int(counts.get("ticker_count") or 0),
+            "oldest_pending_date": oldest,
+            "estimated_oldest_maturity_date": estimated_maturity,
+            "latest_outcome_date": counts.get("latest_outcome_date"),
+            "horizon_trading_days": int(get_settings().model_feedback_horizon_days),
+            "minimum_samples_for_score_influence": int(
+                get_settings().model_feedback_min_samples
+            ),
+        }
 
     def _pending_benchmark_shadows_for_evaluation(
         self,
@@ -980,7 +1024,7 @@ class ModelFeedbackService:
         market: str = "US",
     ) -> dict[str, Any]:
         clean_market = normalize_market(market)
-        identity = resolve_security(ticker, clean_market)
+        identity = resolve_model_identity(ticker, clean_market)
         source_placeholders = ", ".join(
             "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
         )

@@ -199,10 +199,13 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
         try:
             model_0700 = base / "HK" / "0700" / "5y" / "target_5d_return" / "linear_regression"
             model_9988 = base / "HK" / "9988" / "5y" / "target_5d_return" / "linear_regression"
+            model_global = base / "HK" / "GLOBAL" / "5y" / "target_5d_return" / "ridge_regression"
             model_0700.mkdir(parents=True)
             model_9988.mkdir(parents=True)
+            model_global.mkdir(parents=True)
             (model_0700 / "model.pkl").write_bytes(b"0700")
             (model_9988 / "model.pkl").write_bytes(b"9988")
+            (model_global / "model.pkl").write_bytes(b"global")
             _scan_saved_model_artifacts.cache_clear()
 
             self.assertEqual(
@@ -214,17 +217,20 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
             candidates = list_compatible_saved_model_candidates(
                 "0700", "5y", "target_5d_return", base_dir=base, market="HK"
             )
-            self.assertEqual([(row["ticker"], row["model_name"]) for row in candidates], [("0700", "linear_regression")])
             self.assertEqual(
-                list_compatible_saved_model_candidates(
+                [(row["ticker"], row["model_name"]) for row in candidates],
+                [("0700", "linear_regression"), ("GLOBAL", "ridge_regression")],
+            )
+            self.assertEqual(
+                [(row["ticker"], row["model_name"]) for row in list_compatible_saved_model_candidates(
                     "0005",
                     "5y",
                     "target_5d_return",
                     requested_model_name="linear_regression",
                     base_dir=base,
                     market="HK",
-                ),
-                [],
+                )],
+                [("GLOBAL", "ridge_regression")],
             )
         finally:
             shutil.rmtree(base, ignore_errors=True)
@@ -323,6 +329,30 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
         self.assertFalse(queued)
         schedule_mock.assert_not_called()
 
+    @patch(
+        "app.services.live_virtual_trader.list_compatible_saved_model_candidates",
+        return_value=[{"ticker": "GLOBAL", "model_name": "ridge_regression"}],
+    )
+    @patch("app.services.live_virtual_trader.get_model_lifecycle_service")
+    @patch("app.services.live_virtual_trader._schedule_background_training_if_enabled")
+    def test_hk_global_artifact_does_not_block_exact_ticker_training(
+        self,
+        schedule_mock,
+        lifecycle_factory,
+        _saved_candidates_mock,
+    ) -> None:
+        lifecycle_factory.return_value.list_registry.return_value = []
+
+        queued = ensure_active_ticker_model_training("1810", market="HK", period="2y")
+
+        self.assertTrue(queued)
+        schedule_mock.assert_called_once_with(
+            ticker="1810",
+            period="2y",
+            benchmark="2800",
+            market="HK",
+        )
+
     @patch("app.services.live_virtual_trader.get_user_profile_store")
     def test_hk_live_universe_uses_all_persisted_active_tickers(
         self,
@@ -342,15 +372,18 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
         )
 
     @patch("app.services.user_profile_service.get_user_profile_store")
+    @patch("app.services.model_lifecycle_service.train_pooled_baseline_models")
     @patch("app.services.model_lifecycle_service.train_baseline_models_for_ticker")
     def test_hk_lifecycle_trains_every_active_ticker_separately(
         self,
         train_mock,
+        pooled_train_mock,
         profile_store_mock,
     ) -> None:
         active = ["0005", "0700", "1810", "3690", "9988"]
         profile_store_mock.return_value.list_effective_watchlist_tickers.return_value = active
         train_mock.return_value = [object()]
+        pooled_train_mock.return_value = [object()]
         service = ModelLifecycleService(db_path=str(self.db_path))
 
         with patch.object(
@@ -375,6 +408,75 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
             and call.kwargs["period"] == "2y"
             for call in train_mock.call_args_list
         ))
+        pooled_train_mock.assert_called_once()
+        self.assertEqual(pooled_train_mock.call_args.kwargs["market"], "HK")
+        self.assertEqual(pooled_train_mock.call_args.kwargs["benchmark"], "2800")
+        self.assertEqual(pooled_train_mock.call_args.kwargs["tickers"], active)
+
+    def test_validated_hk_global_model_can_cover_an_exact_ticker(self) -> None:
+        service = ModelLifecycleService(db_path=str(self.db_path))
+        service._upsert_registry(
+            ticker="GLOBAL",
+            period="2y",
+            target_name="target_5d_return",
+            model_name="ridge_regression",
+            status="production",
+            is_validated=True,
+            validation_score=0.68,
+            stale_after_days=30,
+            retrain_type="daily_incremental_pooled",
+            metrics_summary={"validation_gate_version": VALIDATION_GATE_VERSION},
+            notes="validated pooled HK model",
+            last_trained_at_utc="2099-01-01T00:00:00+00:00",
+            last_evaluated_at_utc="2099-01-01T00:00:00+00:00",
+            last_promoted_at_utc="2099-01-01T00:00:00+00:00",
+            market="HK",
+        )
+
+        candidates = service.resolve_runtime_model_candidates(
+            ticker="1810",
+            market="HK",
+            period="2y",
+            periods=("2y",),
+            target_name="target_5d_return",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["ticker"], "GLOBAL")
+        self.assertEqual(candidates[0]["source"], "shared_global_production")
+
+    @patch("app.services.user_profile_service.get_user_profile_store")
+    @patch("app.services.model_lifecycle_service.train_pooled_baseline_models")
+    @patch("app.services.model_lifecycle_service.train_baseline_models_for_ticker")
+    def test_hk_lifecycle_keeps_foundation_when_profile_has_one_ticker(
+        self,
+        train_mock,
+        pooled_train_mock,
+        profile_store_mock,
+    ) -> None:
+        profile_store_mock.return_value.list_effective_watchlist_tickers.return_value = ["0700"]
+        train_mock.return_value = [object()]
+        pooled_train_mock.return_value = [object()]
+        service = ModelLifecycleService(db_path=str(self.db_path))
+
+        with patch.object(
+            service,
+            "register_training_result",
+            return_value={"validated": False, "promoted": False},
+        ):
+            result = service.run_training_workflow(
+                workflow_type="daily_incremental",
+                trigger_reason="test:HK:foundation",
+                market="HK",
+            )
+
+        expected = ["0005", "0700", "1810", "3690", "9988"]
+        self.assertEqual(result["processed_tickers"], len(expected))
+        self.assertEqual(
+            [call.kwargs["ticker"] for call in train_mock.call_args_list],
+            expected,
+        )
+        self.assertEqual(pooled_train_mock.call_args.kwargs["tickers"], expected)
 
     def test_hk_feedback_uses_five_observed_sessions_and_stays_market_specific(self) -> None:
         service = ModelFeedbackService(db_path=str(self.db_path))

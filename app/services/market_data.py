@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
@@ -12,6 +13,7 @@ from time import monotonic
 import pandas as pd
 import yfinance as yf
 
+from app.core.settings import get_settings
 from app.services.market_config import MarketValidationError, resolve_security
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,50 @@ _PROXY_ENV_KEYS = (
 _HISTORY_CACHE: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
 _HISTORY_CACHE_LOCK = Lock()
 _HISTORY_CACHE_TTL_SECONDS = 15 * 60
+
+
+def _persistent_history_path(market: str, provider_symbol: str, period: str) -> Path:
+    safe_symbol = re.sub(r"[^A-Z0-9._=-]+", "_", provider_symbol.upper())
+    safe_period = re.sub(r"[^a-zA-Z0-9]+", "_", str(period).lower())
+    return (
+        Path(get_settings().market_history_cache_dir)
+        / market
+        / safe_symbol
+        / f"{safe_period}.csv"
+    )
+
+
+def _save_persistent_history(
+    frame: pd.DataFrame,
+    *,
+    market: str,
+    provider_symbol: str,
+    period: str,
+) -> None:
+    path = _persistent_history_path(market, provider_symbol, period)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    frame.to_csv(temporary, index=False)
+    temporary.replace(path)
+
+
+def _load_persistent_history(
+    *,
+    market: str,
+    provider_symbol: str,
+    period: str,
+) -> pd.DataFrame | None:
+    path = _persistent_history_path(market, provider_symbol, period)
+    if not path.exists():
+        return None
+    try:
+        frame = pd.read_csv(path)
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame = frame.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+        return frame if not frame.empty else None
+    except Exception as exc:  # pragma: no cover - damaged-cache guard
+        logger.warning("Persistent market history cache unreadable path=%s error=%s", path, exc)
+        return None
 
 
 def _clear_broken_local_proxy_env() -> None:
@@ -249,6 +295,20 @@ def get_price_history(
                     monotonic() + _HISTORY_CACHE_TTL_SECONDS,
                     cleaned.copy(deep=True),
                 )
+            try:
+                _save_persistent_history(
+                    cleaned,
+                    market=identity.market,
+                    provider_symbol=safe_ticker,
+                    period=period,
+                )
+            except Exception as exc:  # pragma: no cover - cache must not block data
+                logger.warning(
+                    "Persistent market history cache write failed ticker=%s period=%s error=%s",
+                    safe_ticker,
+                    period,
+                    exc,
+                )
         logger.info(
             "Market data loaded market=%s ticker=%s provider_symbol=%s rows=%d cache=miss",
             identity.market,
@@ -258,6 +318,24 @@ def get_price_history(
         )
         return cleaned
     except MarketDataError:
+        stale = (
+            _load_persistent_history(
+                market=identity.market,
+                provider_symbol=safe_ticker,
+                period=period,
+            )
+            if download_fn is None
+            else None
+        )
+        if stale is not None:
+            logger.warning(
+                "Market data provider failed; using last valid persistent cache market=%s ticker=%s period=%s latest_date=%s",
+                identity.market,
+                identity.ticker,
+                period,
+                stale.iloc[-1]["date"],
+            )
+            return stale.copy(deep=True)
         # Preserve expected domain errors with clear logs.
         logger.warning(
             "Market data request failed for ticker=%s period=%s",
@@ -267,6 +345,25 @@ def get_price_history(
         )
         raise
     except Exception as exc:  # pragma: no cover - defensive layer
+        stale = (
+            _load_persistent_history(
+                market=identity.market,
+                provider_symbol=safe_ticker,
+                period=period,
+            )
+            if download_fn is None
+            else None
+        )
+        if stale is not None:
+            logger.warning(
+                "Unexpected provider error; using last valid persistent cache market=%s ticker=%s period=%s latest_date=%s error=%s",
+                identity.market,
+                identity.ticker,
+                period,
+                stale.iloc[-1]["date"],
+                exc,
+            )
+            return stale.copy(deep=True)
         logger.exception(
             "Unexpected market data error for ticker=%s period=%s", safe_ticker, period
         )

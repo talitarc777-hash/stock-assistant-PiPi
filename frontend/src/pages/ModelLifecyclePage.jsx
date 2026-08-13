@@ -4,6 +4,7 @@ import {
   fetchModelLifecycleRegistry,
   fetchModelLifecycleRuns,
   fetchModelLifecycleStatus,
+  fetchModelImprovementStatus,
   runModelLifecycleNow,
 } from "../api";
 import {
@@ -15,7 +16,12 @@ import {
 } from "../utils/modelMetrics";
 
 const TRADING_PERIODS = ["2y", "5y", "10y"];
-const TRADING_MODELS = ["linear_regression", "random_forest", "gradient_boosting"];
+const TRADING_MODELS = [
+  "linear_regression",
+  "ridge_regression",
+  "random_forest",
+  "gradient_boosting",
+];
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -37,6 +43,7 @@ function dateText(value) {
 function modelText(value) {
   const labels = {
     linear_regression: "Linear regression",
+    ridge_regression: "Ridge regression",
     random_forest: "Random forest",
     gradient_boosting: "Gradient boosting",
   };
@@ -63,10 +70,12 @@ function statusText(value, languageMode) {
 
 export default function ModelLifecyclePage({ languageMode }) {
   const [status, setStatus] = useState(null);
+  const [hkStatus, setHkStatus] = useState(null);
+  const [improvementStatus, setImprovementStatus] = useState(null);
   const [registry, setRegistry] = useState([]);
   const [runs, setRuns] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isRunningNow, setIsRunningNow] = useState(false);
+  const [isRunningNow, setIsRunningNow] = useState("");
   const [showTrustExplanation, setShowTrustExplanation] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState("");
@@ -75,15 +84,25 @@ export default function ModelLifecyclePage({ languageMode }) {
     setIsLoading(true);
     setError("");
     const results = await Promise.allSettled([
-      fetchModelLifecycleStatus("VOO", "2y", "target_5d_return", 6),
-      fetchModelLifecycleRegistry(1000),
+      fetchModelLifecycleStatus("VOO", "2y", "target_5d_return", 6, "US"),
+      fetchModelLifecycleStatus("0700", "2y", "target_5d_return", 6, "HK"),
+      fetchModelLifecycleRegistry(1000, { market: "US" }),
+      fetchModelLifecycleRegistry(1000, { market: "HK" }),
       fetchModelLifecycleRuns(8),
+      fetchModelImprovementStatus(),
     ]);
 
-    const [statusResult, registryResult, runsResult] = results;
+    const [statusResult, hkStatusResult, usRegistryResult, hkRegistryResult, runsResult, improvementResult] = results;
     setStatus(statusResult.status === "fulfilled" ? statusResult.value : null);
-    setRegistry(registryResult.status === "fulfilled" ? registryResult.value || [] : []);
+    setHkStatus(hkStatusResult.status === "fulfilled" ? hkStatusResult.value : null);
+    setRegistry([
+      ...(usRegistryResult.status === "fulfilled" ? usRegistryResult.value || [] : []),
+      ...(hkRegistryResult.status === "fulfilled" ? hkRegistryResult.value || [] : []),
+    ]);
     setRuns(runsResult.status === "fulfilled" ? runsResult.value || [] : []);
+    setImprovementStatus(
+      improvementResult.status === "fulfilled" ? improvementResult.value : null
+    );
 
     const failedCount = results.filter((item) => item.status === "rejected").length;
     if (failedCount > 0) {
@@ -100,16 +119,21 @@ export default function ModelLifecyclePage({ languageMode }) {
     loadAll();
   }, []);
 
-  async function handleRunNow() {
-    setIsRunningNow(true);
+  async function handleRunNow(market) {
+    setIsRunningNow(market);
     setError("");
     try {
-      await runModelLifecycleNow("daily_incremental", "manual_dashboard_run");
+      await runModelLifecycleNow(
+        "daily_incremental",
+        `manual_dashboard_run:${market}`,
+        null,
+        market
+      );
       await loadAll();
     } catch (requestError) {
-      setError(requestError.message || "Failed to refresh the 2-year models.");
+      setError(requestError.message || `Failed to refresh the ${market} 2-year models.`);
     } finally {
-      setIsRunningNow(false);
+      setIsRunningNow("");
     }
   }
 
@@ -134,6 +158,7 @@ export default function ModelLifecyclePage({ languageMode }) {
       tradingRegistry
         .filter(
           (item) =>
+            item.market === "US" &&
             item.ticker === "VOO" &&
             item.is_validated &&
             ["production", "candidate"].includes(item.status)
@@ -146,6 +171,9 @@ export default function ModelLifecyclePage({ languageMode }) {
   );
 
   const preferredModel = rankedForVoo[0] || null;
+  const improvementRows = ["US", "HK"].map(
+    (market) => improvementStatus?.markets?.[market] || { market }
+  );
   const legacyValidationCount = tradingRegistry.filter(
     (item) => item.stored_is_validated && !item.validation_evidence_current
   ).length;
@@ -222,10 +250,15 @@ export default function ModelLifecyclePage({ languageMode }) {
           <button type="button" onClick={loadAll} disabled={isLoading}>
             {labelByMode(languageMode, "Refresh", "\u91cd\u65b0\u8f09\u5165")}
           </button>
-          <button type="button" onClick={handleRunNow} disabled={isRunningNow}>
-            {isRunningNow
-              ? labelByMode(languageMode, "Refreshing models...", "\u6b63\u5728\u66f4\u65b0\u6a21\u578b...")
-              : labelByMode(languageMode, "Refresh 2-year models", "\u66f4\u65b0 2 \u5e74\u6a21\u578b")}
+          <button type="button" onClick={() => handleRunNow("US")} disabled={Boolean(isRunningNow)}>
+            {isRunningNow === "US"
+              ? labelByMode(languageMode, "Refreshing US models...", "正在更新美股模型...")
+              : labelByMode(languageMode, "Refresh US 2-year models", "更新美股 2 年模型")}
+          </button>
+          <button type="button" onClick={() => handleRunNow("HK")} disabled={Boolean(isRunningNow)}>
+            {isRunningNow === "HK"
+              ? labelByMode(languageMode, "Refreshing HK models...", "正在更新港股模型...")
+              : labelByMode(languageMode, "Refresh HK 2-year models", "更新港股 2 年模型")}
           </button>
         </div>
       </header>
@@ -338,6 +371,7 @@ export default function ModelLifecyclePage({ languageMode }) {
             <span>{labelByMode(languageMode, "System", "\u7cfb\u7d71")}</span>
             <strong>
               {status?.scheduler_started
+                && hkStatus?.scheduler_started
                 ? labelByMode(languageMode, "Active", "\u904b\u4f5c\u4e2d")
                 : labelByMode(languageMode, "Not running", "\u672a\u904b\u4f5c")}
             </strong>
@@ -362,6 +396,51 @@ export default function ModelLifecyclePage({ languageMode }) {
             "\u6bcf\u500b\u80a1\u7968\u4ee3\u865f\u90fd\u6703\u7368\u7acb\u9078\u64c7\u6a21\u578b\u3002VOO \u53ea\u662f\u6613\u65bc\u95b1\u8b80\u7684\u7bc4\u4f8b\u3002"
           )}
         </p>
+      </section>
+
+      <section className="panel">
+        <h3>{labelByMode(languageMode, "Continuous Improvement Pipeline", "持續改進流程")}</h3>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "New challengers are trained and tested on unseen, time-ordered data. Rejected challengers do not replace a safer current model. Five-day live outcomes then update the evidence score; they do not bypass validation.",
+            "新挑戰模型會使用未見過並按時間排序的資料測試。被拒絕的挑戰模型不會取代較安全的現有模型；其後五個交易日的實際結果只會更新證據評分，不會繞過驗證。"
+          )}
+        </p>
+        <div className="table-wrap responsive-card-table">
+          <table className="static-table">
+            <thead>
+              <tr>
+                <th>{labelByMode(languageMode, "Market", "市場")}</th>
+                <th>{labelByMode(languageMode, "Latest training", "最近訓練")}</th>
+                <th>{labelByMode(languageMode, "Current candidates", "現有候選模型")}</th>
+                <th>{labelByMode(languageMode, "Validated", "已驗證")}</th>
+                <th>{labelByMode(languageMode, "Runtime coverage", "交易覆蓋")}</th>
+                <th>{labelByMode(languageMode, "5-day feedback", "五日回饋")}</th>
+                <th>{labelByMode(languageMode, "Top rejection reasons", "主要拒絕原因")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {improvementRows.map((item) => {
+                const reasons = Object.entries(item.top_rejection_reasons || {})
+                  .slice(0, 3)
+                  .map(([reason, count]) => `${reason.replaceAll("_", " ")} (${count})`)
+                  .join(", ");
+                return (
+                  <tr key={item.market}>
+                    <td data-label={labelByMode(languageMode, "Market", "市場")}><strong>{item.market}</strong></td>
+                    <td data-label={labelByMode(languageMode, "Latest training", "最近訓練")}>{dateText(item.latest_training_at_utc)}</td>
+                    <td data-label={labelByMode(languageMode, "Current candidates", "現有候選模型")}>{item.candidate_models ?? 0}</td>
+                    <td data-label={labelByMode(languageMode, "Validated", "已驗證")}>{item.validated_models ?? 0}</td>
+                    <td data-label={labelByMode(languageMode, "Runtime coverage", "交易覆蓋")}>{`${item.runtime_eligible_tickers ?? 0} exact tickers + ${item.validated_pooled_models ?? 0} validated pooled`}</td>
+                    <td data-label={labelByMode(languageMode, "5-day feedback", "五日回饋")}>{`${item.feedback?.evaluated_count ?? 0} evaluated; ${item.feedback?.pending_count ?? 0} pending`}</td>
+                    <td data-label={labelByMode(languageMode, "Top rejection reasons", "主要拒絕原因")}>{reasons || labelByMode(languageMode, "None recorded", "暫無記錄")}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="panel">
@@ -447,7 +526,7 @@ export default function ModelLifecyclePage({ languageMode }) {
                   <td data-label={labelByMode(languageMode, "Validated models", "已驗證模型")}>{row.available}</td>
                   <td data-label={labelByMode(languageMode, "Best available", "最佳可用模型")}>
                     {row.best
-                      ? `${row.best.ticker}: ${modelText(row.best.model_name)} (${scoreText(row.best.validation_score)})`
+                      ? `${row.best.market} ${row.best.ticker}: ${modelText(row.best.model_name)} (${scoreText(row.best.validation_score)})`
                       : labelByMode(languageMode, "Waiting for training", "\u7b49\u5f85\u8a13\u7df4")}
                   </td>
                 </tr>
@@ -471,24 +550,26 @@ export default function ModelLifecyclePage({ languageMode }) {
             <thead>
               <tr>
                 <th>{labelByMode(languageMode, "Time", "\u6642\u9593")}</th>
+                <th>{labelByMode(languageMode, "Market", "市場")}</th>
                 <th>{labelByMode(languageMode, "Update type", "\u66f4\u65b0\u985e\u578b")}</th>
                 <th>{labelByMode(languageMode, "Result", "\u7d50\u679c")}</th>
                 <th>{labelByMode(languageMode, "Tickers", "\u80a1\u7968\u6578\u91cf")}</th>
-                <th>{labelByMode(languageMode, "Models ready", "\u5b8c\u6210\u6a21\u578b")}</th>
+                <th>{labelByMode(languageMode, "Validated / rejected", "通過／拒絕")}</th>
               </tr>
             </thead>
             <tbody>
               {runs.length ? runs.map((item) => (
                 <tr key={item.id}>
                   <td data-label={labelByMode(languageMode, "Time", "時間")}>{dateText(item.started_at_utc)}</td>
+                  <td data-label={labelByMode(languageMode, "Market", "市場")}>{item.details?.market || "US"}</td>
                   <td data-label={labelByMode(languageMode, "Update type", "更新類型")}>{workflowText(item.run_type, languageMode)}</td>
                   <td data-label={labelByMode(languageMode, "Result", "結果")}>{statusText(item.status, languageMode)}</td>
                   <td data-label={labelByMode(languageMode, "Tickers", "股票數量")}>{item.processed_tickers}</td>
-                  <td data-label={labelByMode(languageMode, "Models ready", "完成模型")}>{item.successful_models}</td>
+                  <td data-label={labelByMode(languageMode, "Validated / rejected", "通過／拒絕")}>{`${item.details?.validated_models ?? 0} / ${item.details?.rejected_models ?? 0}`}</td>
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={5}>
+                  <td colSpan={6}>
                     {labelByMode(languageMode, "No model updates recorded yet.", "\u76ee\u524d\u5c1a\u672a\u6709\u6a21\u578b\u66f4\u65b0\u8a18\u9304\u3002")}
                   </td>
                 </tr>
@@ -523,6 +604,7 @@ export default function ModelLifecyclePage({ languageMode }) {
               <table className="static-table">
                 <thead>
                   <tr>
+                    <th>{labelByMode(languageMode, "Market", "市場")}</th>
                     <th>Ticker</th>
                     <th>{labelByMode(languageMode, "History", "\u6b77\u53f2\u9577\u5ea6")}</th>
                     <th>{labelByMode(languageMode, "Model", "\u6a21\u578b")}</th>
@@ -536,7 +618,8 @@ export default function ModelLifecyclePage({ languageMode }) {
                 </thead>
                 <tbody>
                   {tradingRegistry.slice(0, 80).map((item) => (
-                    <tr key={`${item.ticker}-${item.period}-${item.model_name}`}>
+                    <tr key={`${item.market}-${item.ticker}-${item.period}-${item.model_name}`}>
+                      <td data-label={labelByMode(languageMode, "Market", "市場")}>{item.market}</td>
                       <td data-label="Ticker">{item.ticker}</td>
                       <td data-label={labelByMode(languageMode, "History", "歷史長度")}>{item.period}</td>
                       <td data-label={labelByMode(languageMode, "Model", "模型")}>{modelText(item.model_name)}</td>

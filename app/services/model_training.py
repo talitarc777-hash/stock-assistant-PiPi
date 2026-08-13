@@ -20,7 +20,7 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -37,7 +37,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from app.core.settings import get_settings
 from app.services.prediction_explanations import build_prediction_explanation
 from app.services.research_pipeline import build_feature_dataset
-from app.services.market_config import model_security_root, resolve_security
+from app.services.market_config import model_security_root, resolve_model_identity, resolve_security
 from app.services.market_regime import assess_market_regime
 from app.services.outperformance_economics import evaluate_outperformance_economics
 from app.services.research_pipeline import OUTPERFORMANCE_ROUND_TRIP_COST_PCT
@@ -88,7 +88,7 @@ FEATURE_EXCLUDE_COLUMNS: set[str] = {
     "target_5d_updown",
     "target_20d_regime",
 }
-VALIDATION_SCHEME_VERSION = 4
+VALIDATION_SCHEME_VERSION = 5
 
 POOLED_LEVEL_FEATURES = {
     "open",
@@ -292,6 +292,18 @@ def _build_regressor_pipeline(model_name: str) -> Pipeline:
                 ("model", estimator),
             ]
         )
+    if model_key == "ridge_regression":
+        # Regularization makes the correlated technical indicators less likely
+        # to produce unstable coefficients, which is especially useful for the
+        # smaller per-security HK datasets.
+        estimator = Ridge(alpha=10.0)
+        return Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+                ("scaler", StandardScaler()),
+                ("model", estimator),
+            ]
+        )
     if model_key == "random_forest":
         estimator = RandomForestRegressor(
             n_estimators=200,
@@ -321,7 +333,7 @@ def _get_default_model_names(task_type: str) -> list[str]:
     if task_type == "classification":
         return ["logistic_regression", "random_forest", "gradient_boosting"]
     if task_type == "regression":
-        return ["linear_regression", "random_forest", "gradient_boosting"]
+        return ["linear_regression", "ridge_regression", "random_forest", "gradient_boosting"]
     raise ModelTrainingError(f"Unsupported task type: {task_type}")
 
 
@@ -356,6 +368,73 @@ def _score_regression_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict
         "absolute_error_80_pct": float(absolute_errors.quantile(0.80)),
         "absolute_error_95_pct": float(absolute_errors.quantile(0.95)),
     }
+
+
+def _calibrate_regression_abstention_threshold(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+) -> float | None:
+    """Choose a signal-size threshold on an inner, time-ordered holdout.
+
+    Candidate thresholds are judged only on the calibration slice, never on
+    the outer walk-forward test fold.  The score rewards balanced directional
+    accuracy and signed return while requiring useful signal coverage.  This
+    replaces the old error-quantile rule, which could leave a two-year model
+    with too few independent signals to ever pass validation.
+    """
+    actual_values = np.asarray(actual, dtype=float)
+    predicted_values = np.asarray(predicted, dtype=float)
+    finite = np.isfinite(actual_values) & np.isfinite(predicted_values)
+    actual_values = actual_values[finite]
+    predicted_values = predicted_values[finite]
+    # The first outer fold of a two-year model can have a short inner holdout.
+    # Ten observations are enough to compare the deliberately small threshold
+    # grid without making that fold permanently uncalibratable.
+    if len(actual_values) < 10:
+        return None
+
+    magnitudes = np.abs(predicted_values)
+    candidates = sorted({
+        0.0,
+        *(
+            float(np.quantile(magnitudes, quantile))
+            for quantile in (0.35, 0.50, 0.65, 0.75)
+        ),
+    })
+    minimum_signals = max(10, int(np.ceil(len(actual_values) * 0.20)))
+    best: tuple[float, float] | None = None
+    for threshold in candidates:
+        active = magnitudes >= threshold
+        if int(active.sum()) < minimum_signals:
+            continue
+        actual_up = actual_values[active] > 0
+        predicted_up = predicted_values[active] > 0
+        positive_recall = (
+            float((predicted_up & actual_up).sum()) / float(actual_up.sum())
+            if actual_up.any()
+            else 0.0
+        )
+        actual_down = ~actual_up
+        negative_recall = (
+            float((~predicted_up & actual_down).sum()) / float(actual_down.sum())
+            if actual_down.any()
+            else 0.0
+        )
+        balanced_accuracy = (positive_recall + negative_recall) / 2.0
+        direction_accuracy = float((predicted_up == actual_up).mean())
+        signed_return = np.sign(predicted_values[active]) * actual_values[active]
+        return_component = float(np.tanh(float(np.mean(signed_return)) / 2.0))
+        coverage = float(active.mean())
+        score = (
+            0.55 * balanced_accuracy
+            + 0.30 * direction_accuracy
+            + 0.10 * max(-1.0, min(1.0, return_component))
+            + 0.05 * coverage
+        )
+        candidate = (score, -threshold)
+        if best is None or candidate > best:
+            best = candidate
+    return -best[1] if best is not None else None
 
 
 def _get_prediction_confidence(
@@ -548,7 +627,7 @@ def train_baseline_model(
     market: str = "US",
 ) -> TrainingRunResult:
     """Train one baseline model with expanding-window validation only."""
-    identity = resolve_security(ticker, market)
+    identity = resolve_model_identity(ticker, market)
     uses_stationary_features = task_type == "regression"
     if uses_stationary_features and "close" in dataset_df.columns:
         dataset_df = prepare_stationary_feature_dataset(dataset_df)
@@ -608,12 +687,9 @@ def train_baseline_model(
                     calibration_predictions = calibration_pipeline.predict(
                         x_train.iloc[calibration_mask]
                     )
-                    calibration_errors = (
-                        y_train.iloc[calibration_mask].astype(float).to_numpy()
-                        - np.asarray(calibration_predictions, dtype=float)
-                    )
-                    prediction_uncertainty_pct = float(
-                        np.quantile(np.abs(calibration_errors), 0.80)
+                    prediction_uncertainty_pct = _calibrate_regression_abstention_threshold(
+                        y_train.iloc[calibration_mask].astype(float).to_numpy(),
+                        np.asarray(calibration_predictions, dtype=float),
                     )
             fold_pipeline.fit(x_train, y_train)
             predictions = fold_pipeline.predict(x_test)
@@ -692,6 +768,19 @@ def train_baseline_model(
         "fold_sizes": fold_sizes,
         "metrics": metric_values,
     }
+    calibrated_thresholds = [
+        float(item["prediction_uncertainty_pct"])
+        for item in fold_sizes
+        if isinstance(item.get("prediction_uncertainty_pct"), (int, float))
+        and float(item["prediction_uncertainty_pct"]) >= 0
+    ]
+    if calibrated_thresholds:
+        metrics["prediction_abstention_threshold_pct"] = float(
+            np.median(calibrated_thresholds)
+        )
+        metrics["prediction_abstention_calibration"] = (
+            "inner_time_ordered_balanced_accuracy_and_return"
+        )
     if uses_stationary_features:
         metrics["feature_schema_version"] = 2
         metrics["stationary_features"] = True
@@ -899,9 +988,15 @@ def train_pooled_baseline_models(
     include_gradient_boosting: bool = True,
     target_names: tuple[str, ...] | list[str] | None = None,
     model_names: tuple[str, ...] | list[str] | None = None,
+    market: str = "US",
 ) -> list[TrainingRunResult]:
     """Train experimental cross-ticker models with date-grouped validation."""
-    symbols = sorted({str(item).strip().upper() for item in tickers if str(item).strip()})
+    benchmark_identity = resolve_security(benchmark, market)
+    symbols = sorted({
+        resolve_security(item, benchmark_identity.market).ticker
+        for item in tickers
+        if str(item).strip()
+    })
     if len(symbols) < 3:
         raise ModelTrainingError("Pooled training requires at least three tickers.")
 
@@ -912,6 +1007,7 @@ def train_pooled_baseline_models(
             benchmark=benchmark,
             include_news_sentiment=include_news_sentiment,
             sentiment_model=sentiment_model,
+            market=benchmark_identity.market,
         )
         for symbol in symbols
     ]
@@ -962,6 +1058,7 @@ def train_pooled_baseline_models(
                 task_type="classification",
                 model_name=model_name,
                 output_dir=output_dir,
+                market=benchmark_identity.market,
             )
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols
@@ -986,6 +1083,7 @@ def train_pooled_baseline_models(
                 task_type="regression",
                 model_name=model_name,
                 output_dir=output_dir,
+                market=benchmark_identity.market,
             )
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols

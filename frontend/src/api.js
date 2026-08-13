@@ -180,12 +180,15 @@ export async function fetchModelLifecycleStatus(
   ticker = "VOO",
   period = "5y",
   targetName = "target_5d_updown",
-  logLimit = 8
+  logLimit = 8,
+  market = "US"
 ) {
   return fetchJson(
     `/model-lifecycle/status?ticker=${encodeURIComponent(ticker)}&period=${encodeURIComponent(
       period
-    )}&target_name=${encodeURIComponent(targetName)}&log_limit=${encodeURIComponent(logLimit)}`
+    )}&target_name=${encodeURIComponent(targetName)}&log_limit=${encodeURIComponent(
+      logLimit
+    )}&market=${encodeURIComponent(market)}`
   );
 }
 
@@ -202,14 +205,20 @@ export async function fetchModelLifecycleRuns(limit = 20) {
   return fetchJson(`/model-lifecycle/runs?limit=${encodeURIComponent(limit)}`);
 }
 
+export async function fetchModelImprovementStatus() {
+  return fetchJson("/model-lifecycle/improvement-status");
+}
+
 export async function runModelLifecycleNow(
   workflowType = "daily_incremental",
   triggerReason = "manual_trigger",
-  tickers = null
+  tickers = null,
+  market = "US"
 ) {
   return postJson("/model-lifecycle/run-now", {
     workflow_type: workflowType,
     trigger_reason: triggerReason,
     tickers,
+    market,
   });
 }

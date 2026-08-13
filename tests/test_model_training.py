@@ -107,7 +107,12 @@ class ModelTrainingTests(unittest.TestCase):
             transformed = pipeline.named_steps["imputer"].fit_transform(features)
             self.assertEqual(transformed.shape[1], features.shape[1])
 
-        for model_name in ("linear_regression", "random_forest", "gradient_boosting"):
+        for model_name in (
+            "linear_regression",
+            "ridge_regression",
+            "random_forest",
+            "gradient_boosting",
+        ):
             pipeline = _build_regressor_pipeline(model_name)
             transformed = pipeline.named_steps["imputer"].fit_transform(features)
             self.assertEqual(transformed.shape[1], features.shape[1])
@@ -180,7 +185,7 @@ class ModelTrainingTests(unittest.TestCase):
                 "purged_walk_forward_with_calibrated_abstention_and_regime_filter",
             )
             self.assertEqual(result.metrics["validation_gap_rows"], 5)
-            self.assertEqual(result.metrics["validation_scheme_version"], 4)
+            self.assertEqual(result.metrics["validation_scheme_version"], 5)
             self.assertIn("precision", result.metrics["metrics"])
             self.assertIn("recall", result.metrics["metrics"])
             self.assertFalse(result.predictions.empty)
@@ -254,7 +259,7 @@ class ModelTrainingTests(unittest.TestCase):
                 include_gradient_boosting=False,
             )
 
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 3)
         for result in results:
             self.assertEqual(result.ticker, "GLOBAL")
             self.assertTrue(result.metrics["pooled_training"])

@@ -103,9 +103,29 @@ def resolve_security(ticker: str, market: str | None = None) -> SecurityIdentity
     )
 
 
+def resolve_model_identity(ticker: str, market: str | None = None) -> SecurityIdentity:
+    """Resolve a security model or the market-wide ``GLOBAL`` model identity.
+
+    ``GLOBAL`` is not a tradable symbol.  It is allowed only at model-storage
+    and registry boundaries, where it represents a pooled, scale-independent
+    model trained across multiple securities in one market.
+    """
+    clean_market = normalize_market(market)
+    if str(ticker or "").strip().upper() == "GLOBAL":
+        config = MARKET_CONFIGS[clean_market]
+        return SecurityIdentity(
+            market=clean_market,
+            ticker="GLOBAL",
+            provider_symbol="GLOBAL",
+            currency=config.currency,
+            currency_symbol=config.currency_symbol,
+        )
+    return resolve_security(ticker, clean_market)
+
+
 def model_security_root(base_dir, market: str, ticker: str):
     """Return collision-safe storage root while retaining legacy US paths."""
-    identity = resolve_security(ticker, market)
+    identity = resolve_model_identity(ticker, market)
     if identity.market == "US":
         return base_dir / identity.ticker
     return base_dir / identity.market / identity.ticker

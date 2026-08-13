@@ -98,6 +98,16 @@ def evaluate_model_feedback() -> dict:
     return {**result, "registry_refresh": refresh}
 
 
+@router.get("/model-lifecycle/improvement-status")
+def get_model_improvement_status() -> dict:
+    """Show training, validation, runtime coverage, and feedback progress."""
+    try:
+        return get_model_lifecycle_service().get_improvement_status()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected model improvement status error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
+
+
 @router.get("/model-lifecycle/benchmark-shadow-feedback")
 def get_benchmark_shadow_feedback(
     ticker: str = Query(

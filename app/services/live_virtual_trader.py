@@ -107,7 +107,12 @@ TRADING_TARGET_NAME = "target_5d_return"
 BENCHMARK_SHADOW_TARGET_NAME = "target_5d_outperform"
 BENCHMARK_SHADOW_MODEL_NAME = "random_forest"
 AUTO_TRADING_MODEL_NAME = "auto_best"
-TRADING_MODEL_NAMES = ("linear_regression", "random_forest", "gradient_boosting")
+TRADING_MODEL_NAMES = (
+    "linear_regression",
+    "ridge_regression",
+    "random_forest",
+    "gradient_boosting",
+)
 PARTIAL_SELL_FRACTION = 0.5
 MIN_CONTEXT_SCORE_FOR_BUY = 55.0
 MAX_CONTEXT_SCORE_FOR_HOLD = 35.0
@@ -156,8 +161,14 @@ def _regression_prediction_confidence(
     """Estimate current regression confidence from signal size versus OOS error."""
     payload = dict(metrics_summary or {})
     metrics = dict(payload.get("metrics") or {})
-    error_scale = _safe_float(metrics.get("absolute_error_80_pct"))
-    error_source = "absolute_error_80_pct"
+    calibrated_threshold = _safe_float(
+        payload.get("prediction_abstention_threshold_pct")
+    )
+    error_scale = calibrated_threshold
+    error_source = "calibrated_abstention_threshold_pct"
+    if error_scale is None or error_scale <= 0:
+        error_scale = _safe_float(metrics.get("absolute_error_80_pct"))
+        error_source = "absolute_error_80_pct"
     if error_scale is None or error_scale <= 0:
         error_scale = _safe_float(metrics.get("rmse"))
         error_source = "rmse"
@@ -175,7 +186,12 @@ def _regression_prediction_confidence(
         if model_reliability is not None
         else 0.5
     )
-    confidence = math.sqrt(max(0.0, signal_to_noise * reliability))
+    is_actionable = calibrated_threshold is None or signal_size >= calibrated_threshold
+    confidence = (
+        math.sqrt(max(0.0, signal_to_noise * reliability))
+        if is_actionable
+        else 0.0
+    )
     return {
         "confidence_score": confidence,
         "source": "regression_signal_to_noise",
@@ -184,6 +200,8 @@ def _regression_prediction_confidence(
         "error_source": error_source,
         "signal_to_noise": signal_to_noise,
         "model_reliability": reliability,
+        "is_actionable_signal": is_actionable,
+        "calibrated_abstention_threshold_pct": calibrated_threshold,
     }
 
 
@@ -738,14 +756,21 @@ def ensure_active_ticker_model_training(
     # A compatible on-disk artifact also proves training completed. Registry
     # synchronization/validation can occur independently; do not retrain the
     # same unvalidated artifact every five-minute decision cycle.
-    if not registry_rows and list_compatible_saved_model_candidates(
-        ticker=identity.ticker,
-        market=clean_market,
-        period=period,
-        target_name=TRADING_TARGET_NAME,
-        limit=1,
-    ):
-        return False
+    if not registry_rows:
+        saved_candidates = list_compatible_saved_model_candidates(
+            ticker=identity.ticker,
+            market=clean_market,
+            period=period,
+            target_name=TRADING_TARGET_NAME,
+            limit=12,
+        )
+        # A pooled HK artifact can cover runtime only after validation, but it
+        # must never prevent formation of the requested ticker's own model.
+        if clean_market == "HK":
+            if any(row.get("ticker") == identity.ticker for row in saved_candidates):
+                return False
+        elif saved_candidates:
+            return False
     if clean_market != "HK" and not _AUTO_TRAIN_ON_MODEL_MISS:
         return False
     _schedule_background_training_if_enabled(
@@ -1408,7 +1433,8 @@ def run_live_virtual_trader_now(
             saved_candidates: list[dict[str, Any]] = []
             # Preserve the existing US fallback hierarchy, where a compatible
             # on-disk artifact can bridge a registry-sync gap. HK auto_best is
-            # stricter and only considers exact-ticker validated registry rows.
+            # stricter: exact-ticker and pooled GLOBAL models must come from
+            # the validated lifecycle registry before they can trade.
             if not auto_model_selection or clean_market == "US":
                 for candidate_period in candidate_periods:
                     for candidate in list_compatible_saved_model_candidates(

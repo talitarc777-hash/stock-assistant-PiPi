@@ -9,6 +9,7 @@ This service keeps model governance beginner-friendly and explicit:
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 import json
 import logging
@@ -26,10 +27,20 @@ from app.services.model_results import (
     load_virtual_trader_summary,
 )
 from app.services.model_feedback_service import ModelFeedbackService
-from app.services.model_training import TrainingRunResult, train_baseline_models_for_ticker
+from app.services.model_training import (
+    TrainingRunResult,
+    VALIDATION_SCHEME_VERSION as TRAINING_VALIDATION_SCHEME_VERSION,
+    train_baseline_models_for_ticker,
+    train_pooled_baseline_models,
+)
 from app.services.research_pipeline import build_feature_dataset
 from app.services.universe_service import get_active_universe
-from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
+from app.services.market_config import (
+    MARKET_CONFIGS,
+    normalize_market,
+    resolve_model_identity,
+    resolve_security,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +62,10 @@ MIN_WORST_CLASS_RECALL = 0.20
 PROMOTION_EXECUTION_COST_PCT = 0.05
 MIN_ACTIVE_SIGNAL_PROFITABLE_RATE = 0.48
 MAX_PROMOTION_PROXY_DRAWDOWN_PCT = -25.0
-VALIDATION_GATE_VERSION = 8
+VALIDATION_GATE_VERSION = 9
+# Scheme 4 artifacts already used purged, time-ordered folds. Re-evaluate them
+# through gate 9 at startup instead of discarding a sound incumbent solely
+# because new challengers use the improved scheme 5 calibration.
 MIN_VALIDATION_SCHEME_VERSION = 4
 TRADING_TARGET_HORIZON_ROWS = 5
 MIN_PROFITABLE_NON_OVERLAP_PATH_RATE = 0.60
@@ -59,6 +73,7 @@ MIN_POOLED_TICKER_PASS_RATE = 0.60
 MIN_FORWARD_DIRECTION_ACCURACY = 0.55
 MIN_FORWARD_ACTIVE_SIGNALS = 5
 MIN_FORWARD_PROFITABLE_RATE = 0.50
+MIN_ACTIVE_SIGNALS_PER_PATH = 5
 
 
 class ModelLifecycleError(Exception):
@@ -88,6 +103,11 @@ def _safe_json_load(value: str | None, fallback: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return fallback
+
+
+def _state_key_for_market(name: str, market: str) -> str:
+    clean_market = normalize_market(market)
+    return name if clean_market == "US" else f"{name}:{clean_market}"
 
 
 class ModelLifecycleService:
@@ -567,7 +587,7 @@ class ModelLifecycleService:
         ) / len(path_metrics))
 
         reasons: list[str] = []
-        if active_signal_count < 10:
+        if active_signal_count < MIN_ACTIVE_SIGNALS_PER_PATH:
             reasons.append("insufficient_active_signals")
         if average_active_return_pct <= 0:
             reasons.append("negative_average_net_signal_return")
@@ -582,6 +602,7 @@ class ModelLifecycleService:
             "passed": not reasons,
             "reasons": reasons,
             "active_signal_count": active_signal_count,
+            "required_active_signals_per_non_overlapping_path": MIN_ACTIVE_SIGNALS_PER_PATH,
             "profitable_signal_rate": profitable_rate,
             "average_active_return_pct_after_cost": average_active_return_pct,
             "cumulative_signal_return_pct_after_cost": cumulative_return_pct,
@@ -634,7 +655,7 @@ class ModelLifecycleService:
             raise ModelLifecycleError(f"Unsupported model status: {status}")
 
         now = _utc_now_iso()
-        identity = resolve_security(ticker, market)
+        identity = resolve_model_identity(ticker, market)
         clean_market = identity.market
         clean_ticker = identity.ticker
         clean_model = str(model_name).strip().lower()
@@ -691,7 +712,7 @@ class ModelLifecycleService:
         keep_model_name: str,
         market: str = "US",
     ) -> None:
-        identity = resolve_security(ticker, market)
+        identity = resolve_model_identity(ticker, market)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -761,7 +782,7 @@ class ModelLifecycleService:
         params: list[Any] = [clean_market]
         if ticker:
             sql += " AND ticker = ?"
-            params.append(resolve_security(ticker, clean_market).ticker)
+            params.append(resolve_model_identity(ticker, clean_market).ticker)
         if period:
             sql += " AND period = ?"
             params.append(str(period).strip())
@@ -782,7 +803,7 @@ class ModelLifecycleService:
         target_name: str = DEFAULT_TARGET_NAME,
         market: str = "US",
     ) -> dict[str, Any] | None:
-        identity = resolve_security(ticker, market)
+        identity = resolve_model_identity(ticker, market)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -811,7 +832,7 @@ class ModelLifecycleService:
         target_name: str = DEFAULT_TARGET_NAME,
         market: str = "US",
     ) -> dict[str, Any] | None:
-        identity = resolve_security(ticker, market)
+        identity = resolve_model_identity(ticker, market)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -1288,15 +1309,16 @@ class ModelLifecycleService:
         if clean_type not in MODEL_WORKFLOW_TYPES:
             raise ModelLifecycleError(f"Unsupported workflow type: {workflow_type}")
         if clean_type == "daily_incremental":
-            return {"periods": ("2y",), "include_gradient": True, "universe_limit": 18, "benchmark": "VOO"}
+            return {"periods": ("2y",), "include_gradient": True, "universe_limit": 18, "pooled_limit": 8, "benchmark": "VOO"}
         if clean_type == "weekly_full":
-            return {"periods": ("5y",), "include_gradient": True, "universe_limit": 35, "benchmark": "VOO"}
+            return {"periods": ("5y",), "include_gradient": True, "universe_limit": 35, "pooled_limit": 12, "benchmark": "VOO"}
         if clean_type == "monthly_deep":
-            return {"periods": ("10y",), "include_gradient": True, "universe_limit": 55, "benchmark": "VOO"}
+            return {"periods": ("10y",), "include_gradient": True, "universe_limit": 55, "pooled_limit": 18, "benchmark": "VOO"}
         return {
             "periods": TRADING_MODEL_PERIODS,
             "include_gradient": True,
             "universe_limit": 6,
+            "pooled_limit": 6,
             "benchmark": "VOO",
         }
 
@@ -1412,15 +1434,20 @@ class ModelLifecycleService:
         if tickers is not None:
             source_tickers = tickers
         elif clean_market == "HK":
-            # Reuse the persistent profile-watchlist mechanism and train only
-            # active/enrolled HK securities, never the entire HKEX list.
+            # Always keep a small, diversified HK foundation so one user's
+            # one-symbol watchlist cannot prevent pooled model formation. User
+            # watchlists are then added, while the full HKEX list remains out
+            # of scope for a resource-constrained deployment.
             from app.services.user_profile_service import (
                 get_user_profile_store,
             )
 
-            source_tickers = get_user_profile_store().list_effective_watchlist_tickers(
-                market="HK"
-            )
+            source_tickers = [
+                *MARKET_CONFIGS[clean_market].default_tickers,
+                *get_user_profile_store().list_effective_watchlist_tickers(
+                    market="HK"
+                ),
+            ]
         else:
             source_tickers = get_active_universe(
                 limit=int(config["universe_limit"])
@@ -1454,6 +1481,23 @@ class ModelLifecycleService:
         failed_models = 0
         per_ticker_errors: list[str] = []
         promotion_count = 0
+        validated_count = 0
+        rejected_count = 0
+        rejection_reasons: Counter[str] = Counter()
+
+        def record_outcome(outcome: dict[str, Any]) -> None:
+            nonlocal successful_models, promotion_count, validated_count, rejected_count
+            successful_models += 1
+            if outcome.get("validated"):
+                validated_count += 1
+            else:
+                rejected_count += 1
+                rejection_reasons.update(
+                    list((outcome.get("quality_gate") or {}).get("reasons") or [])
+                    + list((outcome.get("trading_quality_gate") or {}).get("reasons") or [])
+                )
+            if outcome.get("promoted"):
+                promotion_count += 1
 
         periods = tuple(str(item) for item in config["periods"])
         for ticker in universe:
@@ -1469,9 +1513,7 @@ class ModelLifecycleService:
                     )
                     for result in results:
                         outcome = self.register_training_result(result=result, retrain_type=workflow_type)
-                        successful_models += 1
-                        if outcome["promoted"]:
-                            promotion_count += 1
+                        record_outcome(outcome)
                 except Exception as exc:  # pragma: no cover - runtime guard
                     failed_models += 1
                     per_ticker_errors.append(f"{ticker}/{training_period}: {exc}")
@@ -1484,6 +1526,38 @@ class ModelLifecycleService:
                     )
                     continue
 
+        pooled_universe = universe[: max(3, int(config.get("pooled_limit") or 3))]
+        if len(pooled_universe) >= 3:
+            for training_period in periods:
+                try:
+                    pooled_results = train_pooled_baseline_models(
+                        tickers=pooled_universe,
+                        period=training_period,
+                        benchmark=MARKET_CONFIGS[clean_market].default_benchmark,
+                        include_news_sentiment=False,
+                        include_gradient_boosting=bool(config["include_gradient"]),
+                        target_names=(TRADING_TARGET_NAME,),
+                        market=clean_market,
+                    )
+                    for result in pooled_results:
+                        record_outcome(
+                            self.register_training_result(
+                                result=result,
+                                retrain_type=f"{workflow_type}_pooled",
+                            )
+                        )
+                except Exception as exc:  # pragma: no cover - runtime guard
+                    failed_models += 1
+                    per_ticker_errors.append(
+                        f"GLOBAL/{training_period}: {exc}"
+                    )
+                    logger.warning(
+                        "Pooled model lifecycle workflow failed market=%s period=%s error=%s",
+                        clean_market,
+                        training_period,
+                        exc,
+                    )
+
         workflow_status = "success"
         if failed_models > 0 and successful_models > 0:
             workflow_status = "partial_success"
@@ -1495,6 +1569,10 @@ class ModelLifecycleService:
             "periods": list(periods),
             "include_gradient": bool(config["include_gradient"]),
             "promotion_count": promotion_count,
+            "validated_models": validated_count,
+            "rejected_models": rejected_count,
+            "rejection_reasons": dict(rejection_reasons.most_common()),
+            "pooled_training_tickers": universe[: max(3, int(config.get("pooled_limit") or 3))],
             "errors": per_ticker_errors[:50],
         }
         self._complete_run_log(
@@ -1506,9 +1584,9 @@ class ModelLifecycleService:
             details=details,
             error_message=None if workflow_status != "failed" else "No models trained successfully.",
         )
-        self.set_state("last_retrain_time_utc", _utc_now_iso())
-        self.set_state("last_workflow_type", workflow_type)
-        self.set_state("last_workflow_status", workflow_status)
+        self.set_state(_state_key_for_market("last_retrain_time_utc", clean_market), _utc_now_iso())
+        self.set_state(_state_key_for_market("last_workflow_type", clean_market), workflow_type)
+        self.set_state(_state_key_for_market("last_workflow_status", clean_market), workflow_status)
 
         logger.info(
             "Model lifecycle workflow complete market=%s type=%s trigger=%s tickers=%d success=%d failed=%d promoted=%d",
@@ -1522,14 +1600,15 @@ class ModelLifecycleService:
         )
         return self.list_recent_runs(limit=1)[0]
 
-    def _detect_data_drift(self, ticker: str) -> tuple[bool, float]:
+    def _detect_data_drift(self, ticker: str, market: str = "US") -> tuple[bool, float]:
         """Simple feature-drift check using rolling means (beginner baseline)."""
         try:
             df = build_feature_dataset(
                 ticker=ticker,
                 period="2y",
-                benchmark="VOO",
+                benchmark=MARKET_CONFIGS[normalize_market(market)].default_benchmark,
                 include_news_sentiment=False,
+                market=market,
             ).sort_values("date")
         except Exception:
             return False, 0.0
@@ -1663,11 +1742,81 @@ class ModelLifecycleService:
                     promoted += 1
         return {"updated": updated, "promoted": promoted}
 
-    def detect_retrain_triggers(self, max_models: int = 6) -> list[str]:
+    def get_improvement_status(self) -> dict[str, Any]:
+        """Summarize whether training evidence is progressing in each market."""
+        markets: dict[str, Any] = {}
+        for market in ("US", "HK"):
+            rows = self.list_registry(
+                target_name=TRADING_TARGET_NAME,
+                market=market,
+                limit=2000,
+            )
+            active = [row for row in rows if row["status"] in {"candidate", "production"}]
+            current = [row for row in active if row["validation_evidence_current"]]
+            validated = [row for row in current if row["is_validated"]]
+            production = [row for row in validated if row["status"] == "production"]
+            reasons: Counter[str] = Counter()
+            for row in current:
+                if row["is_validated"]:
+                    continue
+                metrics = dict(row.get("metrics_summary") or {})
+                reasons.update(
+                    list((metrics.get("walk_forward_quality_gate") or {}).get("reasons") or [])
+                    + list((metrics.get("historical_trading_quality_gate") or {}).get("reasons") or [])
+                )
+            latest_training = max(
+                (row.get("last_trained_at_utc") for row in active if row.get("last_trained_at_utc")),
+                default=None,
+            )
+            markets[market] = {
+                "market": market,
+                "candidate_models": len(active),
+                "current_evidence_models": len(current),
+                "validated_models": len(validated),
+                "production_models": len(production),
+                "runtime_eligible_tickers": len({
+                    row["ticker"]
+                    for row in validated
+                    if row["ticker"] != "GLOBAL" and not row["is_stale"]
+                }),
+                "pooled_models": sum(
+                    row["ticker"] == "GLOBAL"
+                    or bool((row.get("metrics_summary") or {}).get("pooled_training"))
+                    for row in active
+                ),
+                "validated_pooled_models": sum(
+                    row["ticker"] == "GLOBAL" and not row["is_stale"]
+                    for row in validated
+                ),
+                "best_validation_score": max(
+                    (float(row["validation_score"]) for row in validated if row.get("validation_score") is not None),
+                    default=None,
+                ),
+                "latest_training_at_utc": latest_training,
+                "top_rejection_reasons": dict(reasons.most_common(6)),
+                "feedback": self.feedback_service.get_pipeline_status(market),
+            }
+        return {
+            "validation_gate_version": VALIDATION_GATE_VERSION,
+            "validation_scheme_version": TRAINING_VALIDATION_SCHEME_VERSION,
+            "minimum_accepted_validation_scheme_version": MIN_VALIDATION_SCHEME_VERSION,
+            "markets": markets,
+        }
+
+    def detect_retrain_triggers(
+        self,
+        max_models: int = 6,
+        market: str = "US",
+    ) -> list[str]:
         """Evaluate rolling-performance and drift triggers."""
+        clean_market = normalize_market(market)
         production_rows = [
             row
-            for row in self.list_registry(target_name=TRADING_TARGET_NAME, limit=300)
+            for row in self.list_registry(
+                target_name=TRADING_TARGET_NAME,
+                market=clean_market,
+                limit=300,
+            )
             if row["status"] == "production"
         ][: max(1, int(max_models))]
         triggers: list[str] = []
@@ -1682,6 +1831,7 @@ class ModelLifecycleService:
                 ticker=ticker,
                 model_period=period,
                 model_name=model_name,
+                market=clean_market,
             )
             if (
                 int(feedback_summary.get("sample_count") or 0)
@@ -1701,6 +1851,7 @@ class ModelLifecycleService:
                     target_name=target_name,
                     model_name=model_name,
                     window=20,
+                    market=clean_market,
                 )
                 latest_rolling = accuracy_payload.get("latest_rolling_accuracy")
                 if isinstance(latest_rolling, (int, float)) and float(latest_rolling) < 0.48:
@@ -1718,6 +1869,7 @@ class ModelLifecycleService:
                     period=period,
                     model_name=model_name,
                     equity_limit=120,
+                    market=clean_market,
                 )
                 summary = summary_payload.get("summary", {})
                 outperformance = summary.get("outperformance_vs_benchmark_pct_points")
@@ -1748,12 +1900,18 @@ class ModelLifecycleService:
                 # Historical virtual-trader artifacts may not always exist; keep trigger scan resilient.
                 pass
 
-            drift_detected, drift_score = self._detect_data_drift(ticker)
+            drift_detected, drift_score = self._detect_data_drift(
+                ticker,
+                market=clean_market,
+            )
             if drift_detected:
                 triggers.append(f"feature_drift_detected:{ticker}:z={drift_score:.2f}")
 
         deduped = list(dict.fromkeys(triggers))
-        self.set_state("last_active_triggers_json", json.dumps(deduped, ensure_ascii=False))
+        self.set_state(
+            _state_key_for_market("last_active_triggers_json", clean_market),
+            json.dumps(deduped, ensure_ascii=False),
+        )
         return deduped
 
     def resolve_runtime_model_candidates(
@@ -1789,9 +1947,7 @@ class ModelLifecycleService:
             row
             for row in registry_rows
             if row["period"] in requested_periods
-            and row["ticker"] in (
-                {clean_ticker, "GLOBAL"} if clean_market == "US" else {clean_ticker}
-            )
+            and row["ticker"] in {clean_ticker, "GLOBAL"}
             and row["status"] in {"production", "candidate"}
             and bool(row["is_validated"])
             and (clean_market != "HK" or not bool(row.get("is_stale")))

@@ -32,12 +32,18 @@ Purged expanding-window validation remains the main promotion evidence. For the
 five-day trading target, each fold leaves a five-row gap between its training and
 test windows so a training label cannot use a future price from the test window.
 Legacy validation flags are not accepted as current promotion evidence.
+Existing scheme-4 artifacts that contain purged walk-forward evaluation rows
+are re-evaluated through gate 9 at startup, so a sound incumbent is not removed
+merely because new challengers use scheme 5. A stored validation flag without
+the required evidence remains ineligible.
 Five-day return regressors must also declare the current scale-independent
 feature schema. Raw price-level regressors are legacy evidence because price
 trends can produce unstable extrapolation even when directional results appear
 plausible.
 Regression candidates also calibrate an abstention threshold on an inner,
-time-ordered holdout. Predictions smaller than that known-in-advance uncertainty
+time-ordered holdout. The threshold is selected from a small prediction-size
+grid using balanced directional accuracy, signed return, and useful coverage;
+the outer test fold is never used for calibration. Predictions smaller than that known-in-advance uncertainty
 are treated as `no_action`, rather than being counted as trades after the fact.
 The evaluation then applies the same fixed market-regime policy used by the live
 trader. Caution regimes use half-size exposure; stress regimes block new
@@ -53,7 +59,7 @@ models retain their original raw representation for backward compatibility.
 - A candidate must still meet the minimum production score before promotion.
 - Direction accuracy must beat the period's naive majority direction, remain
   stable across folds, and retain its edge across non-overlapping five-day paths.
-- Validation gate version 8 also requires at least 55% balanced direction
+- Validation gate version 9 also requires at least 55% balanced direction
   accuracy and 20% recall for the harder class. This prevents a rare-event
   target from looking strong merely because the model usually predicts the
   common outcome.
@@ -62,6 +68,21 @@ models retain their original raw representation for backward compatibility.
 
 This is a champion/challenger-style safeguard. A small number of lucky outcomes
 cannot immediately replace the validated model.
+
+Each scheduled US and HK workflow trains per-ticker challengers plus a pooled
+`GLOBAL` challenger over several securities. The pooled model uses only
+scale-independent features and must pass both the normal walk-forward gates and
+the per-security pass-rate gate. It can provide validated coverage while a
+ticker-specific model is still collecting enough evidence; it never borrows one
+issuer's fitted model for another issuer.
+The HK workflow always includes the centrally configured diversified HK starter
+universe and then adds all persisted HK watchlist symbols. This prevents a
+single-symbol profile from producing a one-stock-only HK model pipeline.
+
+Successful provider downloads are also cached under
+`MARKET_HISTORY_CACHE_DIR` (or `market_history_cache` beside the persistent
+profile database). A temporary yfinance failure uses the most recent valid
+history without overwriting it. Live trade freshness checks remain in force.
 
 ## Broad contextual reasoning
 
@@ -82,12 +103,15 @@ MODEL_FEEDBACK_HORIZON_DAYS=5
 MODEL_FEEDBACK_MIN_SAMPLES=8
 MODEL_FEEDBACK_PROMOTION_WEIGHT=0.35
 CONTEXT_FEEDBACK_MAX_ADJUSTMENT=8
+# Optional; defaults beside the production PROFILE_DB_PATH
+MARKET_HISTORY_CACHE_DIR=/home/pi/.local/share/stock-assistant/market_history_cache
 ```
 
 ## API
 
 - `GET /model-lifecycle/feedback`
 - `POST /model-lifecycle/feedback/evaluate`
+- `GET /model-lifecycle/improvement-status`
 
 The system is for virtual trading and educational monitoring. Better historical
 scores do not guarantee future performance.

@@ -100,6 +100,24 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.discord_webhook_max_attempts, 6)
         self.assertEqual(settings.discord_webhook_retry_base_seconds, 30.0)
 
+    def test_market_history_cache_defaults_beside_profile_database(self) -> None:
+        profile_path = (Path("data") / "persistent-test" / "profiles.db").resolve()
+        get_settings.cache_clear()
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_ENV": "production",
+                "PROFILE_DB_PATH": str(profile_path),
+            },
+            clear=True,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(
+            Path(settings.market_history_cache_dir),
+            profile_path.parent / "market_history_cache",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,7 @@ class Settings(BaseModel):
     hkex_metadata_refresh_hours: float = 24.0
     research_data_dir: str = "data/research"
     research_models_dir: str = "data/models"
+    market_history_cache_dir: str = "data/market_history_cache"
     cors_allow_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -153,6 +154,12 @@ def get_settings() -> Settings:
         if configured_hkex_path
         else str(Path(profile_db_path).with_name("hkex_security_metadata.db"))
     )
+    configured_history_cache = (os.getenv("MARKET_HISTORY_CACHE_DIR") or "").strip()
+    market_history_cache_dir = (
+        str(Path(configured_history_cache).expanduser())
+        if configured_history_cache
+        else str(Path(profile_db_path).parent / "market_history_cache")
+    )
     return Settings(
         app_name=os.getenv("APP_NAME", "Stock Assistant API"),
         app_env=app_env,
@@ -166,6 +173,7 @@ def get_settings() -> Settings:
         ),
         research_data_dir=os.getenv("RESEARCH_DATA_DIR", "data/research"),
         research_models_dir=os.getenv("RESEARCH_MODELS_DIR", "data/models"),
+        market_history_cache_dir=market_history_cache_dir,
         cors_allow_origins=_parse_csv_env(
             os.getenv(
                 "CORS_ALLOW_ORIGINS",

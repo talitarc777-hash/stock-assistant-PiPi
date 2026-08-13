@@ -255,9 +255,13 @@ class ModelLifecycleSchedulerService:
         parsed = _to_utc(parsed)
         return (now_utc - parsed).total_seconds() >= 2 * 3600
 
-    def _should_fire_trigger_workflow(self, now_utc: datetime) -> bool:
+    def _should_fire_trigger_workflow(
+        self,
+        now_utc: datetime,
+        market: str = "US",
+    ) -> bool:
         lifecycle = get_model_lifecycle_service()
-        last = lifecycle.get_state("last_trigger_workflow_utc")
+        last = lifecycle.get_state(_state_key("last_trigger_workflow_utc", market))
         if not last:
             return True
         parsed = _to_utc(datetime.fromisoformat(last))
@@ -392,31 +396,70 @@ class ModelLifecycleSchedulerService:
                     due_workflows.append((market, now_local, workflow_type, reason))
 
             if due_workflows:
+                completed_workflows = 0
+                workflow_errors: list[str] = []
                 for market, now_local, workflow_type, reason in due_workflows:
-                    lifecycle.run_training_workflow(
-                        workflow_type=workflow_type,
-                        trigger_reason=f"{source}:{market}:{reason}",
-                        market=market,
-                    )
-                    self._mark_workflow_done(workflow_type, now_local, market)
+                    try:
+                        lifecycle.run_training_workflow(
+                            workflow_type=workflow_type,
+                            trigger_reason=f"{source}:{market}:{reason}",
+                            market=market,
+                        )
+                        self._mark_workflow_done(workflow_type, now_local, market)
+                        completed_workflows += 1
+                    except Exception as exc:  # keep the other market independent
+                        workflow_errors.append(f"{market}:{workflow_type}:{exc}")
+                        logger.exception(
+                            "Scheduled model workflow failed market=%s type=%s",
+                            market,
+                            workflow_type,
+                        )
+                if workflow_errors and completed_workflows == 0:
+                    raise ModelLifecycleError("; ".join(workflow_errors))
             else:
                 if self._should_run_trigger_scan(now_utc):
-                    active_triggers = lifecycle.detect_retrain_triggers(max_models=6)
-                    lifecycle.set_state("last_trigger_scan_utc", _utc_now_iso())
-                    if active_triggers and self._should_fire_trigger_workflow(now_utc):
-                        affected_tickers = list(
-                            dict.fromkeys(
-                                parts[1].strip().upper()
-                                for trigger in active_triggers
-                                if len(parts := str(trigger).split(":")) >= 2 and parts[1].strip()
+                    triggers_by_market: dict[str, list[str]] = {}
+                    for market in ("US", "HK"):
+                        try:
+                            triggers_by_market[market] = lifecycle.detect_retrain_triggers(
+                                max_models=12,
+                                market=market,
                             )
-                        )
-                        lifecycle.run_training_workflow(
-                            workflow_type="trigger_based",
-                            trigger_reason=f"{source}:trigger_based:{';'.join(active_triggers[:3])}",
-                            tickers=affected_tickers or None,
-                        )
-                        lifecycle.set_state("last_trigger_workflow_utc", _utc_now_iso())
+                        except Exception as exc:  # keep the other market independent
+                            logger.exception(
+                                "Model trigger scan failed market=%s error=%s",
+                                market,
+                                exc,
+                            )
+                    lifecycle.set_state("last_trigger_scan_utc", _utc_now_iso())
+                    for market, active_triggers in triggers_by_market.items():
+                        if active_triggers and self._should_fire_trigger_workflow(now_utc, market):
+                            affected_tickers = list(
+                                dict.fromkeys(
+                                    parts[1].strip().upper()
+                                    for trigger in active_triggers
+                                    if len(parts := str(trigger).split(":")) >= 2
+                                    and parts[1].strip()
+                                    and parts[1].strip().upper() != "GLOBAL"
+                                )
+                            )
+                            try:
+                                lifecycle.run_training_workflow(
+                                    workflow_type="trigger_based",
+                                    trigger_reason=f"{source}:{market}:trigger_based:{';'.join(active_triggers[:3])}",
+                                    tickers=affected_tickers or None,
+                                    market=market,
+                                )
+                                lifecycle.set_state(
+                                    _state_key("last_trigger_workflow_utc", market),
+                                    _utc_now_iso(),
+                                )
+                            except Exception as exc:  # keep the other market independent
+                                logger.exception(
+                                    "Triggered model workflow failed market=%s error=%s",
+                                    market,
+                                    exc,
+                                )
 
             with self._state_lock:
                 self._last_run_time_utc = _utc_now_iso()
@@ -500,7 +543,7 @@ class ModelLifecycleSchedulerService:
             market=market,
         )
         active_triggers = _safe_json_load(
-            lifecycle.get_state("last_active_triggers_json"),
+            lifecycle.get_state(_state_key("last_active_triggers_json", market)),
             [],
         )
         recent_runs = lifecycle.list_recent_runs(limit=max(1, int(log_limit)))
@@ -518,9 +561,13 @@ class ModelLifecycleSchedulerService:
                 "cadence_seconds": _CADENCE_SECONDS,
                 "last_run_time_utc": self._last_run_time_utc,
                 "next_run_time_utc": self._next_run_time_utc,
-                "last_retrain_time_utc": lifecycle.get_state("last_retrain_time_utc"),
+                "last_retrain_time_utc": lifecycle.get_state(
+                    _state_key("last_retrain_time_utc", market)
+                ),
                 "next_retrain_time_utc": self._next_retrain_time_utc(market),
-                "last_workflow_type": lifecycle.get_state("last_workflow_type"),
+                "last_workflow_type": lifecycle.get_state(
+                    _state_key("last_workflow_type", market)
+                ),
                 "production_model": production,
                 "recent_metrics": recent_metrics,
                 "active_triggers": active_triggers if isinstance(active_triggers, list) else [],

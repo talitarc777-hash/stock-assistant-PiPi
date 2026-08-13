@@ -401,6 +401,47 @@ class ModelLifecycleServiceTests(unittest.TestCase):
         self.assertEqual(tuple(config["periods"]), ("2y", "5y", "10y"))
         self.assertTrue(config["include_gradient"])
 
+    def test_improvement_status_reports_both_markets_and_rejection_reasons(self) -> None:
+        self.service._upsert_registry(  # pylint: disable=protected-access
+            ticker="0700",
+            period="2y",
+            target_name="target_5d_return",
+            model_name="ridge_regression",
+            status="candidate",
+            is_validated=False,
+            validation_score=0.49,
+            stale_after_days=30,
+            retrain_type="daily_incremental",
+            metrics_summary={
+                "validation_gate_version": VALIDATION_GATE_VERSION,
+                "walk_forward_quality_gate": {
+                    "passed": False,
+                    "reasons": ["balanced_accuracy_below_minimum"],
+                },
+                "historical_trading_quality_gate": {
+                    "passed": False,
+                    "reasons": ["negative_average_net_signal_return"],
+                },
+            },
+            notes="test rejection evidence",
+            last_trained_at_utc="2099-01-01T00:00:00+00:00",
+            last_evaluated_at_utc="2099-01-01T00:00:00+00:00",
+            market="HK",
+        )
+
+        payload = self.service.get_improvement_status()
+
+        self.assertEqual(set(payload["markets"]), {"US", "HK"})
+        self.assertEqual(payload["markets"]["HK"]["candidate_models"], 1)
+        self.assertEqual(payload["markets"]["HK"]["validated_models"], 0)
+        self.assertEqual(
+            payload["markets"]["HK"]["top_rejection_reasons"],
+            {
+                "balanced_accuracy_below_minimum": 1,
+                "negative_average_net_signal_return": 1,
+            },
+        )
+
     def test_quality_gate_rejects_majority_direction_shortcut(self) -> None:
         table = pd.DataFrame(
             {
