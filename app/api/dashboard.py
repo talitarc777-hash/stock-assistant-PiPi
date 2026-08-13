@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.api_utils import (
     PERIOD_PATTERN,
@@ -17,6 +17,7 @@ from app.core.api_utils import (
     to_json_safe,
     to_json_safe_dict,
 )
+from app.services.dashboard_score_service import get_dashboard_score_service
 from app.services.indicators import IndicatorInputError, add_technical_indicators
 from app.services.market_data import (
     EmptyDataError,
@@ -132,6 +133,75 @@ class SummaryDashboardResponse(BaseModel):
 
     tickers: list[SummaryItemResponse]
     failed_tickers: list[FailedTickerResponse]
+
+
+class DashboardScoreRefreshRequest(BaseModel):
+    """Request one active-universe technical-score refresh."""
+
+    user_id: str = Field(min_length=1, max_length=120)
+    market: Literal["US", "HK"] = "US"
+    period: str = Field(default="5y", pattern=PERIOD_PATTERN)
+
+
+@router.post("/dashboard/score-ranking/refresh")
+def refresh_dashboard_score_ranking(request: DashboardScoreRefreshRequest) -> dict[str, Any]:
+    """Score every ticker in the user's active market watchlist."""
+    return get_dashboard_score_service().refresh(
+        user_id=request.user_id,
+        market=request.market,
+        period=request.period,
+    )
+
+
+@router.get("/dashboard/score-ranking/raw")
+def dashboard_score_ranking_raw(
+    user_id: str = Query(..., min_length=1, max_length=120),
+    market: Literal["US", "HK"] = "US",
+    period: str = Query("5y", pattern=PERIOD_PATTERN),
+) -> dict[str, Any]:
+    """Return cached active-universe rows before Top-10 filtering."""
+    service = get_dashboard_score_service()
+    return {
+        "user_id": user_id,
+        "market": market,
+        "period": period,
+        "rows": service.raw_scores(user_id=user_id, market=market, period=period),
+        "diagnostics": service.diagnostics(user_id=user_id, market=market, period=period),
+    }
+
+
+@router.get("/dashboard/top-scores")
+def dashboard_top_scores(
+    user_id: str = Query(..., min_length=1, max_length=120),
+    market: Literal["US", "HK"] = "US",
+    asset_type: Literal["all", "stock", "etf"] = "all",
+    period: str = Query("5y", pattern=PERIOD_PATTERN),
+    limit: int = Query(10, ge=1, le=200),
+    refresh_if_stale: bool = True,
+) -> dict[str, Any]:
+    """Return sorted active-universe scores; refresh missing/stale rows by default."""
+    return get_dashboard_score_service().top_scores(
+        user_id=user_id,
+        market=market,
+        asset_type=asset_type,
+        period=period,
+        limit=limit,
+        refresh_if_stale=refresh_if_stale,
+    )
+
+
+@router.get("/dashboard/score-ranking/diagnostics")
+def dashboard_score_ranking_diagnostics(
+    user_id: str = Query(..., min_length=1, max_length=120),
+    market: Literal["US", "HK"] = "US",
+    period: str = Query("5y", pattern=PERIOD_PATTERN),
+) -> dict[str, Any]:
+    """Explain the active, scored, failed, cached, and model-status rows."""
+    return get_dashboard_score_service().diagnostics(
+        user_id=user_id,
+        market=market,
+        period=period,
+    )
 
 
 @router.get("/chart-data", response_model=ChartDataResponse)

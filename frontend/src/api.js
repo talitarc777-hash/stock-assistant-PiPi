@@ -33,6 +33,27 @@ export async function fetchChartData(ticker, period = "5y", market = "US") {
   });
 }
 
+export async function fetchDashboardTopScores(
+  userId,
+  market = "US",
+  assetType = "all",
+  period = "5y",
+  limit = 200
+) {
+  const params = new URLSearchParams({
+    user_id: userId,
+    market,
+    asset_type: assetType,
+    period,
+    limit: String(limit),
+    refresh_if_stale: "true",
+  });
+  return fetchJson(`/dashboard/top-scores?${params.toString()}`, {
+    timeoutMs: 60000,
+    retries: 1,
+  });
+}
+
 export async function fetchLiveMarketSnapshot(ticker, period = "3mo", market = "US") {
   return fetchJson(
     `/market-data/live-snapshot?ticker=${encodeURIComponent(ticker)}&period=${encodeURIComponent(period)}&market=${encodeURIComponent(market)}`,

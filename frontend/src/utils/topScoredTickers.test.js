@@ -57,3 +57,29 @@ test("ranks US and HK scores independently without mixing market rows", () => {
   assert.deepEqual(ranked.US.map((row) => row.ticker), ["MSFT", "AAPL"]);
   assert.deepEqual(ranked.HK.map((row) => row.ticker), ["0700"]);
 });
+
+test("ranks the complete HK analysis universe and retains a zero score", () => {
+  const hkRows = [
+    ["0005", 60],
+    ["0700", 0],
+    ["1810", 85],
+    ["3690", 70],
+    ["9988", 40],
+  ].map(([ticker, score]) => ({
+    ticker,
+    latest_close: 100,
+    score_breakdown: { total_score: score },
+    primary_ticker_class: "stock",
+  }));
+
+  const ranked = rankTopScoredTickersByMarket(
+    { US: [], HK: [] },
+    { US: [], HK: hkRows },
+    10
+  );
+
+  assert.deepEqual(
+    ranked.HK.map((row) => [row.ticker, row.score]),
+    [["1810", 85], ["3690", 70], ["0005", 60], ["9988", 40], ["0700", 0]]
+  );
+});

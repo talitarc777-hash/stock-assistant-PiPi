@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchAnalyze,
   fetchChartData,
+  fetchDashboardTopScores,
   fetchForecast,
   fetchLiveVirtualTraderTrades,
   fetchWatchlistAnalyze,
@@ -177,6 +178,7 @@ function CurrentAlertsPanel({ languageMode, alertScan, isLoading }) {
 function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpdated }) {
   const [watchlistRows, setWatchlistRows] = useState([]);
   const [marketDecisionRows, setMarketDecisionRows] = useState({ US: [], HK: [] });
+  const [marketScoreRows, setMarketScoreRows] = useState({ US: [], HK: [] });
   const [selectedTicker, setSelectedTicker] = useState("");
   const [analyzeData, setAnalyzeData] = useState(null);
   const [chartData, setChartData] = useState(null);
@@ -278,16 +280,32 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   async function loadTopScores() {
     setIsLoadingTopScores(true);
     setTopScoresError({ US: "", HK: "" });
-    const markets = ["US", "HK"];
     const results = await Promise.allSettled(
-      markets.map((market) => fetchLiveVirtualTraderTrades(profileId, null, 200, market))
+      [
+        fetchLiveVirtualTraderTrades(profileId, null, 200, "US"),
+        fetchDashboardTopScores(profileId, "HK", "all", DEFAULT_PERIOD, 200),
+      ]
     );
     const nextRows = { US: [], HK: [] };
+    const nextScoreRows = { US: [], HK: [] };
     const nextErrors = { US: "", HK: "" };
     results.forEach((result, index) => {
-      const market = markets[index];
+      const market = index === 0 ? "US" : "HK";
       if (result.status === "fulfilled") {
-        nextRows[market] = result.value.trades || [];
+        if (market === "US") {
+          nextRows.US = result.value.trades || [];
+        } else {
+          nextScoreRows.HK = result.value.rows || [];
+          const skipped = result.value.diagnostics?.skipped || [];
+          if (skipped.length) {
+            const first = skipped[0];
+            nextErrors.HK = formatBilingualLabel(
+              languageMode,
+              `${skipped.length} active HK ticker(s) could not be scored. ${first.ticker}: ${first.reason}`,
+              `${skipped.length} 個啟用中的港股暫時未能評分。${first.ticker}: ${first.reason}`
+            );
+          }
+        }
         return;
       }
       nextErrors[market] = formatBilingualLabel(
@@ -297,6 +315,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
       );
     });
     setMarketDecisionRows(nextRows);
+    setMarketScoreRows(nextScoreRows);
     setTopScoresError(nextErrors);
     setIsLoadingTopScores(false);
   }
@@ -358,10 +377,10 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   const topScoredTickers = useMemo(
     () => rankTopScoredTickersByMarket(
       marketDecisionRows,
-      { US: watchlistRows, HK: [] },
+      { US: watchlistRows, HK: marketScoreRows.HK },
       200
     ),
-    [marketDecisionRows, watchlistRows]
+    [marketDecisionRows, marketScoreRows, watchlistRows]
   );
 
   function selectTopScoredTicker(ticker, market) {
