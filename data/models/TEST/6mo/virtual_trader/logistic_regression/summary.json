@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-06-28T00:06:07.020117+00:00",
+  "generated_at_utc": "2026-08-14T11:07:54.593270+00:00",
   "ticker": "TEST",
   "period": "6mo",
   "model_name": "logistic_regression",
@@ -24,5 +24,15 @@
   "trade_count": 2,
   "benchmark_symbol": "VOO",
   "benchmark_final_equity": 2037.881773399015,
-  "outperformance_vs_benchmark_pct_points": -0.3940886699507651
+  "outperformance_vs_benchmark_pct_points": -0.3940886699507651,
+  "annualized_return_pct": 247.12254059887596,
+  "annualized_volatility_pct": 15.795667351382042,
+  "sharpe_ratio": 7.960917991994766,
+  "downside_deviation_pct": 7.858667260587893,
+  "max_drawdown_pct": -0.4950495049505066,
+  "risk_observation_count": 5,
+  "benchmark_annualized_return_pct": 247.12254059887974,
+  "benchmark_annualized_volatility_pct": 0.06151927039850885,
+  "benchmark_sharpe_ratio": 2027.9595266142614,
+  "benchmark_max_drawdown_pct": 0.0
 }

@@ -18,7 +18,6 @@ from threading import RLock
 from typing import Any, Callable
 
 from app.core.settings import get_settings
-from app.services.hkex_security_metadata import get_hk_security_metadata
 from app.services.indicators import add_technical_indicators
 from app.services.market_config import normalize_market, resolve_security
 from app.services.market_data import get_price_history
@@ -29,7 +28,7 @@ from app.services.model_lifecycle_service import (
 from app.services.scoring import score_from_indicators
 from app.services.ticker_classification import (
     TickerClassification,
-    classify_ticker,
+    classify_ticker_for_market,
 )
 from app.services.watchlist_service import get_user_watchlist
 
@@ -60,37 +59,8 @@ def _json_load(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-def _hk_primary_class(category: str | None, subcategory: str | None) -> str:
-    """Normalize official HKEX category text without guessing from a name."""
-    description = f"{category or ''} {subcategory or ''}".strip().lower()
-    if "real estate investment trust" in description or "reit" in description:
-        return "reit"
-    if "exchange traded" in description or " etf" in f" {description}":
-        return "etf"
-    if "debt" in description or "bond" in description:
-        return "fixed_income"
-    if any(
-        token in description
-        for token in ("warrant", "derivative", "structured product", "callable bull", "callable bear")
-    ):
-        return "derivative"
-    if "equity" in description:
-        return "stock"
-    return "unknown"
-
-
 def _default_classification_provider(ticker: str, market: str) -> TickerClassification:
-    if market != "HK":
-        return classify_ticker(ticker)
-
-    metadata = get_hk_security_metadata(ticker)
-    if metadata is None:
-        return classify_ticker(ticker)
-    primary_class = _hk_primary_class(metadata.category, metadata.subcategory)
-    return classify_ticker(
-        ticker,
-        market_metadata={"primary_ticker_class": primary_class},
-    )
+    return classify_ticker_for_market(ticker, market=market)
 
 
 def _default_score_provider(ticker: str, market: str, period: str) -> dict[str, Any]:
@@ -419,6 +389,27 @@ class DashboardScoreService:
             return True
         if not rows:
             return bool(expected)
+        # Classification metadata was added after the first dashboard cache
+        # rows were written.  Re-evaluate only HK rows that were previously
+        # unknown, and refresh when the official metadata cache can now resolve
+        # one of them.  If HKEX is unavailable, keep the existing scores and
+        # avoid a refresh loop; the next successful metadata refresh will
+        # invalidate these rows naturally.
+        if normalize_market(market) == "HK":
+            for row in rows:
+                if row["primary_ticker_class"] != "unknown":
+                    continue
+                try:
+                    classification = self.classification_provider(row["ticker"], "HK")
+                except Exception as exc:  # classification must not block scores
+                    logger.debug(
+                        "Could not recheck cached HK classification ticker=%s: %s",
+                        row["ticker"],
+                        exc,
+                    )
+                    continue
+                if classification.primary_ticker_class != "unknown":
+                    return True
         timestamps: list[datetime] = []
         for row in rows:
             try:

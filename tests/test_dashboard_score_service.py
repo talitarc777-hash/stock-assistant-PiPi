@@ -126,6 +126,28 @@ class DashboardScoreServiceTests(unittest.TestCase):
         self.assertEqual(result["rows"][0]["ticker"], "0388")
         self.assertIn(("HK", "0388"), self.calls)
 
+    def test_cached_unknown_hk_classification_is_repaired_when_metadata_arrives(self) -> None:
+        unknown_provider = lambda ticker, market: TickerClassification(
+            ticker=ticker,
+            primary_ticker_class="unknown",
+            stock_subclass=None,
+            classification_source="unknown",
+        )
+        self.service.classification_provider = unknown_provider
+        self.service.refresh(user_id="demo-user", market="HK")
+
+        self.service.classification_provider = lambda ticker, market: TickerClassification(
+            ticker=ticker,
+            primary_ticker_class="stock",
+            stock_subclass="unknown",
+            classification_source="market_data",
+        )
+        self.calls.clear()
+        result = self.service.top_scores(user_id="demo-user", market="HK", limit=10)
+
+        self.assertTrue(result["refreshed"])
+        self.assertEqual({row["primary_ticker_class"] for row in result["rows"]}, {"stock"})
+
     def test_deactivated_ticker_is_kept_historically_but_not_ranked(self) -> None:
         self.service.refresh(user_id="demo-user", market="HK")
         self.active["HK"].remove("1810")
@@ -218,7 +240,7 @@ class DashboardScoreServiceTests(unittest.TestCase):
             source_url="https://www.hkex.com.hk/",
         )
         with patch(
-            "app.services.dashboard_score_service.get_hk_security_metadata",
+            "app.services.ticker_classification.get_hk_security_metadata",
             return_value=metadata,
         ):
             result = _default_classification_provider("1810", "HK")

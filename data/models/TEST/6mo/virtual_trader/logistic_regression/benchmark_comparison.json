@@ -2,5 +2,11 @@
   "benchmark": "VOO",
   "final_equity": 2037.881773399015,
   "total_contributions": 2000.0,
-  "return_on_contributions_pct": 1.8940886699507553
+  "return_on_contributions_pct": 1.8940886699507553,
+  "annualized_return_pct": 247.12254059887974,
+  "annualized_volatility_pct": 0.06151927039850885,
+  "sharpe_ratio": 2027.9595266142614,
+  "downside_deviation_pct": 0.0,
+  "max_drawdown_pct": 0.0,
+  "risk_observation_count": 5
 }

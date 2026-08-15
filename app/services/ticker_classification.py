@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from app.services.hkex_security_metadata import get_hk_security_metadata
+
 
 PRIMARY_TICKER_CLASSES = {
     "stock",
@@ -256,6 +258,31 @@ def _pattern_primary(symbol: str) -> str | None:
     return None
 
 
+def hkex_category_to_primary_class(category: str | None, subcategory: str | None) -> str:
+    """Map official HKEX security categories to one primary asset class."""
+    description = f"{category or ''} {subcategory or ''}".strip().lower()
+    if "real estate investment trust" in description or "reit" in description:
+        return "reit"
+    if "exchange traded" in description or " etf" in f" {description}":
+        return "etf"
+    if "debt" in description or "bond" in description:
+        return "fixed_income"
+    if any(
+        token in description
+        for token in (
+            "warrant",
+            "derivative",
+            "structured product",
+            "callable bull",
+            "callable bear",
+        )
+    ):
+        return "derivative"
+    if "equity" in description:
+        return "stock"
+    return "unknown"
+
+
 def classify_ticker(
     ticker: Any,
     *,
@@ -311,6 +338,37 @@ def classify_ticker(
         primary_ticker_class=primary,
         stock_subclass=stock_subclass,
         classification_source=source,
+    )
+
+
+def classify_ticker_for_market(
+    ticker: Any,
+    *,
+    market: str = "US",
+    market_metadata: dict[str, Any] | None = None,
+    local_metadata: dict[str, Any] | None = None,
+) -> TickerClassification:
+    """Classify a symbol with exchange-aware metadata when available.
+
+    HK numeric symbols cannot be safely classified from their digits alone.
+    The official HKEX cache supplies the primary class for those symbols;
+    unavailable metadata falls back to the normal conservative classifier.
+    """
+    provider = dict(market_metadata or {})
+    if str(market or "US").strip().upper() == "HK":
+        try:
+            metadata = get_hk_security_metadata(ticker)
+        except Exception:
+            metadata = None
+        if metadata is not None and not _provider_primary(provider):
+            provider["primary_ticker_class"] = hkex_category_to_primary_class(
+                metadata.category,
+                metadata.subcategory,
+            )
+    return classify_ticker(
+        ticker,
+        market_metadata=provider,
+        local_metadata=local_metadata,
     )
 
 

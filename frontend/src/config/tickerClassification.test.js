@@ -53,6 +53,29 @@ test("normalizes HK, class-share, forex, crypto and index symbols", () => {
   assert.equal(resolveTickerClassification("gc=f").primaryClass, "derivative");
 });
 
+test("backend-normalized HK classifications are used for arbitrary HK equities", () => {
+  const classification = resolveTickerClassification({
+    ticker: "1810",
+    market: "HK",
+    primary_ticker_class: "stock",
+    stock_subclass: "unknown",
+    classification_source: "market_data",
+  });
+  assert.equal(classification.primaryClass, "stock");
+  assert.equal(classification.stockSubclass, "unknown");
+
+  const html = renderToStaticMarkup(
+    TickerClassificationTags({
+      ticker: "1810",
+      primaryClass: classification.primaryClass,
+      stockSubclass: classification.stockSubclass,
+      languageMode: "en",
+    })
+  );
+  assert.match(html, />Stock</);
+  assert.match(html, />Unknown</);
+});
+
 test("classification filters combine primary class and stock subclass", () => {
   assert.equal(matchesTickerClassificationFilters({ ticker: "AAPL" }, "stock", "technology"), true);
   assert.equal(matchesTickerClassificationFilters({ ticker: "AAPL" }, "etf", "all"), false);
