@@ -109,6 +109,10 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   assert.match(topScoreSource, /\["HK", labelByMode/);
   assert.match(appSource, /fetchLiveVirtualTraderTrades\(profileId, null, 200, "US"\)/);
   assert.match(appSource, /fetchDashboardTopScores\(profileId, "HK", "all", DEFAULT_PERIOD, 200\)/);
+  assert.match(appSource, /fetchAnalyze\(ticker, DEFAULT_PERIOD, market\)/);
+  assert.match(appSource, /fetchChartData\(ticker, DEFAULT_PERIOD, market\)/);
+  assert.match(appSource, /fetchForecast\(ticker, "2y", market\)/);
+  assert.match(appSource, /market=\{selectedMarket\}/);
   assert.match(appSource, /rankTopScoredTickersByMarket/);
   assert.match(traderSource, /TickerClassificationTags/);
   assert.match(watchlistSource, /TickerClassificationTags/);

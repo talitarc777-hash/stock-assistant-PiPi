@@ -22,8 +22,11 @@ export async function fetchWatchlistAnalyze(tickers, period = "5y") {
   return fetchJson(`/watchlist-analyze?tickers=${joined}&period=${period}`, { timeoutMs: 45000, retries: 2 });
 }
 
-export async function fetchAnalyze(ticker, period = "5y") {
-  return fetchJson(`/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}`, { timeoutMs: 14000 });
+export async function fetchAnalyze(ticker, period = "5y", market = "US") {
+  return fetchJson(
+    `/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${encodeURIComponent(market)}`,
+    { timeoutMs: 14000 }
+  );
 }
 
 export async function fetchChartData(ticker, period = "5y", market = "US") {
@@ -61,8 +64,11 @@ export async function fetchLiveMarketSnapshot(ticker, period = "3mo", market = "
   );
 }
 
-export async function fetchForecast(ticker, period = "2y") {
-  return fetchJson(`/forecast?ticker=${encodeURIComponent(ticker)}&period=${period}`, { timeoutMs: 14000 });
+export async function fetchForecast(ticker, period = "2y", market = "US") {
+  return fetchJson(
+    `/forecast?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${encodeURIComponent(market)}`,
+    { timeoutMs: 14000 }
+  );
 }
 
 export async function fetchVirtualTraderSummary(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -22,6 +23,7 @@ from app.services.market_data import (
     MarketDataError,
     get_price_history,
 )
+from app.services.market_config import MarketValidationError, resolve_security
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ class ForecastResponse(BaseModel):
     """
 
     ticker: str
+    market: Literal["US", "HK"] = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
     current_close: float
     trend_regime: str
     trend_regime_en: str
@@ -105,19 +111,29 @@ def forecast_ticker(
         pattern=PERIOD_PATTERN,
         description="History period, e.g. 1y, 2y, 5y, max",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> ForecastResponse:
     """
     Return a scenario-based forecast, not a guaranteed prediction.
 
     This endpoint does not predict exact prices.
     """
-    logger.info("Request /forecast ticker=%s period=%s", ticker, period)
-
     try:
-        price_df = get_price_history(ticker=ticker, period=period)
+        identity = resolve_security(ticker, market)
+        logger.info(
+            "Request /forecast ticker=%s period=%s market=%s",
+            identity.ticker,
+            period,
+            identity.market,
+        )
+        price_df = get_price_history(
+            ticker=identity.ticker,
+            period=period,
+            market=identity.market,
+        )
         indicators_df = add_technical_indicators(price_df)
         forecast = build_scenario_forecast(indicators_df)
-    except InvalidTickerError as exc:
+    except (InvalidTickerError, MarketValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EmptyDataError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -132,7 +148,7 @@ def forecast_ticker(
     current_close = float(indicators_df.iloc[-1]["close"])
     try:
         save_forecast_snapshot(
-            ticker=ticker,
+            ticker=identity.provider_symbol,
             close=current_close,
             trend_regime=forecast.trend_regime,
             outlook_5d=forecast.forecast_horizon_5d,
@@ -146,7 +162,11 @@ def forecast_ticker(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return ForecastResponse(
-        ticker=ticker.strip().upper(),
+        ticker=identity.ticker,
+        market=identity.market,
+        provider_symbol=identity.provider_symbol,
+        currency=identity.currency,
+        currency_symbol=identity.currency_symbol,
         current_close=float(to_json_safe(current_close)),
         trend_regime=forecast.trend_regime,
         trend_regime_en=forecast.trend_regime,

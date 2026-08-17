@@ -180,6 +180,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   const [marketDecisionRows, setMarketDecisionRows] = useState({ US: [], HK: [] });
   const [marketScoreRows, setMarketScoreRows] = useState({ US: [], HK: [] });
   const [selectedTicker, setSelectedTicker] = useState("");
+  const [selectedMarket, setSelectedMarket] = useState("US");
   const [analyzeData, setAnalyzeData] = useState(null);
   const [chartData, setChartData] = useState(null);
   const [forecastData, setForecastData] = useState(null);
@@ -191,11 +192,12 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
   const [error, setError] = useState("");
   const [topScoresError, setTopScoresError] = useState({ US: "", HK: "" });
+  const tickerDetailRef = useRef(null);
 
   async function loadWatchlist() {
     if (!currentWatchlist.length) {
       setWatchlistRows([]);
-      setSelectedTicker("");
+      if (selectedMarket === "US") setSelectedTicker("");
       return;
     }
 
@@ -214,12 +216,16 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
       }
       if (rankedRows.length > 0) {
         const tickers = rankedRows.map((row) => row.ticker);
-        setSelectedTicker((currentTicker) => (tickers.includes(currentTicker) ? currentTicker : tickers[0]));
+        setSelectedTicker((currentTicker) => {
+          if (selectedMarket === "HK") return currentTicker;
+          return tickers.includes(currentTicker) ? currentTicker : tickers[0];
+        });
       } else {
         // Keep detail selection anchored to shared watchlist even when ranking fails.
-        setSelectedTicker((currentTicker) =>
-          currentWatchlist.includes(currentTicker) ? currentTicker : (currentWatchlist[0] || "")
-        );
+        setSelectedTicker((currentTicker) => {
+          if (selectedMarket === "HK") return currentTicker;
+          return currentWatchlist.includes(currentTicker) ? currentTicker : (currentWatchlist[0] || "");
+        });
       }
     } catch (requestError) {
       setError(requestError.message || "Failed to load watchlist.");
@@ -228,7 +234,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     }
   }
 
-  async function loadTickerDetail(ticker) {
+  async function loadTickerDetail(ticker, market = selectedMarket) {
     if (!ticker) {
       setAnalyzeData(null);
       setChartData(null);
@@ -246,9 +252,9 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     setError("");
     try {
       const [analysisResult, chartResult, forecastResult] = await Promise.allSettled([
-        fetchAnalyze(ticker, DEFAULT_PERIOD),
-        fetchChartData(ticker, DEFAULT_PERIOD),
-        fetchForecast(ticker, "2y"),
+        fetchAnalyze(ticker, DEFAULT_PERIOD, market),
+        fetchChartData(ticker, DEFAULT_PERIOD, market),
+        fetchForecast(ticker, "2y", market),
       ]);
       setAnalyzeData(analysisResult.status === "fulfilled" ? analysisResult.value : null);
       setChartData(chartResult.status === "fulfilled" ? chartResult.value : null);
@@ -339,8 +345,8 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
   }, [currentWatchlist.join(","), profileId]);
 
   useEffect(() => {
-    loadTickerDetail(selectedTicker);
-  }, [selectedTicker]);
+    loadTickerDetail(selectedTicker, selectedMarket);
+  }, [selectedMarket, selectedTicker]);
 
   const chartSeries = useMemo(() => {
     if (!chartData?.series) return [];
@@ -385,11 +391,16 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
 
   function selectTopScoredTicker(ticker, market) {
     const normalizedTicker = String(ticker || "").trim().toUpperCase();
-    setSelectedTicker(
-      market === "HK" && normalizedTicker && !normalizedTicker.endsWith(".HK")
-        ? `${normalizedTicker}.HK`
-        : normalizedTicker
-    );
+    setSelectedMarket(market === "HK" ? "HK" : "US");
+    setSelectedTicker(normalizedTicker.replace(/\.HK$/i, ""));
+    window.requestAnimationFrame(() => {
+      tickerDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function selectWatchlistTicker(ticker) {
+    setSelectedMarket("US");
+    setSelectedTicker(ticker);
   }
 
   const watchlistClassificationByTicker = useMemo(
@@ -415,7 +426,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
           <select
             id="ticker-select"
             value={selectedTicker}
-            onChange={(event) => setSelectedTicker(event.target.value)}
+            onChange={(event) => selectWatchlistTicker(event.target.value)}
           >
             {selectedTicker && !watchlistRows.some((row) => row.ticker === selectedTicker) ? (
               <option value={selectedTicker}>{selectedTicker}</option>
@@ -447,7 +458,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
               await loadWatchlist();
               await loadTopScores();
               await loadAlerts();
-              await loadTickerDetail(selectedTicker);
+              await loadTickerDetail(selectedTicker, selectedMarket);
             }}
           >
             {formatBilingualLabel(languageMode, "Retry page data", "重新整理頁面資料")}
@@ -468,7 +479,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
           <WatchlistTable
             rows={watchlistRows}
             selectedTicker={selectedTicker}
-            onSelectTicker={setSelectedTicker}
+            onSelectTicker={selectWatchlistTicker}
             languageMode={languageMode}
           />
           <WatchlistManager
@@ -485,7 +496,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
           />
         </div>
 
-        <section className="panel">
+        <section className="panel" ref={tickerDetailRef}>
           <h3>{formatBilingualLabel(languageMode, "Ticker Detail", ZH.tickerDetail)}</h3>
           {detailLoadState === "partial" ? (
             <div className="helper-text">
@@ -496,7 +507,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
                   "部分詳細資料已載入，但仍有部分區塊暫時無法顯示。"
                 )}
               </p>
-              <button type="button" onClick={() => loadTickerDetail(selectedTicker)}>
+              <button type="button" onClick={() => loadTickerDetail(selectedTicker, selectedMarket)}>
                 {formatBilingualLabel(languageMode, "Retry details", "重新整理詳細資料")}
               </button>
             </div>
@@ -509,7 +520,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
                   "這個區塊目前無法載入，你可以直接在這裡重新整理，不用離開頁面。"
                 )}
               </p>
-              <button type="button" onClick={() => loadTickerDetail(selectedTicker)}>
+              <button type="button" onClick={() => loadTickerDetail(selectedTicker, selectedMarket)}>
                 {formatBilingualLabel(languageMode, "Retry details", "重新整理詳細資料")}
               </button>
             </div>
@@ -571,6 +582,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
                 ticker={analyzeData.ticker}
                 classification={analyzeData}
                 languageMode={languageMode}
+                market={selectedMarket}
               />
               <h4>{formatBilingualLabel(languageMode, "Explanation", ZH.explanation)}</h4>
               <ul className="bullet-list">

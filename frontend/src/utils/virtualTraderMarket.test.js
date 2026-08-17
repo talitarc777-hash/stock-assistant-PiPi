@@ -18,11 +18,15 @@ test("Virtual Trader exposes one shared US/HK market interface", () => {
   assert.match(pageSource, /decisionModelText/);
   assert.match(pageSource, /Training pending/);
   assert.match(pageSource, /market === "HK" \? sortedRows : sortedRows\.slice\(0, 15\)/);
+  assert.match(pageSource, /TickerHistorySummary/);
+  assert.match(pageSource, /market=\{market\}/);
   assert.doesNotMatch(pageSource, /selectedMarket/);
 });
 
 test("market-aware API calls and narrow-screen controls remain wired", () => {
   assert.match(apiSource, /market = "US"/);
+  assert.match(apiSource, /fetchAnalyze\(ticker, period = "5y", market = "US"\)/);
+  assert.match(apiSource, /fetchForecast\(ticker, period = "2y", market = "US"\)/);
   assert.match(apiSource, /market=\$\{encodeURIComponent\(market\)\}/);
   assert.match(styleSource, /\.hk-ticker-control/);
   assert.match(styleSource, /@media \(max-width: 600px\)/);

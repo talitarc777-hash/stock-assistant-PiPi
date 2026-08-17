@@ -29,6 +29,7 @@ import RecentRunsPanel from "../components/RecentRunsPanel";
 import RecentTradesTable from "../components/RecentTradesTable";
 import ResetTradingAccountButton from "../components/ResetTradingAccountButton";
 import TickerClassificationTags from "../components/TickerClassificationTags";
+import TickerHistorySummary from "../components/TickerHistorySummary";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
 import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 import { formatModelRate } from "../utils/modelMetrics";
@@ -335,6 +336,7 @@ export default function VirtualTraderPage({
   const [modelRegistry, setModelRegistry] = useState([]);
   const [modelRegistryError, setModelRegistryError] = useState("");
   const liveSyncInFlight = useRef(false);
+  const tickerDetailRef = useRef(null);
   const activeWatchlist = useMemo(
     () => (market === "HK" ? hkTickers : currentWatchlist),
     [currentWatchlist, hkTickers, market]
@@ -360,10 +362,18 @@ export default function VirtualTraderPage({
     setAccountHoldings([]);
     setRecentTrades([]);
     setLiveDecisionLog([]);
+    setSelectedLiveTrade(null);
     setAccountHistory([]);
     setHistoricalEnabled(false);
     setHistoryEnabled(false);
     setError("");
+  }
+
+  function showTickerDetail(item) {
+    setSelectedLiveTrade(item);
+    window.requestAnimationFrame(() => {
+      tickerDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   async function activateHkTicker() {
@@ -1034,18 +1044,32 @@ export default function VirtualTraderPage({
                   <tr
                     key={`${item.timestamp}-${item.ticker}-${item.action}`}
                     className={selectedLiveTrade?.timestamp === item.timestamp ? "selected-row" : ""}
-                    onClick={() => setSelectedLiveTrade(item)}
+                    onClick={() => showTickerDetail(item)}
                   >
                     <td data-label={labelByMode(languageMode, "Ticker", ZH.ticker)}>
-                      <span className="ticker-identity">
-                        <span className="ticker-symbol">{item.ticker}</span>
-                        <TickerClassificationTags
-                          ticker={item.ticker}
-                          classification={item}
-                          languageMode={languageMode}
-                          size="xs"
-                        />
-                      </span>
+                      <button
+                        type="button"
+                        className="ticker-dashboard-link"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          showTickerDetail(item);
+                        }}
+                        aria-label={labelByMode(
+                          languageMode,
+                          `Show ${item.ticker} details`,
+                          `顯示 ${item.ticker} 詳情`
+                        )}
+                      >
+                        <span className="ticker-identity">
+                          <span className="ticker-symbol">{item.ticker}</span>
+                          <TickerClassificationTags
+                            ticker={item.ticker}
+                            classification={item}
+                            languageMode={languageMode}
+                            size="xs"
+                          />
+                        </span>
+                      </button>
                     </td>
                     <td data-label={labelByMode(languageMode, "Score", "\u5206\u6578")}>
                       <strong>{stockScoreText(item)}</strong>
@@ -1086,7 +1110,13 @@ export default function VirtualTraderPage({
           </table>
         </div>
         {selectedLiveTrade ? (
-          <div className="decision-context-box">
+          <div className="decision-context-box" ref={tickerDetailRef}>
+            <TickerHistorySummary
+              ticker={selectedLiveTrade.ticker}
+              classification={selectedLiveTrade}
+              languageMode={languageMode}
+              market={market}
+            />
             {market === "HK" ? (
               <p>
                 <strong>{labelByMode(languageMode, "Board lot", "每手股數")}:</strong>{" "}

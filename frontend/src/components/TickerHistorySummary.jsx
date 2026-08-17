@@ -47,7 +47,12 @@ function formatPercent(value) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-export default function TickerHistorySummary({ ticker, classification = null, languageMode = "both" }) {
+export default function TickerHistorySummary({
+  ticker,
+  classification = null,
+  languageMode = "both",
+  market = "US",
+}) {
   const [profile, setProfile] = useState(null);
   const [chartCache, setChartCache] = useState({});
   const [activeRange, setActiveRange] = useState("5D");
@@ -68,8 +73,8 @@ export default function TickerHistorySummary({ ticker, classification = null, la
     setIsLoadingChart(true);
 
     Promise.allSettled([
-      fetchLiveMarketSnapshot(ticker),
-      fetchChartData(ticker, PRICE_HISTORY_RANGES["5D"].period),
+      fetchLiveMarketSnapshot(ticker, "3mo", market),
+      fetchChartData(ticker, PRICE_HISTORY_RANGES["5D"].period, market),
     ]).then(([profileResult, chartResult]) => {
       if (cancelled) return;
       if (profileResult.status === "fulfilled") {
@@ -89,7 +94,7 @@ export default function TickerHistorySummary({ ticker, classification = null, la
     return () => {
       cancelled = true;
     };
-  }, [ticker]);
+  }, [market, ticker]);
 
   async function selectRange(rangeKey) {
     setActiveRange(rangeKey);
@@ -97,7 +102,11 @@ export default function TickerHistorySummary({ ticker, classification = null, la
     if (chartCache[rangeKey]) return;
     setIsLoadingChart(true);
     try {
-      const payload = await fetchChartData(ticker, PRICE_HISTORY_RANGES[rangeKey].period);
+      const payload = await fetchChartData(
+        ticker,
+        PRICE_HISTORY_RANGES[rangeKey].period,
+        market
+      );
       setChartCache((current) => ({ ...current, [rangeKey]: payload.series || [] }));
     } catch (error) {
       setChartError(error.message || "Price history could not be loaded.");

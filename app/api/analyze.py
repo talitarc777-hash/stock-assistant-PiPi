@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -26,6 +27,12 @@ from app.services.market_data import (
     InvalidTickerError,
     MarketDataError,
     get_price_history,
+)
+from app.services.market_config import (
+    MARKET_CONFIGS,
+    MarketValidationError,
+    normalize_market,
+    resolve_security,
 )
 from app.services.scoring import ScoringInputError, score_from_indicators
 from app.core.translation_terms import (
@@ -68,6 +75,10 @@ class BenchmarkRelativeResponse(BaseModel):
 class AnalyzeResponse(ClassifiedTickerResponse):
     """Response model for the /analyze endpoint."""
 
+    market: Literal["US", "HK"] = "US"
+    provider_symbol: str | None = None
+    currency: str = "USD"
+    currency_symbol: str = "$"
     latest_close: float
     score_breakdown: ScoreBreakdownResponse
     label: str
@@ -105,9 +116,11 @@ def _build_ticker_analysis_response(
     period: str,
     benchmark: str,
     benchmark_df,
+    market: str = "US",
 ) -> AnalyzeResponse:
     """Build a single-ticker analysis response for reuse across endpoints."""
-    price_df = get_price_history(ticker=ticker, period=period)
+    identity = resolve_security(ticker, market)
+    price_df = get_price_history(ticker=identity.ticker, period=period, market=identity.market)
     indicators_df = add_technical_indicators(price_df)
     score = score_from_indicators(indicators_df)
     benchmark_cmp = compare_to_benchmark(
@@ -132,7 +145,11 @@ def _build_ticker_analysis_response(
     action_summary_zh = translate_action_summary_to_zh(score.action_summary)
 
     return AnalyzeResponse(
-        ticker=ticker.strip().upper(),
+        ticker=identity.ticker,
+        market=identity.market,
+        provider_symbol=identity.provider_symbol,
+        currency=identity.currency,
+        currency_symbol=identity.currency_symbol,
         latest_close=float(latest_close),
         score_breakdown=ScoreBreakdownResponse(
             trend_score=score.trend_score,
@@ -168,25 +185,39 @@ def analyze_ticker(
         pattern=PERIOD_PATTERN,
         description="History period, e.g. 1y, 5y, max",
     ),
-    benchmark: str = Query(
-        "VOO",
+    benchmark: str | None = Query(
+        None,
         min_length=1,
         max_length=15,
         pattern=TICKER_PATTERN,
         description="Benchmark symbol, default VOO",
     ),
+    market: Literal["US", "HK"] = "US",
 ) -> AnalyzeResponse:
     """Run indicator + scoring analysis for one ticker with deterministic rules."""
-    logger.info("Request /analyze ticker=%s period=%s benchmark=%s", ticker, period, benchmark)
+    clean_market = normalize_market(market)
+    benchmark_symbol = benchmark or MARKET_CONFIGS[clean_market].default_benchmark
+    logger.info(
+        "Request /analyze ticker=%s period=%s benchmark=%s market=%s",
+        ticker,
+        period,
+        benchmark_symbol,
+        clean_market,
+    )
     try:
-        benchmark_df = get_price_history(ticker=benchmark, period=period)
+        benchmark_df = get_price_history(
+            ticker=benchmark_symbol,
+            period=period,
+            market=clean_market,
+        )
         return _build_ticker_analysis_response(
             ticker=ticker,
             period=period,
-            benchmark=benchmark,
+            benchmark=benchmark_symbol,
             benchmark_df=benchmark_df,
+            market=clean_market,
         )
-    except InvalidTickerError as exc:
+    except (InvalidTickerError, MarketValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EmptyDataError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
