@@ -87,3 +87,11 @@ export async function unlinkDiscordProfile(profileUserId) {
     retries: 0,
   });
 }
+
+export async function sendDiscordTestMessage(profileUserId) {
+  return requestJson("/discord-link/test-message", {
+    method: "POST",
+    body: { profile_user_id: profileUserId },
+    retries: 0,
+  });
+}

@@ -7,6 +7,7 @@ import {
   fetchDiscordReadiness,
   fetchDiscordLinkStatus,
   fetchUserAlertSettings,
+  sendDiscordTestMessage,
   unlinkDiscordProfile,
   updateUserAlertSettings,
   updateUserProfileSettings,
@@ -69,6 +70,8 @@ export default function SettingsPage({
   const [discordCode, setDiscordCode] = useState(null);
   const [discordLinkBusy, setDiscordLinkBusy] = useState(false);
   const [discordLinkError, setDiscordLinkError] = useState("");
+  const [discordTestBusy, setDiscordTestBusy] = useState(false);
+  const [discordTestStatus, setDiscordTestStatus] = useState(null);
 
   useEffect(() => {
     setLocalProfileId(profileId);
@@ -113,6 +116,7 @@ export default function SettingsPage({
     let isActive = true;
     async function loadDiscordLink() {
       setDiscordLinkError("");
+      setDiscordTestStatus(null);
       setDiscordCode(null);
       const [linkResult, readinessResult] = await Promise.allSettled([
         fetchDiscordLinkStatus(profileId),
@@ -153,10 +157,35 @@ export default function SettingsPage({
       const status = await unlinkDiscordProfile(profileId);
       setDiscordLink(status);
       setDiscordCode(null);
+      setDiscordTestStatus(null);
     } catch (requestError) {
       setDiscordLinkError(requestError.message || "Could not unlink Discord.");
     } finally {
       setDiscordLinkBusy(false);
+    }
+  }
+
+  async function handleDiscordTestMessage() {
+    setDiscordTestBusy(true);
+    setDiscordLinkError("");
+    setDiscordTestStatus(null);
+    try {
+      await sendDiscordTestMessage(profileId);
+      setDiscordTestStatus({
+        type: "success",
+        message: labelByMode(
+          languageMode,
+          "Test message sent. Check your configured Discord alert channel.",
+          "測試訊息已傳送，請查看已設定的 Discord 提示頻道。"
+        ),
+      });
+    } catch (requestError) {
+      setDiscordTestStatus({
+        type: "error",
+        message: requestError.message || "Could not send the Discord test message.",
+      });
+    } finally {
+      setDiscordTestBusy(false);
     }
   }
 
@@ -398,9 +427,25 @@ export default function SettingsPage({
                 "可隨時在 Discord 輸入 !syncstatus，核對網頁共享資料。"
               )}
             </p>
-            <button type="button" className="secondary-button" onClick={handleUnlinkDiscord} disabled={discordLinkBusy}>
-              {labelByMode(languageMode, "Disconnect Discord", "中斷 Discord 連接")}
-            </button>
+            <div className="discord-link-actions">
+              <button
+                type="button"
+                onClick={handleDiscordTestMessage}
+                disabled={discordLinkBusy || discordTestBusy}
+              >
+                {discordTestBusy
+                  ? labelByMode(languageMode, "Sending test...", "正在傳送測試...")
+                  : labelByMode(languageMode, "Send test message", "傳送測試訊息")}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleUnlinkDiscord}
+                disabled={discordLinkBusy || discordTestBusy}
+              >
+                {labelByMode(languageMode, "Disconnect Discord", "中斷 Discord 連接")}
+              </button>
+            </div>
           </>
         ) : (
           <>
@@ -423,6 +468,14 @@ export default function SettingsPage({
             <code>!link {discordCode.code}</code>
             <small>{labelByMode(languageMode, "Expires in 10 minutes and works once.", "代碼在 10 分鐘後失效，而且只可使用一次。")}</small>
           </div>
+        ) : null}
+        {discordTestStatus ? (
+          <p
+            className={discordTestStatus.type === "success" ? "success-box" : "error-box"}
+            role="status"
+          >
+            {discordTestStatus.message}
+          </p>
         ) : null}
         {discordLinkError ? <p className="error-box">{discordLinkError}</p> : null}
       </section>

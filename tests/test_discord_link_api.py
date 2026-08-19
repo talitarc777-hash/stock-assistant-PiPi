@@ -1,8 +1,9 @@
 """End-to-end API contract tests for dashboard/Discord identity linking."""
 
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -117,6 +118,54 @@ class DiscordLinkApiTests(unittest.TestCase):
         self.assertEqual(reused.status_code, 400)
         self.assertIn("already been used", reused.json()["detail"].lower())
 
+    @patch("app.api.discord_link.get_discord_alert_delivery_service")
+    @patch("app.api.discord_link.get_settings")
+    def test_linked_profile_can_send_test_message(
+        self,
+        mock_settings,
+        mock_delivery_service,
+    ) -> None:
+        issued = self.service.create_link_code("web-test-message")
+        self.service.consume_link_code(
+            code=issued["code"],
+            discord_user_id="discord-test-message",
+            discord_display_name="Test User",
+        )
+        mock_settings.return_value = SimpleNamespace(
+            discord_webhook_url="https://discord.invalid/webhook"
+        )
+        delivery_service = MagicMock()
+        delivery_service.deliver.return_value = SimpleNamespace(alerts_sent=1)
+        mock_delivery_service.return_value = delivery_service
+
+        response = self.client.post(
+            "/discord-link/test-message",
+            json={"profile_user_id": "web-test-message"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["sent"])
+        delivery_service.deliver.assert_called_once()
+        delivery_call = delivery_service.deliver.call_args.kwargs
+        self.assertEqual(delivery_call["user_id"], "web-test-message")
+        self.assertEqual(delivery_call["source"], "settings_test")
+        self.assertEqual(delivery_call["items"][0].rule, "discord_connection_test")
+        self.assertNotIn("discord-test-message", delivery_call["items"][0].message)
+
+    @patch("app.api.discord_link.get_discord_alert_delivery_service")
+    def test_unlinked_profile_cannot_send_test_message(
+        self,
+        mock_delivery_service,
+    ) -> None:
+        response = self.client.post(
+            "/discord-link/test-message",
+            json={"profile_user_id": "not-linked"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("connect", response.json()["detail"].lower())
+        mock_delivery_service.assert_not_called()
+
     def test_routes_are_registered_in_openapi(self) -> None:
         paths = self.client.get("/openapi.json").json()["paths"]
         self.assertIn("/discord-link/code", paths)
@@ -124,6 +173,7 @@ class DiscordLinkApiTests(unittest.TestCase):
         self.assertIn("/discord-link/resolve", paths)
         self.assertIn("/discord-link/status", paths)
         self.assertIn("/discord-link/unlink", paths)
+        self.assertIn("/discord-link/test-message", paths)
 
 
 if __name__ == "__main__":

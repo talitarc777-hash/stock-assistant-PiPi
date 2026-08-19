@@ -39,3 +39,13 @@ class DiscordReadinessResponse(BaseModel):
 
 class DiscordLinkUnlinkRequest(BaseModel):
     profile_user_id: str = Field(min_length=1, max_length=120)
+
+
+class DiscordLinkTestMessageRequest(BaseModel):
+    profile_user_id: str = Field(min_length=1, max_length=120)
+
+
+class DiscordLinkTestMessageResponse(BaseModel):
+    sent: bool
+    message: str
+    delivered_at_utc: str

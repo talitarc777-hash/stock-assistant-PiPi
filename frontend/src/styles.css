@@ -1025,6 +1025,16 @@ button:disabled {
   line-height: 1.65;
 }
 
+.discord-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.discord-link-actions button {
+  min-width: min(100%, 11rem);
+}
+
 .discord-link-command {
   display: grid;
   gap: 0.5rem;
