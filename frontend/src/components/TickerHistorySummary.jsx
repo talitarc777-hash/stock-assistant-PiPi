@@ -26,8 +26,18 @@ function firstSentence(value) {
   return (match?.[0] || text).trim();
 }
 
+function displayTickerName(profile, classification, ticker) {
+  return (
+    profile?.company_name
+    || profile?.security_name
+    || classification?.company_name
+    || classification?.security_name
+    || ticker
+  );
+}
+
 function classificationNature(profile, classification, languageMode) {
-  const companyName = profile?.company_name || classification?.ticker || "This asset";
+  const companyName = displayTickerName(profile, classification, classification?.ticker || "This asset");
   const englishSummary = firstSentence(profile?.business_summary);
   const chineseSummary = firstSentence(profile?.business_summary_zh);
   const sector = profile?.sector || profile?.industry;
@@ -143,7 +153,7 @@ export default function TickerHistorySummary({
         <h4>{labelByMode(languageMode, "What this company does", "公司業務性質")}</h4>
         <p className="ticker-nature-identity">
           <span className="ticker-identity">
-            <span className="ticker-symbol">{profile?.company_name || ticker}</span>
+            <span className="ticker-symbol">{displayTickerName(profile, classification, ticker)}</span>
             <TickerClassificationTags
               ticker={ticker}
               classification={profile || classification || { ticker }}

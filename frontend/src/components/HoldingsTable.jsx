@@ -217,7 +217,11 @@ export default function HoldingsTable({ languageMode, holdings = [], market = "U
             <div className="holding-modal-header">
               <div>
                 <h3 id="holding-modal-title">
-                  {companyProfile?.company_name || selectedHolding.ticker}
+                  {companyProfile?.company_name
+                    || companyProfile?.security_name
+                    || selectedHolding.company_name
+                    || selectedHolding.security_name
+                    || selectedHolding.ticker}
                 </h3>
                 <p className="ticker-identity">
                   <span className="ticker-symbol">{selectedHolding.ticker}</span>
