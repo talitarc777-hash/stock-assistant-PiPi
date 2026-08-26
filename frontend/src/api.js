@@ -236,6 +236,10 @@ export async function fetchModelImprovementStatus() {
   return fetchJson("/model-lifecycle/improvement-status");
 }
 
+export async function fetchModelHealth(market = "US") {
+  return fetchJson(`/model-lifecycle/model-health?market=${encodeURIComponent(market)}`);
+}
+
 export async function runModelLifecycleNow(
   workflowType = "daily_incremental",
   triggerReason = "manual_trigger",

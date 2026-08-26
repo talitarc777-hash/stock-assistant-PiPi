@@ -113,6 +113,46 @@ class ModelFeedbackServiceTests(unittest.TestCase):
         self.assertGreater(summary["feedback_score"], 0.5)
         self.assertLess(summary["feedback_score"], summary["raw_feedback_score"])
 
+    def test_direction_probability_uses_version_evidence_when_sufficient(self) -> None:
+        dates = pd.bdate_range("2026-01-02", periods=8)
+        for date in dates:
+            payload = self._payload(
+                date=date.date().isoformat(),
+                model_version="calibrated-v1",
+            )
+            payload["confidence_score"] = 0.60
+            self.assertTrue(self.service.record_decision(payload))
+
+        def long_history(symbol: str, _: str) -> pd.DataFrame:
+            history_dates = pd.bdate_range("2026-01-02", periods=30)
+            step = 0.2 if symbol == "VOO" else 1.0
+            return pd.DataFrame(
+                {
+                    "date": history_dates,
+                    "close": [100.0 + step * index for index in range(len(history_dates))],
+                }
+            )
+
+        self.service.evaluate_pending(price_loader=long_history, limit=100)
+        calibration = self.service.calibrate_direction_probability(
+            raw_confidence=0.60,
+            ticker="AAPL",
+            model_period="2y",
+            model_name="random_forest",
+            model_version="calibrated-v1",
+        )
+        summary = self.service.get_model_summary(
+            ticker="AAPL",
+            model_period="2y",
+            model_name="random_forest",
+            model_version="calibrated-v1",
+        )
+
+        self.assertEqual(calibration["source"], "ticker_model_period_version")
+        self.assertEqual(calibration["sample_count"], 8)
+        self.assertGreater(calibration["probability"], 0.60)
+        self.assertIsNotNone(summary["brier_score"])
+
     def test_oldest_mature_feedback_is_not_starved_by_new_rows(self) -> None:
         self.assertTrue(
             self.service.record_decision(
@@ -213,6 +253,39 @@ class ModelFeedbackServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["sample_count"], 1)
+
+    def test_challenger_shadow_is_versioned_idempotent_and_multi_horizon(self) -> None:
+        payload = self._payload(model_version="incumbent-v1")
+        shadow = {
+            "status": "available",
+            "execution_enabled": False,
+            "model_ticker": "AAPL",
+            "model_name": "random_forest",
+            "model_period": "2y",
+            "model_version": "challenger-v2",
+            "model_role": "challenger",
+            "task_type": "regression",
+            "prediction_value": 2.5,
+            "confidence_score": 0.70,
+        }
+        self.assertTrue(self.service.record_challenger_shadow(payload, shadow))
+        self.assertFalse(self.service.record_challenger_shadow(payload, shadow))
+        self.service.evaluate_pending(price_loader=self._history)
+
+        rows = self.service.list_feedback(status="evaluated")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["decision_source"], "shadow_challenger")
+        self.assertEqual(rows[0]["model_version"], "challenger-v2")
+        summary = self.service.get_model_summary(
+            ticker="AAPL",
+            model_period="2y",
+            model_name="random_forest",
+            model_version="challenger-v2",
+        )
+        self.assertEqual(summary["sample_count"], 1)
+        self.assertIn("1d", summary["multi_horizon"])
+        self.assertIn("5d", summary["multi_horizon"])
+        self.assertIn("10d", summary["multi_horizon"])
 
     def test_context_adjustment_learns_from_repeated_factor_outcomes(self) -> None:
         dates = ["2026-01-02", "2026-01-05", "2026-01-06"]

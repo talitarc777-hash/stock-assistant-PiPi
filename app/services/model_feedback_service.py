@@ -20,13 +20,19 @@ from app.services.market_config import normalize_market, resolve_model_identity,
 logger = logging.getLogger(__name__)
 PriceLoader = Callable[[str, str], pd.DataFrame]
 BENCHMARK_SHADOW_ROUND_TRIP_COST_PCT = 0.10
-MODEL_FEEDBACK_ELIGIBLE_SOURCES = (
+MODEL_FEEDBACK_RUNTIME_SOURCES = (
     "production_model",
     "validated_candidate",
     "shared_global_production",
     "shared_global_candidate",
     "saved_model",
 )
+MODEL_FEEDBACK_EVALUATION_SOURCES = (
+    *MODEL_FEEDBACK_RUNTIME_SOURCES,
+    "shadow_challenger",
+)
+# Backwards-compatible export used by older callers/tests.
+MODEL_FEEDBACK_ELIGIBLE_SOURCES = MODEL_FEEDBACK_RUNTIME_SOURCES
 
 
 def _utc_now_iso() -> str:
@@ -43,6 +49,23 @@ def _safe_float(value: Any) -> float | None:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
+
+
+def _wilson_interval(successes: int, total: int, z: float = 1.644854) -> tuple[float | None, float | None]:
+    """Return a conservative 90% interval for a Bernoulli success rate."""
+    if total <= 0:
+        return None, None
+    proportion = successes / float(total)
+    denominator = 1.0 + (z * z) / total
+    centre = proportion + (z * z) / (2.0 * total)
+    margin = z * math.sqrt(
+        (proportion * (1.0 - proportion) / total)
+        + (z * z) / (4.0 * total * total)
+    )
+    return (
+        _clamp((centre - margin) / denominator, 0.0, 1.0),
+        _clamp((centre + margin) / denominator, 0.0, 1.0),
+    )
 
 
 def _decision_date(payload: dict[str, Any]) -> str:
@@ -258,6 +281,47 @@ class ModelFeedbackService:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS model_prediction_horizon_outcomes (
+                    decision_key TEXT NOT NULL,
+                    horizon_days INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    evaluated_at_utc TEXT,
+                    outcome_date TEXT,
+                    actual_return_pct REAL,
+                    signed_prediction_return_pct REAL,
+                    max_favourable_excursion_pct REAL,
+                    max_adverse_excursion_pct REAL,
+                    absolute_return_error_pct REAL,
+                    direction_correct INTEGER,
+                    PRIMARY KEY(decision_key, horizon_days)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_horizon_outcomes_status
+                ON model_prediction_horizon_outcomes(status, horizon_days, decision_key)
+                """
+            )
+            for horizon_days in (1, 5, 10, 20):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO model_prediction_horizon_outcomes(
+                        decision_key, horizon_days, status
+                    )
+                    SELECT decision_key, ?, 'pending'
+                    FROM model_decision_feedback
+                    WHERE decision_source IN (
+                        'production_model', 'validated_candidate',
+                        'shared_global_production', 'shared_global_candidate',
+                        'saved_model', 'shadow_challenger'
+                    )
+                      AND decision_date >= date('now', '-120 day')
+                    """,
+                    (horizon_days,),
+                )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_model_feedback_origin
                 ON model_decision_feedback(
                     model_ticker, model_period, model_name, status, decision_date
@@ -443,7 +507,7 @@ class ModelFeedbackService:
         model_period = str(metadata.get("model_period") or "unknown")
         model_version = str(metadata.get("model_version") or "legacy")
         source = str(metadata.get("decision_source") or "unknown")
-        if source not in MODEL_FEEDBACK_ELIGIBLE_SOURCES:
+        if source not in MODEL_FEEDBACK_EVALUATION_SOURCES:
             return False
         model_ticker = str(metadata.get("model_ticker") or ticker).strip().upper()
         model_ticker = resolve_model_identity(model_ticker, market).ticker
@@ -514,8 +578,48 @@ class ModelFeedbackService:
                     market,
                 ),
             )
+            for horizon_days in (1, 5, 10, 20):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO model_prediction_horizon_outcomes(
+                        decision_key, horizon_days, status
+                    ) VALUES (?, ?, 'pending')
+                    """,
+                    (decision_key, horizon_days),
+                )
             conn.commit()
         return bool(cursor.rowcount)
+
+    def record_challenger_shadow(
+        self,
+        payload: dict[str, Any],
+        shadow: dict[str, Any],
+        *,
+        benchmark: str = "VOO",
+    ) -> bool:
+        """Store one non-executing challenger prediction with exact provenance."""
+        if shadow.get("status") != "available":
+            return False
+        metadata = dict(payload.get("metadata") or {})
+        shadow_payload = {
+            **payload,
+            "action": "no_action",
+            "quantity": 0.0,
+            "model_name": str(shadow.get("model_name") or ""),
+            "confidence_score": shadow.get("confidence_score"),
+            "metadata": {
+                **metadata,
+                "prediction_value": shadow.get("prediction_value"),
+                "task_type": shadow.get("task_type"),
+                "model_period": shadow.get("model_period"),
+                "model_version": shadow.get("model_version"),
+                "model_ticker": shadow.get("model_ticker"),
+                "decision_source": "shadow_challenger",
+                "model_role": shadow.get("model_role", "challenger"),
+                "execution_enabled": False,
+            },
+        }
+        return self.record_decision(shadow_payload, benchmark=benchmark)
 
     def list_feedback(
         self,
@@ -574,7 +678,7 @@ class ModelFeedbackService:
         limit: int,
     ) -> list[dict[str, Any]]:
         """Return oldest eligible rows so mature work cannot be starved."""
-        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -585,12 +689,12 @@ class ModelFeedbackService:
                 ORDER BY decision_date ASC, id ASC
                 LIMIT ?
                 """,
-                (*MODEL_FEEDBACK_ELIGIBLE_SOURCES, max(1, int(limit))),
+                (*MODEL_FEEDBACK_EVALUATION_SOURCES, max(1, int(limit))),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def _pending_feedback_count(self) -> int:
-        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -599,14 +703,14 @@ class ModelFeedbackService:
                 WHERE status = 'pending'
                   AND decision_source IN ({placeholders})
                 """,
-                MODEL_FEEDBACK_ELIGIBLE_SOURCES,
+                MODEL_FEEDBACK_EVALUATION_SOURCES,
             ).fetchone()
         return int(row["count"] or 0)
 
     def get_pipeline_status(self, market: str = "US") -> dict[str, Any]:
         """Return observable queue coverage without overstating model quality."""
         clean_market = normalize_market(market)
-        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -621,7 +725,7 @@ class ModelFeedbackService:
                 WHERE market = ?
                   AND decision_source IN ({placeholders})
                 """,
-                (clean_market, *MODEL_FEEDBACK_ELIGIBLE_SOURCES),
+                (clean_market, *MODEL_FEEDBACK_EVALUATION_SOURCES),
             ).fetchone()
         counts = dict(row) if row else {}
         oldest = counts.get("oldest_pending_date")
@@ -809,6 +913,10 @@ class ModelFeedbackService:
             price_loader=price_loader,
             limit=limit,
         )
+        horizon_result = self.evaluate_pending_horizons(
+            price_loader=price_loader,
+            limit=max(limit, 500),
+        )
         return {
             "evaluated": evaluated,
             "pending": remaining,
@@ -816,6 +924,120 @@ class ModelFeedbackService:
             "shadow_evaluated": shadow_result["evaluated"],
             "shadow_pending": shadow_result["pending"],
             "shadow_errors": shadow_result["errors"],
+            "multi_horizon_evaluated": horizon_result["evaluated"],
+            "multi_horizon_pending": horizon_result["pending"],
+            "multi_horizon_errors": horizon_result["errors"],
+        }
+
+    def evaluate_pending_horizons(
+        self,
+        *,
+        price_loader: PriceLoader = get_price_history,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Settle 1/5/10/20-day diagnostics without changing the trade target."""
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT h.decision_key, h.horizon_days,
+                       f.ticker, f.market, f.decision_date, f.decision_price,
+                       f.prediction_value, f.task_type
+                FROM model_prediction_horizon_outcomes h
+                JOIN model_decision_feedback f ON f.decision_key = h.decision_key
+                WHERE h.status = 'pending'
+                  AND f.decision_source IN ({placeholders})
+                ORDER BY f.decision_date ASC, h.horizon_days ASC
+                LIMIT ?
+                """,
+                (*MODEL_FEEDBACK_EVALUATION_SOURCES, max(1, int(limit))),
+            ).fetchall()
+        history_cache: dict[str, pd.DataFrame] = {}
+        evaluated = 0
+        errors: list[str] = []
+        for row in rows:
+            market = normalize_market(row["market"] or "US")
+            ticker = str(row["ticker"])
+            cache_key = f"{market}:{ticker}"
+            try:
+                if cache_key not in history_cache:
+                    history_cache[cache_key] = _clean_history(
+                        _load_market_history(
+                            price_loader,
+                            ticker=ticker,
+                            market=market,
+                            period="6mo",
+                        )
+                    )
+                history = history_cache[cache_key]
+                start_date = pd.to_datetime(row["decision_date"], errors="coerce")
+                if history.empty or pd.isna(start_date):
+                    continue
+                matches = history.index[history["date"] >= start_date.date()].tolist()
+                if not matches:
+                    continue
+                start_index = int(matches[0])
+                end_index = start_index + int(row["horizon_days"])
+                if end_index >= len(history):
+                    continue
+                decision_price = float(row["decision_price"])
+                path = history.iloc[start_index : end_index + 1]
+                path_returns = ((path["close"].astype(float) / decision_price) - 1.0) * 100.0
+                actual_return = float(path_returns.iloc[-1])
+                direction = _prediction_direction(
+                    float(row["prediction_value"]),
+                    str(row["task_type"] or "unknown"),
+                )
+                signed_path = path_returns * direction
+                direction_correct = (
+                    (direction > 0 and actual_return > 0)
+                    or (direction < 0 and actual_return < 0)
+                    or (direction == 0 and abs(actual_return) < 0.25)
+                )
+                return_error = (
+                    abs(float(row["prediction_value"]) - actual_return)
+                    if str(row["task_type"] or "").lower() == "regression"
+                    else None
+                )
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE model_prediction_horizon_outcomes
+                        SET status = 'evaluated', evaluated_at_utc = ?,
+                            outcome_date = ?, actual_return_pct = ?,
+                            signed_prediction_return_pct = ?,
+                            max_favourable_excursion_pct = ?,
+                            max_adverse_excursion_pct = ?,
+                            absolute_return_error_pct = ?, direction_correct = ?
+                        WHERE decision_key = ? AND horizon_days = ?
+                          AND status = 'pending'
+                        """,
+                        (
+                            _utc_now_iso(),
+                            history.iloc[end_index]["date"].isoformat(),
+                            actual_return,
+                            direction * actual_return,
+                            float(signed_path.max()),
+                            float(signed_path.min()),
+                            return_error,
+                            1 if direction_correct else 0,
+                            row["decision_key"],
+                            int(row["horizon_days"]),
+                        ),
+                    )
+                    conn.commit()
+                evaluated += 1
+            except Exception as exc:  # pragma: no cover - provider guard
+                errors.append(f"{ticker}:{row['horizon_days']}d:{exc}")
+        with self._connect() as conn:
+            pending_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM model_prediction_horizon_outcomes "
+                "WHERE status = 'pending'"
+            ).fetchone()
+        return {
+            "evaluated": evaluated,
+            "pending": int(pending_row["count"] or 0),
+            "errors": errors[:20],
         }
 
     def evaluate_pending_benchmark_shadows(
@@ -1014,6 +1236,68 @@ class ModelFeedbackService:
             ),
         }
 
+    def get_multi_horizon_summary(
+        self,
+        *,
+        ticker: str,
+        model_period: str,
+        model_name: str,
+        model_version: str | None = None,
+        market: str = "US",
+    ) -> dict[str, Any]:
+        clean_market = normalize_market(market)
+        identity = resolve_model_identity(ticker, clean_market)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
+        clauses = [
+            "f.market = ?",
+            "COALESCE(NULLIF(f.model_ticker, ''), f.ticker) = ?",
+            "f.model_period = ?",
+            "f.model_name = ?",
+            "h.status = 'evaluated'",
+            f"f.decision_source IN ({placeholders})",
+        ]
+        params: list[Any] = [
+            clean_market,
+            identity.ticker,
+            str(model_period),
+            str(model_name).strip().lower(),
+            *MODEL_FEEDBACK_EVALUATION_SOURCES,
+        ]
+        if model_version:
+            clauses.append("f.model_version = ?")
+            params.append(str(model_version))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT h.horizon_days, COUNT(*) AS sample_count,
+                       AVG(h.direction_correct) AS direction_accuracy,
+                       AVG(h.absolute_return_error_pct) AS mean_absolute_return_error_pct,
+                       AVG(h.signed_prediction_return_pct) AS average_signed_return_pct,
+                       AVG(h.max_favourable_excursion_pct) AS average_max_favourable_excursion_pct,
+                       AVG(h.max_adverse_excursion_pct) AS average_max_adverse_excursion_pct
+                FROM model_prediction_horizon_outcomes h
+                JOIN model_decision_feedback f ON f.decision_key = h.decision_key
+                WHERE {' AND '.join(clauses)}
+                GROUP BY h.horizon_days ORDER BY h.horizon_days
+                """,
+                tuple(params),
+            ).fetchall()
+        return {
+            f"{int(row['horizon_days'])}d": {
+                "sample_count": int(row["sample_count"] or 0),
+                "direction_accuracy": row["direction_accuracy"],
+                "mean_absolute_return_error_pct": row["mean_absolute_return_error_pct"],
+                "average_signed_return_pct": row["average_signed_return_pct"],
+                "average_max_favourable_excursion_pct": row[
+                    "average_max_favourable_excursion_pct"
+                ],
+                "average_max_adverse_excursion_pct": row[
+                    "average_max_adverse_excursion_pct"
+                ],
+            }
+            for row in rows
+        }
+
     def get_model_summary(
         self,
         *,
@@ -1025,8 +1309,15 @@ class ModelFeedbackService:
     ) -> dict[str, Any]:
         clean_market = normalize_market(market)
         identity = resolve_model_identity(ticker, clean_market)
+        multi_horizon = self.get_multi_horizon_summary(
+            ticker=identity.ticker,
+            model_period=model_period,
+            model_name=model_name,
+            model_version=model_version,
+            market=clean_market,
+        )
         source_placeholders = ", ".join(
-            "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
+            "?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES
         )
         clauses = [
             "market = ?",
@@ -1041,7 +1332,7 @@ class ModelFeedbackService:
             identity.ticker,
             str(model_period),
             str(model_name).strip().lower(),
-            *MODEL_FEEDBACK_ELIGIBLE_SOURCES,
+            *MODEL_FEEDBACK_EVALUATION_SOURCES,
         ]
         if model_version:
             clauses.append("model_version = ?")
@@ -1049,7 +1340,9 @@ class ModelFeedbackService:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT direction_correct, profitable_after_cost,
+                SELECT decision_date, outcome_date, prediction_value, task_type,
+                       confidence_score,
+                       direction_correct, profitable_after_cost,
                        actual_return_pct, strategy_net_return_pct,
                        excess_return_pct, outcome_score
                 FROM model_decision_feedback
@@ -1072,6 +1365,13 @@ class ModelFeedbackService:
                 "raw_feedback_score": 0.5,
                 "feedback_score": 0.5,
                 "reliability": 0.0,
+                "effective_sample_size": 0.0,
+                "time_coverage_days": 0,
+                "direction_accuracy_interval_90": {"low": None, "high": None},
+                "mean_absolute_return_error_pct": None,
+                "brier_score": None,
+                "calibration_error": None,
+                "multi_horizon": multi_horizon,
             }
 
         def average(column: str) -> float:
@@ -1086,6 +1386,63 @@ class ModelFeedbackService:
         minimum = get_settings().model_feedback_min_samples
         reliability = min(1.0, sample_count / float(minimum))
         feedback_score = 0.5 + (raw_score - 0.5) * reliability
+        # Recent observations matter more, while the half-life is deliberately
+        # long enough that a few new outcomes cannot dominate the history.
+        newest_date = pd.Timestamp(rows[0]["decision_date"])
+        weights = [
+            math.exp(
+                -math.log(2.0)
+                * max(0, int((newest_date - pd.Timestamp(row["decision_date"])).days))
+                / 60.0
+            )
+            for row in rows
+        ]
+        weight_sum = sum(weights)
+        weighted_score = (
+            sum(float(row["outcome_score"] or 0.0) * weight for row, weight in zip(rows, weights))
+            / weight_sum
+            if weight_sum
+            else raw_score
+        )
+        effective_sample_size = (
+            (weight_sum * weight_sum) / sum(weight * weight for weight in weights)
+            if weights
+            else 0.0
+        )
+        direction_successes = sum(int(row["direction_correct"] or 0) for row in rows)
+        interval_low, interval_high = _wilson_interval(direction_successes, sample_count)
+        oldest_date = min(pd.Timestamp(row["decision_date"]) for row in rows)
+        return_errors = [
+            abs(float(row["prediction_value"]) - float(row["actual_return_pct"]))
+            for row in rows
+            if str(row["task_type"] or "").lower() == "regression"
+            and row["prediction_value"] is not None
+            and row["actual_return_pct"] is not None
+        ]
+        calibration_rows = [
+            (
+                max(0.0, min(1.0, float(row["confidence_score"]))),
+                float(row["direction_correct"]),
+            )
+            for row in rows
+            if row["confidence_score"] is not None
+            and row["direction_correct"] is not None
+        ]
+        brier_score = (
+            sum((probability - outcome) ** 2 for probability, outcome in calibration_rows)
+            / len(calibration_rows)
+            if calibration_rows
+            else None
+        )
+        calibration_error = (
+            abs(
+                sum(probability for probability, _ in calibration_rows) / len(calibration_rows)
+                - sum(outcome for _, outcome in calibration_rows) / len(calibration_rows)
+            )
+            if calibration_rows
+            else None
+        )
+        recency_feedback_score = 0.5 + (weighted_score - 0.5) * reliability
         return {
             "sample_count": sample_count,
             "direction_accuracy": average("direction_correct"),
@@ -1096,8 +1453,129 @@ class ModelFeedbackService:
             ),
             "average_excess_return_pct": average("excess_return_pct"),
             "raw_feedback_score": raw_score,
-            "feedback_score": _clamp(feedback_score, 0.0, 1.0),
+            "recency_weighted_raw_feedback_score": weighted_score,
+            "feedback_score": _clamp(
+                0.5 * feedback_score + 0.5 * recency_feedback_score,
+                0.0,
+                1.0,
+            ),
             "reliability": reliability,
+            "effective_sample_size": effective_sample_size,
+            "time_coverage_days": max(0, int((newest_date - oldest_date).days)),
+            "direction_accuracy_interval_90": {
+                "low": interval_low,
+                "high": interval_high,
+            },
+            "mean_absolute_return_error_pct": (
+                sum(return_errors) / len(return_errors) if return_errors else None
+            ),
+            "brier_score": brier_score,
+            "calibration_error": calibration_error,
+            "multi_horizon": multi_horizon,
+        }
+
+    def calibrate_direction_probability(
+        self,
+        *,
+        raw_confidence: float | None,
+        ticker: str,
+        model_period: str,
+        model_name: str,
+        model_version: str | None,
+        market: str = "US",
+    ) -> dict[str, Any]:
+        """Calibrate confidence using the narrowest sufficiently evidenced level."""
+        raw = _safe_float(raw_confidence)
+        if raw is None:
+            return {
+                "probability": None,
+                "raw_confidence": None,
+                "source": "unavailable",
+                "sample_count": 0,
+            }
+        raw = _clamp(raw, 0.0, 1.0)
+        clean_market = normalize_market(market)
+        identity = resolve_model_identity(ticker, clean_market)
+        source_placeholders = ", ".join(
+            "?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES
+        )
+        levels: list[tuple[str, list[str], list[Any], int]] = []
+        base_clauses = [
+            "market = ?",
+            "status = 'evaluated'",
+            "confidence_score IS NOT NULL",
+            "direction_correct IS NOT NULL",
+            f"decision_source IN ({source_placeholders})",
+        ]
+        base_params: list[Any] = [clean_market, *MODEL_FEEDBACK_EVALUATION_SOURCES]
+        minimum = int(get_settings().model_feedback_min_samples)
+        if model_version:
+            levels.append(
+                (
+                    "ticker_model_period_version",
+                    [
+                        "COALESCE(NULLIF(model_ticker, ''), ticker) = ?",
+                        "model_period = ?",
+                        "model_name = ?",
+                        "model_version = ?",
+                    ],
+                    [identity.ticker, str(model_period), str(model_name).lower(), str(model_version)],
+                    minimum,
+                )
+            )
+        levels.extend(
+            [
+                (
+                    "model_period",
+                    ["model_period = ?", "model_name = ?"],
+                    [str(model_period), str(model_name).lower()],
+                    max(20, minimum * 2),
+                ),
+                (
+                    "model_family",
+                    ["model_name = ?"],
+                    [str(model_name).lower()],
+                    max(40, minimum * 4),
+                ),
+                ("market", [], [], max(80, minimum * 8)),
+            ]
+        )
+        with self._connect() as conn:
+            for level, extra_clauses, extra_params, required in levels:
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS sample_count,
+                           AVG(direction_correct) AS empirical_accuracy,
+                           AVG((confidence_score - direction_correct)
+                               * (confidence_score - direction_correct)) AS brier_score,
+                           AVG(confidence_score) AS average_confidence
+                    FROM model_decision_feedback
+                    WHERE {' AND '.join(base_clauses + extra_clauses)}
+                    """,
+                    tuple(base_params + extra_params),
+                ).fetchone()
+                sample_count = int(row["sample_count"] or 0)
+                if sample_count < required:
+                    continue
+                successes = float(row["empirical_accuracy"] or 0.0) * sample_count
+                empirical = (successes + 2.0) / (sample_count + 4.0)
+                evidence_weight = sample_count / float(sample_count + 20)
+                calibrated = (1.0 - evidence_weight) * raw + evidence_weight * empirical
+                return {
+                    "probability": _clamp(calibrated, 0.0, 1.0),
+                    "raw_confidence": raw,
+                    "source": level,
+                    "sample_count": sample_count,
+                    "required_sample_count": required,
+                    "empirical_accuracy": empirical,
+                    "average_confidence": row["average_confidence"],
+                    "brier_score": row["brier_score"],
+                }
+        return {
+            "probability": raw,
+            "raw_confidence": raw,
+            "source": "raw_insufficient_calibration_evidence",
+            "sample_count": 0,
         }
 
     def blend_validation_with_feedback(
@@ -1137,7 +1615,7 @@ class ModelFeedbackService:
         if not clean_factors:
             return {"adjustment": 0.0, "matched_factors": []}
         source_placeholders = ", ".join(
-            "?" for _ in MODEL_FEEDBACK_ELIGIBLE_SOURCES
+            "?" for _ in MODEL_FEEDBACK_RUNTIME_SOURCES
         )
         clauses = [
             "market = ?",
@@ -1146,7 +1624,7 @@ class ModelFeedbackService:
             f"decision_source IN ({source_placeholders})",
         ]
         clean_market = normalize_market(market)
-        params: list[Any] = [clean_market, *MODEL_FEEDBACK_ELIGIBLE_SOURCES]
+        params: list[Any] = [clean_market, *MODEL_FEEDBACK_RUNTIME_SOURCES]
         if ticker:
             clauses.append("ticker = ?")
             params.append(resolve_security(ticker, clean_market).ticker)

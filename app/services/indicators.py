@@ -85,8 +85,10 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         daily_returns.rolling(window=20, min_periods=20).std() * np.sqrt(252) * 100
     )
 
-    # Recent drawdown from running peak close (%).
-    running_peak = result["close"].cummax()
-    result["drawdown_from_peak_pct"] = ((result["close"] - running_peak) / running_peak) * 100
+    # Recent drawdown from the rolling 52-week peak close (%).  A full-history
+    # cumulative peak made this feature depend on the requested lookback period
+    # and could leave a recovered ticker in "stress" indefinitely.
+    recent_peak = result["close"].rolling(window=252, min_periods=1).max()
+    result["drawdown_from_peak_pct"] = ((result["close"] - recent_peak) / recent_peak) * 100
 
     return result

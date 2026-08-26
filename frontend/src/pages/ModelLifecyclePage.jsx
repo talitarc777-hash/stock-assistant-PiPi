@@ -4,6 +4,7 @@ import {
   fetchModelLifecycleRegistry,
   fetchModelLifecycleRuns,
   fetchModelLifecycleStatus,
+  fetchModelHealth,
   fetchModelImprovementStatus,
   runModelLifecycleNow,
 } from "../api";
@@ -72,6 +73,7 @@ export default function ModelLifecyclePage({ languageMode }) {
   const [status, setStatus] = useState(null);
   const [hkStatus, setHkStatus] = useState(null);
   const [improvementStatus, setImprovementStatus] = useState(null);
+  const [modelHealth, setModelHealth] = useState({ US: null, HK: null });
   const [registry, setRegistry] = useState([]);
   const [runs, setRuns] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -90,9 +92,11 @@ export default function ModelLifecyclePage({ languageMode }) {
       fetchModelLifecycleRegistry(1000, { market: "HK" }),
       fetchModelLifecycleRuns(8),
       fetchModelImprovementStatus(),
+      fetchModelHealth("US"),
+      fetchModelHealth("HK"),
     ]);
 
-    const [statusResult, hkStatusResult, usRegistryResult, hkRegistryResult, runsResult, improvementResult] = results;
+    const [statusResult, hkStatusResult, usRegistryResult, hkRegistryResult, runsResult, improvementResult, usHealthResult, hkHealthResult] = results;
     setStatus(statusResult.status === "fulfilled" ? statusResult.value : null);
     setHkStatus(hkStatusResult.status === "fulfilled" ? hkStatusResult.value : null);
     setRegistry([
@@ -103,6 +107,10 @@ export default function ModelLifecyclePage({ languageMode }) {
     setImprovementStatus(
       improvementResult.status === "fulfilled" ? improvementResult.value : null
     );
+    setModelHealth({
+      US: usHealthResult.status === "fulfilled" ? usHealthResult.value : null,
+      HK: hkHealthResult.status === "fulfilled" ? hkHealthResult.value : null,
+    });
 
     const failedCount = results.filter((item) => item.status === "rejected").length;
     if (failedCount > 0) {
@@ -396,6 +404,42 @@ export default function ModelLifecyclePage({ languageMode }) {
             "\u6bcf\u500b\u80a1\u7968\u4ee3\u865f\u90fd\u6703\u7368\u7acb\u9078\u64c7\u6a21\u578b\u3002VOO \u53ea\u662f\u6613\u65bc\u95b1\u8b80\u7684\u7bc4\u4f8b\u3002"
           )}
         </p>
+      </section>
+
+      <section className="panel">
+        <h3>{labelByMode(languageMode, "Model Health", "模型健康狀態")}</h3>
+        <p className="helper-text">
+          {labelByMode(
+            languageMode,
+            "Validated means current time-ordered evidence passed every gate. Fallback is reported separately and is never counted as an ML model.",
+            "已驗證代表目前按時間排序的證據通過全部關卡。後備規則會獨立顯示，絕不當作機器學習模型。"
+          )}
+        </p>
+        <div className="model-health-grid">
+          {["US", "HK"].map((market) => {
+            const health = modelHealth[market];
+            const funnel = health?.version_funnel || {};
+            const runtime = health?.runtime || {};
+            const feedback = health?.feedback || {};
+            return (
+              <article key={market} className={health?.status === "MODEL_READY" ? "health-ready" : "health-warning"}>
+                <h4>{market}</h4>
+                <dl>
+                  <div><dt>{labelByMode(languageMode, "Status", "狀態")}</dt><dd>{health?.status || "N/A"}</dd></div>
+                  <div><dt>{labelByMode(languageMode, "Validated", "已驗證")}</dt><dd>{funnel.validated ?? "N/A"}</dd></div>
+                  <div><dt>{labelByMode(languageMode, "Active", "使用中")}</dt><dd>{funnel.active ?? "N/A"}</dd></div>
+                  <div><dt>{labelByMode(languageMode, "Shadow", "影子模型")}</dt><dd>{funnel.shadow ?? "N/A"}</dd></div>
+                  <div><dt>{labelByMode(languageMode, "Fallback use", "後備使用率")}</dt><dd>{runtime.fallback_usage_rate == null ? "N/A" : `${(runtime.fallback_usage_rate * 100).toFixed(1)}%`}</dd></div>
+                  <div><dt>{labelByMode(languageMode, "Feedback", "回饋")}</dt><dd>{feedback.evaluated_count ?? 0} / {(feedback.evaluated_count ?? 0) + (feedback.pending_count ?? 0)}</dd></div>
+                  <div><dt>BUY</dt><dd>{runtime.decision_outcomes?.BUY ?? 0}</dd></div>
+                  <div><dt>SELL</dt><dd>{runtime.decision_outcomes?.SELL ?? 0}</dd></div>
+                  <div><dt>HOLD</dt><dd>{runtime.decision_outcomes?.HOLD ?? 0}</dd></div>
+                  <div><dt>SKIP</dt><dd>{runtime.decision_outcomes?.SKIP ?? 0}</dd></div>
+                </dl>
+              </article>
+            );
+          })}
+        </div>
       </section>
 
       <section className="panel">

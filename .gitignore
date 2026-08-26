@@ -17,6 +17,15 @@ ENV/
 
 # Reports/output
 reports/*.json
+# Immutable runtime challengers are generated on the deployment host. The
+# currently active model is published to the existing canonical artifact path.
+data/models/**/versions/
+# Local audit, test, and provider-cache output is reproducible runtime data.
+data/audit_revalidation/
+data/model_design_experiments/
+data/market_history_cache/US/
+data/test_*.db
+data/test_*/
 
 # Node / frontend
 frontend/node_modules/

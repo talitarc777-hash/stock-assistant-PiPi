@@ -133,6 +133,10 @@ class ModelTrainingTests(unittest.TestCase):
             test_dates = set(pd.to_datetime(dates.iloc[test_rows]).dt.date)
             self.assertTrue(train_dates.isdisjoint(test_dates))
             self.assertEqual(len(test_rows) % 3, 0)
+            ordered_dates = list(pd.Index(pd.to_datetime(dates).dt.normalize().unique()).sort_values())
+            train_end = ordered_dates.index(max(pd.to_datetime(list(train_dates))))
+            test_start = ordered_dates.index(min(pd.to_datetime(list(test_dates))))
+            self.assertGreaterEqual(test_start - train_end - 1, 5)
 
     def test_pooled_features_are_invariant_to_price_and_volume_scale(self) -> None:
         base = _build_synthetic_dataset(100)
@@ -186,6 +190,12 @@ class ModelTrainingTests(unittest.TestCase):
             )
             self.assertEqual(result.metrics["validation_gap_rows"], 5)
             self.assertEqual(result.metrics["validation_scheme_version"], 5)
+            self.assertEqual(
+                result.metrics["target_price_source"],
+                "adjusted_close_with_raw_close_fallback",
+            )
+            self.assertEqual(result.metrics["target_return_scale"], "percentage_points")
+            self.assertEqual(result.metrics["target_horizon_trading_rows"], 5)
             self.assertIn("precision", result.metrics["metrics"])
             self.assertIn("recall", result.metrics["metrics"])
             self.assertFalse(result.predictions.empty)
@@ -227,6 +237,7 @@ class ModelTrainingTests(unittest.TestCase):
             self.assertIn("absolute_error_95_pct", result.metrics["metrics"])
             self.assertTrue(result.metrics.get("stationary_features"))
             self.assertEqual(result.metrics.get("feature_schema_version"), 2)
+            self.assertEqual(result.metrics.get("target_horizon_trading_rows"), 5)
             self.assertFalse(result.predictions.empty)
             self.assertFalse(result.evaluation_table.empty)
             self.assertIn("actual_future_result", result.evaluation_table.columns)

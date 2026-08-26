@@ -120,6 +120,60 @@ PORTFOLIO_CAUTION_LOSS_PCT = -8.0
 PORTFOLIO_BUY_PAUSE_LOSS_PCT = -15.0
 PORTFOLIO_REDUCTION_LOSS_PCT = -25.0
 
+_SKIP_REASON_PREFIXES = (
+    "board_lot_metadata_unavailable",
+    "market_data_quality_block",
+    "portfolio_drawdown_pause",
+    "market_regime_stress",
+    "context_score_too_low",
+    "risk_or_cash_constraint",
+    "signal_cooldown_active",
+    "duplicate_signal_suppressed",
+    "opposite_signal_horizon_protection",
+    "ledger_rejected_",
+)
+
+
+def _decision_outcome(action: str, reason: str) -> str:
+    """Return an explicit BUY/SELL/HOLD/SKIP decision semantic.
+
+    HOLD means an otherwise valid evaluation deliberately chose no trade.
+    SKIP means execution/evaluation was blocked by unavailable inputs, account
+    constraints, or a safety control.  The persisted legacy ``no_action``
+    value remains API-compatible while this field removes its ambiguity.
+    """
+    clean_action = str(action or "").strip().lower()
+    clean_reason = str(reason or "").strip().lower()
+    if clean_action == "buy":
+        return "BUY"
+    if clean_action == "sell":
+        return "SELL"
+    if clean_action == "skip" or clean_reason.startswith(_SKIP_REASON_PREFIXES):
+        return "SKIP"
+    return "HOLD"
+
+
+def _decision_source_category(source: str) -> str:
+    """Normalize runtime provenance without pretending fallback is a model."""
+    clean_source = str(source or "").strip().lower()
+    if clean_source in {"production_model", "shared_global_production"}:
+        return "active_model"
+    if clean_source in {"validated_candidate", "shared_global_candidate"}:
+        return "validated_model"
+    if clean_source == "fallback_rule":
+        return "safety_fallback"
+    return "unavailable"
+
+
+def _is_runtime_model_source_eligible(source: str) -> bool:
+    """Reject requested/legacy disk artifacts that did not pass lifecycle gates."""
+    return str(source or "").strip().lower() in {
+        "production_model",
+        "validated_candidate",
+        "shared_global_production",
+        "shared_global_candidate",
+    }
+
 
 def _build_portfolio_risk_state(account: dict[str, Any]) -> dict[str, Any]:
     """Derive account-level safeguards from equity versus net contributed cash."""
@@ -631,6 +685,89 @@ def _derive_signal_flags(predicted_value: float, task_type: str, min_return: flo
     return bullish, bearish
 
 
+def _assess_prediction_edge(
+    *,
+    predicted_value: float,
+    task_type: str,
+    confidence_score: float | None,
+    confidence_threshold: float,
+    min_predicted_return_pct: float,
+    estimated_transaction_cost_pct: float,
+    uncertainty: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Separate prediction output from the financially actionable signal."""
+    confidence_ok = _confidence_ok(confidence_score, confidence_threshold)
+    if str(task_type).lower() == "classification":
+        bullish, bearish = _derive_signal_flags(
+            predicted_value,
+            task_type,
+            min_predicted_return_pct,
+        )
+        return {
+            "bullish": bullish and confidence_ok,
+            "bearish": bearish and confidence_ok,
+            "confidence_ok": confidence_ok,
+            "buy_threshold_pct": None,
+            "sell_threshold_pct": None,
+            "estimated_transaction_cost_pct": max(0.0, estimated_transaction_cost_pct),
+            "uncertainty_buffer_pct": None,
+            "expected_edge_after_cost_pct": None,
+            "strong_signal": confidence_ok,
+            "reason": "classification_probability_gate",
+        }
+
+    uncertainty_payload = dict(uncertainty or {})
+    error_scale = _safe_float(uncertainty_payload.get("out_of_sample_error_pct"))
+    calibrated_threshold = _safe_float(
+        uncertainty_payload.get("calibrated_abstention_threshold_pct")
+    )
+    confidence_for_buffer = _safe_float(confidence_score)
+    uncertainty_buffer = (
+        max(0.0, float(error_scale))
+        * (1.0 - max(0.0, min(1.0, float(confidence_for_buffer))))
+        if error_scale is not None and confidence_for_buffer is not None
+        else 0.0
+    )
+    cost = max(0.0, float(estimated_transaction_cost_pct))
+    calibrated_floor = max(0.0, float(calibrated_threshold or 0.0))
+    edge_floor = cost + uncertainty_buffer
+    buy_threshold = max(
+        max(0.0, float(min_predicted_return_pct)),
+        calibrated_floor,
+        edge_floor,
+    )
+    sell_threshold = -max(calibrated_floor, edge_floor)
+    bullish = confidence_ok and float(predicted_value) > buy_threshold
+    bearish = confidence_ok and float(predicted_value) < sell_threshold
+    strong_signal = error_scale is not None and confidence_ok and abs(float(predicted_value)) > (
+        max(abs(buy_threshold), abs(sell_threshold)) + uncertainty_buffer
+    )
+    return {
+        "bullish": bullish,
+        "bearish": bearish,
+        "confidence_ok": confidence_ok,
+        "buy_threshold_pct": buy_threshold,
+        "sell_threshold_pct": sell_threshold,
+        "estimated_transaction_cost_pct": cost,
+        "uncertainty_buffer_pct": uncertainty_buffer,
+        "expected_edge_after_cost_pct": (
+            float(predicted_value) - cost
+            if predicted_value >= 0
+            else float(predicted_value) + cost
+        ),
+        "strong_signal": strong_signal,
+        "reason": (
+            "confidence_below_threshold"
+            if not confidence_ok
+            else "expected_edge_above_buy_threshold"
+            if bullish
+            else "downside_edge_below_sell_threshold"
+            if bearish
+            else "prediction_inside_cost_and_uncertainty_hold_band"
+        ),
+    }
+
+
 def _latest_prices_for_symbols(symbols: list[str], market: str = "US") -> dict[str, float]:
     prices: dict[str, float] = {}
     for symbol in symbols:
@@ -696,6 +833,7 @@ def _schedule_background_training_if_enabled(
                     benchmark=job["benchmark"],
                     include_gradient_boosting=True,
                     market=job["market"],
+                    publish_canonical=False,
                 )
                 lifecycle = get_model_lifecycle_service()
                 for result in results:
@@ -1085,6 +1223,35 @@ def _is_trade_cooldown_active(
     return elapsed_seconds < (float(cooldown_minutes) * 60.0)
 
 
+def _is_opposite_action_reversal_blocked(
+    *,
+    latest_executed_trade: dict[str, Any] | None,
+    action: str,
+    now_utc: datetime,
+    horizon_trading_days: int,
+    risk_override: bool = False,
+    strong_signal: bool = False,
+) -> bool:
+    """Prevent noise-driven reversals inside the prediction horizon."""
+    if risk_override or strong_signal or not latest_executed_trade:
+        return False
+    previous_action = str(latest_executed_trade.get("action") or "").lower()
+    current_action = str(action).lower()
+    if {previous_action, current_action} != {"buy", "sell"}:
+        return False
+    previous_time = _parse_iso_timestamp(latest_executed_trade.get("timestamp"))
+    if previous_time is None or previous_time > now_utc:
+        return False
+    elapsed_business_days = len(
+        pd.bdate_range(
+            start=previous_time.date(),
+            end=now_utc.date(),
+            inclusive="right",
+        )
+    )
+    return elapsed_business_days < max(1, int(horizon_trading_days))
+
+
 def _build_model_inference_frame(
     *,
     latest_row: pd.Series,
@@ -1210,6 +1377,102 @@ def _build_benchmark_shadow_prediction(
         "attempted_periods": ["10y", "5y", "2y"],
         "error_count": len(errors),
     }
+
+
+def _build_challenger_shadow_prediction(
+    *,
+    ticker: str,
+    market: str,
+    target_name: str,
+    periods: tuple[str, ...],
+    latest_row: pd.Series,
+    stationary_latest_row: pd.Series | None,
+    lifecycle_service: Any,
+) -> dict[str, Any]:
+    """Run at most one validated challenger without allowing it to trade."""
+    candidates = lifecycle_service.resolve_shadow_model_candidates(
+        ticker=ticker,
+        target_name=target_name,
+        periods=periods,
+        market=market,
+        limit=1,
+    )
+    if not candidates:
+        return {
+            "status": "unavailable",
+            "reason": "no_validated_shadow_challenger",
+            "execution_enabled": False,
+        }
+    candidate = candidates[0]
+    try:
+        bundle = load_trained_model_bundle(
+            ticker=str(candidate["ticker"]),
+            market=market,
+            period=str(candidate["period"]),
+            target_name=target_name,
+            model_name=str(candidate["model_name"]),
+            artifact_dir=candidate.get("artifact_dir"),
+        )
+        model = bundle["model"]
+        task_type = str(bundle["task_type"]).lower()
+        x_latest = _build_model_inference_frame(
+            latest_row=latest_row,
+            stationary_latest_row=stationary_latest_row,
+            candidate_ticker=str(candidate["ticker"]),
+            feature_names=list(bundle["feature_names"]),
+            stationary_features=bool(
+                dict(bundle.get("metrics") or {}).get("stationary_features")
+                or dict(bundle.get("metrics") or {}).get("pooled_stationary_features")
+            ),
+        )
+        prediction_value = float(model.predict(x_latest)[0])
+        confidence_score: float | None = None
+        uncertainty: dict[str, Any]
+        if task_type == "regression":
+            uncertainty = _regression_prediction_confidence(
+                predicted_return_pct=prediction_value,
+                metrics_summary=dict(bundle.get("metrics") or {}),
+                model_reliability=_safe_float(candidate.get("validation_score")),
+            )
+            confidence_score = uncertainty.get("confidence_score")
+        else:
+            if hasattr(model, "predict_proba"):
+                probabilities = model.predict_proba(x_latest)[0]
+                confidence_score = float(max(probabilities))
+            uncertainty = {
+                "confidence_score": confidence_score,
+                "source": "classifier_predict_proba",
+            }
+        return {
+            "status": "available",
+            "execution_enabled": False,
+            "model_ticker": str(candidate["ticker"]),
+            "model_name": str(candidate["model_name"]),
+            "model_period": str(candidate["period"]),
+            "model_version": str(candidate["model_version"]),
+            "model_role": str(candidate.get("model_role") or "challenger"),
+            "lifecycle_status": str(candidate.get("lifecycle_status") or "shadow"),
+            "task_type": task_type,
+            "prediction_value": prediction_value,
+            "confidence_score": confidence_score,
+            "uncertainty": uncertainty,
+            "validation_score": candidate.get("validation_score"),
+            "training_end_date": candidate.get("training_end_date"),
+        }
+    except Exception as exc:
+        logger.warning(
+            "Challenger shadow inference skipped market=%s ticker=%s version=%s error=%s",
+            market,
+            ticker,
+            candidate.get("model_version"),
+            exc,
+        )
+        return {
+            "status": "error",
+            "reason": "shadow_inference_failed",
+            "model_version": candidate.get("model_version"),
+            "execution_enabled": False,
+        }
 
 
 def collect_benchmark_shadow_observation(
@@ -1425,31 +1688,15 @@ def run_live_virtual_trader_now(
                 periods=TRADING_MODEL_PERIODS if auto_model_selection else (period,),
             )
             candidate_periods = TRADING_MODEL_PERIODS if auto_model_selection else (period,)
-            # Keep the documented fallback hierarchy intact for automatic
-            # trading as well as explicitly requested models. Previously
-            # saved artifacts were only considered when a model name was
-            # explicitly requested, so automatic trading went straight from
-            # an empty/invalid registry to the rule-based fallback.
-            saved_candidates: list[dict[str, Any]] = []
-            # Preserve the existing US fallback hierarchy, where a compatible
-            # on-disk artifact can bridge a registry-sync gap. HK auto_best is
-            # stricter: exact-ticker and pooled GLOBAL models must come from
-            # the validated lifecycle registry before they can trade.
-            if not auto_model_selection or clean_market == "US":
-                for candidate_period in candidate_periods:
-                    for candidate in list_compatible_saved_model_candidates(
-                        ticker=symbol,
-                        market=clean_market,
-                        period=candidate_period,
-                        target_name=target_name,
-                        requested_model_name=requested_model_name,
-                        limit=12,
-                    ):
-                        saved_candidates.append({**candidate, "period": candidate_period})
 
             runtime_candidates: list[dict[str, Any]] = []
             seen_runtime: set[tuple[str, str, str]] = set()
-            for candidate in registry_candidates + saved_candidates:
+            # Runtime candidates must come from lifecycle validation.  A
+            # canonical file on disk is not evidence that its old validation
+            # is still trustworthy, and another ticker's fitted model is never
+            # a substitute for this ticker.  With no eligible registry model,
+            # the transparent fallback is used and reported as NO_VALID_MODEL.
+            for candidate in registry_candidates:
                 tkr = str(candidate.get("ticker", symbol)).strip().upper()
                 candidate_period = str(candidate.get("period", period)).strip()
                 mdl = str(candidate.get("model_name", "")).strip().lower()
@@ -1460,11 +1707,8 @@ def run_live_virtual_trader_now(
                     continue
                 seen_runtime.add(key)
                 candidate_source = str(candidate.get("source", "candidate"))
-                if candidate_source.startswith("saved_"):
-                    # Saved artifacts are real model decisions (unlike the
-                    # rule fallback), so keep them auditable in the feedback
-                    # loop while the registry catches up with them.
-                    candidate_source = "saved_model"
+                if not _is_runtime_model_source_eligible(candidate_source):
+                    continue
                 runtime_candidates.append(
                     {
                         "ticker": tkr,
@@ -1475,24 +1719,13 @@ def run_live_virtual_trader_now(
                         "runtime_score": candidate.get("runtime_score"),
                         "feedback_summary": candidate.get("feedback_summary") or {},
                         "model_version": candidate.get("model_version"),
+                        "model_role": candidate.get("model_role"),
+                        "lifecycle_status": candidate.get("lifecycle_status"),
+                        "artifact_dir": candidate.get("artifact_dir"),
+                        "training_end_date": candidate.get("training_end_date"),
                     }
                 )
 
-            if not runtime_candidates and not auto_model_selection:
-                fallback_model_names = (requested_model_name,)
-                runtime_candidates = [
-                    {
-                        "ticker": candidate_ticker,
-                        "period": candidate_period,
-                        "model_name": candidate_model_name,
-                        "source": source,
-                        "validation_score": None,
-                    }
-                    for candidate_ticker, source in ((symbol, "trained_model"), ("GLOBAL", "global_model"))
-                    for candidate_period in candidate_periods
-                    for candidate_model_name in fallback_model_names
-                    if candidate_model_name
-                ]
             logger.info(
                 "Live trader model candidate order ticker=%s candidates=%s",
                 symbol,
@@ -1507,6 +1740,18 @@ def run_live_virtual_trader_now(
             decision_runtime_score: float | None = None
             decision_model_version = "fallback"
             decision_model_ticker = symbol
+            decision_model_role = "fallback"
+            decision_lifecycle_status = "fallback"
+            decision_training_end_date: str | None = None
+            intended_active_model_version = next(
+                (
+                    str(item.get("model_version"))
+                    for item in runtime_candidates
+                    if item.get("model_role") == "incumbent"
+                    and item.get("model_version")
+                ),
+                None,
+            )
             decision_feedback_summary: dict[str, Any] = {}
             decision_uncertainty: dict[str, Any] = {
                 "confidence_score": None,
@@ -1524,6 +1769,7 @@ def run_live_virtual_trader_now(
                         period=candidate_period,
                         target_name=target_name,
                         model_name=candidate_model_name,
+                        artifact_dir=candidate.get("artifact_dir"),
                     )
                     model = bundle["model"]
                     feature_names = list(bundle["feature_names"])
@@ -1562,6 +1808,11 @@ def run_live_virtual_trader_now(
                         candidate.get("model_version") or "legacy"
                     )
                     decision_model_ticker = candidate_ticker
+                    decision_model_role = str(candidate.get("model_role") or "saved")
+                    decision_lifecycle_status = str(
+                        candidate.get("lifecycle_status") or candidate.get("status") or "saved"
+                    )
+                    decision_training_end_date = candidate.get("training_end_date")
                     decision_feedback_summary = dict(
                         candidate.get("feedback_summary") or {}
                     )
@@ -1629,6 +1880,28 @@ def run_live_virtual_trader_now(
                 selected_version=decision_model_version,
                 training_queued=training_queued,
             )
+            feedback_service = get_model_feedback_service()
+            raw_confidence_score = confidence_score
+            if model_loaded:
+                model_calibration = feedback_service.calibrate_direction_probability(
+                    raw_confidence=confidence_score,
+                    ticker=decision_model_ticker,
+                    model_period=decision_model_period,
+                    model_name=decision_model_name,
+                    model_version=decision_model_version,
+                    market=clean_market,
+                )
+                confidence_score = _safe_float(model_calibration.get("probability"))
+            else:
+                model_calibration = {
+                    "probability": confidence_score,
+                    "raw_confidence": confidence_score,
+                    "source": "fallback_rule_uncalibrated",
+                    "sample_count": 0,
+                }
+            decision_uncertainty["raw_confidence_score"] = raw_confidence_score
+            decision_uncertainty["calibrated_direction_probability"] = confidence_score
+            decision_uncertainty["calibration_source"] = model_calibration.get("source")
 
             benchmark_shadow = (
                 _build_benchmark_shadow_prediction(
@@ -1653,6 +1926,16 @@ def run_live_virtual_trader_now(
                     )
                 )
 
+            challenger_shadow = _build_challenger_shadow_prediction(
+                ticker=symbol,
+                market=clean_market,
+                target_name=target_name,
+                periods=tuple(candidate_periods),
+                latest_row=latest_row,
+                stationary_latest_row=stationary_latest_row_cache.get(symbol),
+                lifecycle_service=lifecycle_service,
+            )
+
             explanation = build_prediction_explanation(
                 feature_row=latest_row,
                 task_type=task_type,
@@ -1664,7 +1947,44 @@ def run_live_virtual_trader_now(
             benchmark_summary = explanation["benchmark_strength_summary"]
 
             position = holdings_by_ticker.get(symbol)
-            bullish, bearish = _derive_signal_flags(prediction_value, task_type, min_predicted_return_pct)
+            current_account = ledger.build_account_summary(
+                clean_user_id,
+                latest_prices=latest_price_cache,
+                market=clean_market,
+            )
+            trade_fee = (
+                TRADE_ADMIN_FEE_HKD
+                if clean_market == "HK"
+                else get_trade_admin_fee_usd()
+            )
+            if position and float(position.get("quantity") or 0.0) > 0:
+                estimated_trade_notional = float(position["quantity"]) * current_price
+                cost_multiplier = 1.0
+            else:
+                estimated_trade_notional = min(
+                    float(current_account.get("cash") or 0.0),
+                    float(current_account.get("total_account_value") or 0.0)
+                    * max_position_size_pct
+                    * float(portfolio_risk["position_size_multiplier"])
+                    * float(market_regime["position_size_multiplier"]),
+                )
+                cost_multiplier = 2.0
+            estimated_transaction_cost_pct = (
+                trade_fee * cost_multiplier / estimated_trade_notional * 100.0
+                if estimated_trade_notional > 0
+                else 0.0
+            )
+            decision_edge = _assess_prediction_edge(
+                predicted_value=prediction_value,
+                task_type=task_type,
+                confidence_score=confidence_score,
+                confidence_threshold=confidence_threshold,
+                min_predicted_return_pct=min_predicted_return_pct,
+                estimated_transaction_cost_pct=estimated_transaction_cost_pct,
+                uncertainty=decision_uncertainty,
+            )
+            bullish = bool(decision_edge["bullish"])
+            bearish = bool(decision_edge["bearish"])
             external_context: dict[str, Any] | None = None
             if position or bullish:
                 try:
@@ -1685,7 +2005,7 @@ def run_live_virtual_trader_now(
             )
             try:
                 learned_context = (
-                    get_model_feedback_service().get_context_adjustment(
+                    feedback_service.get_context_adjustment(
                         factors=list(context_score["factors"]),
                         ticker=symbol,
                         market=clean_market,
@@ -1734,7 +2054,11 @@ def run_live_virtual_trader_now(
                 learned_context.get("matched_factors") or []
             )
             action = "no_action"
-            reason = model_fallback_reason if decision_source == "fallback_rule" else "model_not_bullish"
+            reason = (
+                model_fallback_reason
+                if decision_source == "fallback_rule"
+                else str(decision_edge["reason"])
+            )
             quantity = 0.0
             volatility = float(latest_row.get("rolling_volatility_20_pct", 0.0) or 0.0)
 
@@ -1881,6 +2205,16 @@ def run_live_virtual_trader_now(
                 f" Market {clean_market}; currency {market_config.currency}; "
                 f"board lot {board_lot if board_lot is not None else 'unavailable'}."
             )
+            if decision_edge.get("buy_threshold_pct") is not None:
+                threshold_summary += (
+                    " Prediction edge: "
+                    f"expected {prediction_value:+.2f}%; "
+                    f"BUY above {float(decision_edge['buy_threshold_pct']):.2f}%; "
+                    f"SELL below {float(decision_edge['sell_threshold_pct']):.2f}%; "
+                    f"estimated cost {estimated_transaction_cost_pct:.2f}%; "
+                    "uncertainty buffer "
+                    f"{float(decision_edge['uncertainty_buffer_pct'] or 0.0):.2f}%."
+                )
             threshold_summary += (
                 f" Market data {data_quality['status']}"
                 + (
@@ -1899,14 +2233,22 @@ def run_live_virtual_trader_now(
                 )
             )
 
-            latest_trade_for_symbol = store.list_trades(
+            recent_trades_for_symbol = store.list_trades(
                 clean_user_id,
-                limit=1,
+                limit=50,
                 ticker=symbol,
                 market=clean_market,
             )
-            if action in {"buy", "sell"} and latest_trade_for_symbol:
-                previous = latest_trade_for_symbol[0]
+            latest_executed_trade = next(
+                (
+                    item
+                    for item in recent_trades_for_symbol
+                    if str(item.get("action") or "").lower() in {"buy", "sell"}
+                ),
+                None,
+            )
+            if action in {"buy", "sell"} and latest_executed_trade:
+                previous = latest_executed_trade
                 now_dt = datetime.now(UTC)
                 if _is_trade_cooldown_active(
                     latest_trade=previous,
@@ -1921,6 +2263,22 @@ def run_live_virtual_trader_now(
                     and previous.get("reason") == reason
                 ):
                     action, reason = "no_action", "duplicate_signal_suppressed"
+                    quantity = 0.0
+                elif _is_opposite_action_reversal_blocked(
+                    latest_executed_trade=previous,
+                    action=action,
+                    now_utc=now_dt,
+                    horizon_trading_days=int(
+                        get_settings().model_feedback_horizon_days
+                    ),
+                    risk_override=reason in {
+                        "stop_loss",
+                        "portfolio_drawdown_reduction",
+                        "take_profit",
+                    },
+                    strong_signal=bool(decision_edge.get("strong_signal")),
+                ):
+                    action, reason = "no_action", "opposite_signal_horizon_protection"
                     quantity = 0.0
 
             now_ts = _utc_now()
@@ -1995,6 +2353,8 @@ def run_live_virtual_trader_now(
                 "hold": "Holding position. No exit trigger was hit.",
                 "no_action": "No action taken. Entry conditions were not met.",
             }.get(action, "No action.")
+            decision_outcome = _decision_outcome(action, reason)
+            source_category = _decision_source_category(decision_source)
 
             trade_payload = {
                 "timestamp": now_ts,
@@ -2029,6 +2389,16 @@ def run_live_virtual_trader_now(
                     "industry": snapshot.get("industry"),
                     "volatility": volatility,
                     "decision_source": decision_source,
+                    "decision_source_category": source_category,
+                    "decision_outcome": decision_outcome,
+                    "model_resolution_status": (
+                        "MODEL_READY" if model_loaded else "NO_VALID_MODEL"
+                    ),
+                    "fallback_reason": (
+                        model_fallback_reason
+                        if decision_source == "fallback_rule"
+                        else None
+                    ),
                     "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
                     "actual_model_name": decision_model_name if model_loaded else None,
                     "model_status": decision_model_status,
@@ -2046,10 +2416,36 @@ def run_live_virtual_trader_now(
                     ),
                     "model_period": decision_model_period,
                     "model_version": decision_model_version,
+                    "model_role": decision_model_role,
+                    "model_lifecycle_status": decision_lifecycle_status,
+                    "training_end_date": decision_training_end_date,
+                    "intended_active_model_version": intended_active_model_version,
+                    "active_model_used": bool(
+                        intended_active_model_version
+                        and decision_model_version == intended_active_model_version
+                    ),
                     "model_ticker": decision_model_ticker,
                     "validation_score": decision_validation_score,
                     "runtime_score": decision_runtime_score,
                     "prediction_uncertainty": decision_uncertainty,
+                    "model_calibration": model_calibration,
+                    "decision_reason_metadata": {
+                        "signal": action,
+                        "expected_return_pct": (
+                            prediction_value if task_type == "regression" else None
+                        ),
+                        "confidence": confidence_score,
+                        "confidence_threshold": confidence_threshold,
+                        "buy_threshold_pct": decision_edge.get("buy_threshold_pct"),
+                        "sell_threshold_pct": decision_edge.get("sell_threshold_pct"),
+                        "estimated_transaction_cost_pct": estimated_transaction_cost_pct,
+                        "uncertainty_buffer_pct": decision_edge.get("uncertainty_buffer_pct"),
+                        "expected_edge_after_cost_pct": decision_edge.get(
+                            "expected_edge_after_cost_pct"
+                        ),
+                        "reason": reason,
+                    },
+                    "challenger_shadow": challenger_shadow,
                     "benchmark_shadow": benchmark_shadow,
                     "market_data_quality": data_quality,
                     "market_regime": market_regime,
@@ -2096,9 +2492,13 @@ def run_live_virtual_trader_now(
             }
             store.append_trade(trade_payload)
             try:
-                feedback_service = get_model_feedback_service()
                 feedback_service.record_decision(
                     trade_payload,
+                    benchmark=benchmark,
+                )
+                feedback_service.record_challenger_shadow(
+                    trade_payload,
+                    challenger_shadow,
                     benchmark=benchmark,
                 )
                 feedback_service.record_benchmark_shadow(trade_payload)

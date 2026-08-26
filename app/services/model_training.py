@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import pickle
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -62,6 +63,7 @@ class TrainingArtifact:
     metrics_path: Path
     predictions_path: Path
     evaluation_table_path: Path
+    model_version: str = "legacy"
 
 
 @dataclass(frozen=True)
@@ -583,10 +585,23 @@ def _save_training_artifacts(
     evaluation_df: pd.DataFrame,
     output_dir: str | Path | None = None,
     market: str = "US",
+    publish_canonical: bool = True,
+    model_version: str | None = None,
 ) -> TrainingArtifact:
     """Persist one model, its metadata, and predictions to disk."""
     base_dir = Path(output_dir or get_settings().research_models_dir)
-    artifact_dir = model_security_root(base_dir, market, ticker) / period / target_name / model_name
+    canonical_dir = (
+        model_security_root(base_dir, market, ticker)
+        / period
+        / target_name
+        / model_name
+    )
+    clean_version = str(model_version or metrics.get("model_version") or "legacy")
+    artifact_dir = (
+        canonical_dir
+        if publish_canonical
+        else canonical_dir / "versions" / clean_version
+    )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = artifact_dir / "model.pkl"
@@ -602,6 +617,11 @@ def _save_training_artifacts(
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     predictions_df.to_csv(predictions_path, index=False)
     evaluation_df.to_csv(evaluation_table_path, index=False)
+    # Artifact discovery is cached for responsive APIs. Newly trained
+    # canonical artifacts must become visible without an application restart.
+    from app.services.model_results import clear_saved_model_artifact_cache
+
+    clear_saved_model_artifact_cache()
 
     return TrainingArtifact(
         ticker=ticker,
@@ -613,6 +633,7 @@ def _save_training_artifacts(
         metrics_path=metrics_path,
         predictions_path=predictions_path,
         evaluation_table_path=evaluation_table_path,
+        model_version=clean_version,
     )
 
 
@@ -625,6 +646,7 @@ def train_baseline_model(
     model_name: str,
     output_dir: str | Path | None = None,
     market: str = "US",
+    publish_canonical: bool = True,
 ) -> TrainingRunResult:
     """Train one baseline model with expanding-window validation only."""
     identity = resolve_model_identity(ticker, market)
@@ -743,6 +765,11 @@ def train_baseline_model(
     final_pipeline = clone(base_pipeline)
     final_pipeline.fit(x_frame, y_series)
 
+    model_version = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        + "-"
+        + uuid4().hex[:8]
+    )
     metrics = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "market": identity.market,
@@ -752,6 +779,7 @@ def train_baseline_model(
         "target_name": target_name,
         "task_type": task_type,
         "model_name": model_name,
+        "model_version": model_version,
         "row_count": int(len(x_frame)),
         "feature_count": int(len(feature_names)),
         "time_series_splits": split_count,
@@ -765,6 +793,9 @@ def train_baseline_model(
             "calibrated on a trailing inner holdout, also separated by the target-horizon gap. A fixed "
             "prediction-time stress policy blocks new positions during severe selloffs, drawdowns, or volatility."
         ),
+        "target_price_source": "adjusted_close_with_raw_close_fallback",
+        "target_return_scale": "percentage_points",
+        "target_horizon_trading_rows": _target_horizon_rows(target_name),
         "fold_sizes": fold_sizes,
         "metrics": metric_values,
     }
@@ -797,6 +828,8 @@ def train_baseline_model(
         evaluation_df=evaluation_df,
         output_dir=output_dir,
         market=market,
+        publish_canonical=publish_canonical,
+        model_version=model_version,
     )
 
     logger.info(
@@ -831,6 +864,7 @@ def train_baseline_models_for_ticker(
     include_gradient_boosting: bool = True,
     target_names: tuple[str, ...] | list[str] | None = None,
     market: str = "US",
+    publish_canonical: bool = True,
 ) -> list[TrainingRunResult]:
     """Train baseline classification and regression models for one ticker."""
     identity = resolve_security(ticker, market)
@@ -865,6 +899,7 @@ def train_baseline_models_for_ticker(
                     model_name=model_name,
                     output_dir=output_dir,
                     market=identity.market,
+                    publish_canonical=publish_canonical,
                 )
             )
 
@@ -886,6 +921,7 @@ def train_baseline_models_for_ticker(
                     model_name=model_name,
                     output_dir=output_dir,
                     market=identity.market,
+                    publish_canonical=publish_canonical,
                 )
                 result.metrics["feature_schema_version"] = 2
                 result.metrics["stationary_features"] = True
@@ -915,6 +951,7 @@ def train_baseline_models_for_ticker(
                 model_name=model_name,
                 output_dir=output_dir,
                 market=identity.market,
+                publish_canonical=publish_canonical,
             )
             result.metrics["feature_schema_version"] = 2
             result.metrics["stationary_features"] = True
@@ -989,6 +1026,7 @@ def train_pooled_baseline_models(
     target_names: tuple[str, ...] | list[str] | None = None,
     model_names: tuple[str, ...] | list[str] | None = None,
     market: str = "US",
+    publish_canonical: bool = True,
 ) -> list[TrainingRunResult]:
     """Train experimental cross-ticker models with date-grouped validation."""
     benchmark_identity = resolve_security(benchmark, market)
@@ -1059,6 +1097,7 @@ def train_pooled_baseline_models(
                 model_name=model_name,
                 output_dir=output_dir,
                 market=benchmark_identity.market,
+                publish_canonical=publish_canonical,
             )
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols
@@ -1084,6 +1123,7 @@ def train_pooled_baseline_models(
                 model_name=model_name,
                 output_dir=output_dir,
                 market=benchmark_identity.market,
+                publish_canonical=publish_canonical,
             )
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols

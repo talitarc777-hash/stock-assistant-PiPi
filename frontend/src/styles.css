@@ -780,6 +780,61 @@ button:disabled {
   font-size: 18px;
 }
 
+.model-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.model-health-grid article {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.model-health-grid .health-warning {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.model-health-grid dl,
+.model-health-grid dl div {
+  margin: 0;
+}
+
+.model-health-grid dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.model-health-grid dl div {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.model-health-grid dt {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.model-health-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+@media (max-width: 680px) {
+  .model-health-grid,
+  .model-health-grid dl {
+    grid-template-columns: 1fr;
+  }
+}
+
 .beginner-action-table table {
   min-width: 760px;
 }
@@ -1981,6 +2036,29 @@ button:disabled {
 
   .market-context span {
     color: #cbd5e1;
+  }
+
+  .model-health-grid article {
+    border-color: #475569;
+    background: #1e293b;
+  }
+
+  .model-health-grid .health-warning {
+    border-color: #fbbf24;
+    background: #422006;
+  }
+
+  .model-health-grid dl div {
+    background: rgba(15, 23, 42, 0.75);
+  }
+
+  .model-health-grid dt {
+    color: #cbd5e1;
+  }
+
+  .model-health-grid dd,
+  .model-health-grid h4 {
+    color: #f8fafc;
   }
 }
 

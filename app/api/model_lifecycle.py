@@ -56,6 +56,7 @@ def get_model_feedback(
     ),
     model_period: str | None = Query(default=None, pattern=PERIOD_PATTERN),
     model_name: str | None = Query(default=None, min_length=1, max_length=50),
+    model_version: str | None = Query(default=None, min_length=1, max_length=100),
     status: str | None = Query(default=None, pattern="^(pending|evaluated)$"),
     limit: int = Query(100, ge=1, le=500),
 ) -> dict:
@@ -77,6 +78,7 @@ def get_model_feedback(
             ticker=clean_ticker,
             model_period=model_period,
             model_name=model_name,
+            model_version=model_version,
             market=clean_market,
         )
     return {
@@ -85,6 +87,50 @@ def get_model_feedback(
         "summary": summary,
         "feedback": rows,
     }
+
+
+@router.get("/model-lifecycle/funnel")
+def get_model_lifecycle_funnel(
+    market: Literal["US", "HK"] | None = None,
+) -> dict:
+    """Expose validation, shadow, promotion, rollback, and real usage rates."""
+    try:
+        return get_model_lifecycle_service().get_lifecycle_funnel(market)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected model lifecycle funnel error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
+
+
+@router.get("/model-lifecycle/model-health")
+def get_model_health_summary(
+    market: Literal["US", "HK"] = "US",
+) -> dict:
+    """Expose validation provenance, adoption, feedback, and fallback usage."""
+    try:
+        return get_model_lifecycle_service().get_model_health_summary(market)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected model health summary error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
+
+
+@router.get("/model-lifecycle/selection-trace")
+def get_model_selection_trace(
+    market: Literal["US", "HK"] = "US",
+    ticker: str = Query("VOO", min_length=1, max_length=15, pattern=TICKER_PATTERN),
+    period: str = Query("2y", pattern=PERIOD_PATTERN),
+    target_name: str = Query("target_5d_return", min_length=1, max_length=50),
+) -> dict:
+    """Explain why a ticker resolves to one active model version."""
+    try:
+        return get_model_lifecycle_service().get_model_selection_trace(
+            ticker=ticker,
+            market=market,
+            period=period,
+            target_name=target_name,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected model selection trace error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
 
 
 @router.post("/model-lifecycle/feedback/evaluate")

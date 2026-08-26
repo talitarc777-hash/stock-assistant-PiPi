@@ -33,30 +33,47 @@ class ResearchDatasetArtifact:
     row_count: int
 
 
+def _return_price_series(df: pd.DataFrame) -> pd.Series:
+    """Use adjusted close for returns, with a row-safe raw-close fallback.
+
+    Trading and portfolio valuation still use the executable raw close.  Model
+    return labels use adjusted close so cash distributions do not appear as
+    unexplained losses.  A missing or non-positive adjusted value is never
+    fabricated; that row falls back to the provider's raw close.
+    """
+    close = pd.to_numeric(df["close"], errors="coerce")
+    if "adj_close" not in df.columns:
+        return close
+    adjusted = pd.to_numeric(df["adj_close"], errors="coerce")
+    return adjusted.where(adjusted.notna() & (adjusted > 0), close)
+
+
 def _add_return_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add percentage return features over multiple lookback windows."""
     result = df.copy()
-    result["return_1d_pct"] = result["close"].pct_change(periods=1) * 100
-    result["return_5d_pct"] = result["close"].pct_change(periods=5) * 100
-    result["return_20d_pct"] = result["close"].pct_change(periods=20) * 100
-    result["return_1m_pct"] = result["close"].pct_change(periods=21) * 100
-    result["return_3m_pct"] = result["close"].pct_change(periods=63) * 100
-    result["return_6m_pct"] = result["close"].pct_change(periods=126) * 100
-    result["return_12m_pct"] = result["close"].pct_change(periods=252) * 100
+    return_price = _return_price_series(result)
+    result["return_1d_pct"] = return_price.pct_change(periods=1) * 100
+    result["return_5d_pct"] = return_price.pct_change(periods=5) * 100
+    result["return_20d_pct"] = return_price.pct_change(periods=20) * 100
+    result["return_1m_pct"] = return_price.pct_change(periods=21) * 100
+    result["return_3m_pct"] = return_price.pct_change(periods=63) * 100
+    result["return_6m_pct"] = return_price.pct_change(periods=126) * 100
+    result["return_12m_pct"] = return_price.pct_change(periods=252) * 100
     return result
 
 
 def _build_benchmark_feature_frame(benchmark_df: pd.DataFrame) -> pd.DataFrame:
     """Build date-aligned benchmark return features."""
-    benchmark_features = benchmark_df[["date", "close"]].copy()
-    benchmark_features["benchmark_return_1d_pct"] = benchmark_features["close"].pct_change(1) * 100
-    benchmark_features["benchmark_return_5d_pct"] = benchmark_features["close"].pct_change(5) * 100
-    benchmark_features["benchmark_return_20d_pct"] = benchmark_features["close"].pct_change(20) * 100
-    benchmark_features["benchmark_return_1m_pct"] = benchmark_features["close"].pct_change(21) * 100
-    benchmark_features["benchmark_return_3m_pct"] = benchmark_features["close"].pct_change(63) * 100
-    benchmark_features["benchmark_return_6m_pct"] = benchmark_features["close"].pct_change(126) * 100
-    benchmark_features["benchmark_return_12m_pct"] = benchmark_features["close"].pct_change(252) * 100
-    return benchmark_features.drop(columns=["close"])
+    benchmark_features = benchmark_df[["date"]].copy()
+    return_price = _return_price_series(benchmark_df).reset_index(drop=True)
+    benchmark_features["benchmark_return_1d_pct"] = return_price.pct_change(1) * 100
+    benchmark_features["benchmark_return_5d_pct"] = return_price.pct_change(5) * 100
+    benchmark_features["benchmark_return_20d_pct"] = return_price.pct_change(20) * 100
+    benchmark_features["benchmark_return_1m_pct"] = return_price.pct_change(21) * 100
+    benchmark_features["benchmark_return_3m_pct"] = return_price.pct_change(63) * 100
+    benchmark_features["benchmark_return_6m_pct"] = return_price.pct_change(126) * 100
+    benchmark_features["benchmark_return_12m_pct"] = return_price.pct_change(252) * 100
+    return benchmark_features
 
 
 def _add_benchmark_relative_features(
@@ -85,10 +102,11 @@ def _add_target_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Add future-looking target labels for later model training."""
     result = df.copy()
 
-    future_close_5d = result["close"].shift(-5)
-    future_close_20d = result["close"].shift(-20)
+    return_price = _return_price_series(result)
+    future_close_5d = return_price.shift(-5)
+    future_close_20d = return_price.shift(-20)
 
-    result["target_5d_return"] = ((future_close_5d / result["close"]) - 1) * 100
+    result["target_5d_return"] = ((future_close_5d / return_price) - 1) * 100
     future_benchmark_return_5d = result["benchmark_return_5d_pct"].shift(-5)
     result["target_5d_excess_return"] = (
         result["target_5d_return"] - future_benchmark_return_5d
@@ -116,7 +134,7 @@ def _add_target_columns(df: pd.DataFrame) -> pd.DataFrame:
         dtype="Int64",
     )
 
-    future_20d_return = ((future_close_20d / result["close"]) - 1) * 100
+    future_20d_return = ((future_close_20d / return_price) - 1) * 100
     regime = np.where(
         future_20d_return.isna(),
         pd.NA,

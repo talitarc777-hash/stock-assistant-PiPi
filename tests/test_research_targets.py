@@ -11,6 +11,34 @@ from app.services.outperformance_economics import evaluate_outperformance_econom
 
 
 class ResearchTargetTests(unittest.TestCase):
+    def test_return_target_prefers_adjusted_close_without_changing_trade_close(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "close": [100.0] * 7,
+                "adj_close": [100.0, 100.0, 100.0, 100.0, 100.0, 102.0, 101.0],
+                "benchmark_return_5d_pct": [0.0] * 7,
+            }
+        )
+
+        result = _add_target_columns(frame)
+
+        self.assertAlmostEqual(result.loc[0, "target_5d_return"], 2.0)
+        self.assertAlmostEqual(result.loc[1, "target_5d_return"], 1.0)
+        self.assertEqual(result.loc[0, "close"], 100.0)
+
+    def test_return_target_falls_back_per_row_when_adjusted_close_is_invalid(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+                "adj_close": [np.nan, 101.0, 102.0, 103.0, 104.0, np.nan],
+                "benchmark_return_5d_pct": [0.0] * 6,
+            }
+        )
+
+        result = _add_target_columns(frame)
+
+        self.assertAlmostEqual(result.loc[0, "target_5d_return"], 5.0)
+
     def test_features_at_decision_date_do_not_change_when_future_price_changes(self) -> None:
         dates = pd.date_range("2024-01-02", periods=300, freq="B")
 

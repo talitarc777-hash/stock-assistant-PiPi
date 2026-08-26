@@ -10,6 +10,7 @@ import unittest
 import pandas as pd
 
 from app.services.model_results import (
+    clear_saved_model_artifact_cache,
     load_model_accuracy_summary,
     load_model_history,
     load_model_latest_prediction,
@@ -23,6 +24,7 @@ class ModelResultsTests(unittest.TestCase):
     """Verify read-only loading of saved model and simulation artifacts."""
 
     def setUp(self) -> None:
+        clear_saved_model_artifact_cache()
         self.base_dir = Path("data/test_model_results")
         if self.base_dir.exists():
             shutil.rmtree(self.base_dir)
@@ -172,6 +174,7 @@ class ModelResultsTests(unittest.TestCase):
         ).to_csv(trader_dir / "monthly_contributions.csv", index=False)
 
     def tearDown(self) -> None:
+        clear_saved_model_artifact_cache()
         if self.base_dir.exists():
             shutil.rmtree(self.base_dir)
 
@@ -186,6 +189,23 @@ class ModelResultsTests(unittest.TestCase):
 
         self.assertEqual(candidates[0]["ticker"], "VOO")
         self.assertEqual(candidates[0]["model_name"], "logistic_regression")
+
+    def test_saved_model_scan_never_borrows_another_tickers_model(self) -> None:
+        foreign = (
+            self.base_dir / "AAPL" / "5y" / "target_5d_updown" / "random_forest"
+        )
+        foreign.mkdir(parents=True, exist_ok=True)
+        (foreign / "model.pkl").touch()
+
+        candidates = list_compatible_saved_model_candidates(
+            ticker="MSFT",
+            period="5y",
+            target_name="target_5d_updown",
+            base_dir=self.base_dir,
+        )
+
+        self.assertNotIn("AAPL", {row["ticker"] for row in candidates})
+
 
     def test_load_model_latest_prediction(self) -> None:
 

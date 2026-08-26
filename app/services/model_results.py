@@ -69,6 +69,11 @@ def _scan_saved_model_artifacts(
     return discovered
 
 
+def clear_saved_model_artifact_cache() -> None:
+    """Make newly published model artifacts visible without an API restart."""
+    _scan_saved_model_artifacts.cache_clear()
+
+
 def list_compatible_saved_model_candidates(
     ticker: str,
     period: str = "5y",
@@ -78,14 +83,17 @@ def list_compatible_saved_model_candidates(
     limit: int = 12,
     market: str = "US",
 ) -> list[dict[str, str]]:
-    """Find compatible saved models before falling back to rules.
+    """Find same-ticker or explicitly pooled saved artifacts for inspection.
 
     Priority:
     1) exact ticker + requested model (if present)
     2) exact ticker + any model
     3) GLOBAL ticker + any model
-    4) any ticker + requested model
-    5) any ticker + any model
+
+    A model fitted for one issuer is never considered compatible with another
+    issuer.  GLOBAL is the sole exception because those artifacts are
+    explicitly trained on a pooled, scale-independent dataset.  This helper is
+    for artifact discovery; live trading still requires lifecycle validation.
     """
     identity = resolve_security(ticker, market)
     clean_ticker = identity.ticker
@@ -140,27 +148,13 @@ def list_compatible_saved_model_candidates(
         for row in sorted(rows, key=sort_key):
             if row["ticker"] == clean_ticker and row["model_name"] == requested:
                 append_row(row, "saved_exact_ticker_requested_model")
-        if identity.market == "US":
-            for row in sorted(rows, key=sort_key):
-                if row["ticker"] != clean_ticker and row["model_name"] == requested:
-                    append_row(row, "saved_compatible_requested_model")
 
     for row in sorted(rows, key=sort_key):
         if row["ticker"] == clean_ticker:
             append_row(row, "saved_exact_ticker_model")
-    if identity.market == "HK":
-        # Never reuse one issuer's fitted model for another issuer. A GLOBAL
-        # model is different: it is explicitly trained and validated across
-        # several HK securities using scale-independent features.
-        for row in sorted(rows, key=sort_key):
-            if row["ticker"] == "GLOBAL":
-                append_row(row, "saved_global_model")
-        return output[: max(1, int(limit))]
     for row in sorted(rows, key=sort_key):
         if row["ticker"] == "GLOBAL":
             append_row(row, "saved_global_model")
-    for row in sorted(rows, key=sort_key):
-        append_row(row, "saved_compatible_model")
 
     return output[: max(1, int(limit))]
 
@@ -254,20 +248,25 @@ def load_trained_model_bundle(
     model_name: str = "logistic_regression",
     base_dir: str | Path | None = None,
     market: str = "US",
+    artifact_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Load trained model object + feature list from saved artifacts."""
-    artifact_dir = _resolve_model_artifact_dir(
-        ticker=ticker,
-        period=period,
-        target_name=target_name,
-        model_name=model_name,
-        base_dir=base_dir,
-        market=market,
+    resolved_artifact_dir = (
+        Path(artifact_dir)
+        if artifact_dir is not None
+        else _resolve_model_artifact_dir(
+            ticker=ticker,
+            period=period,
+            target_name=target_name,
+            model_name=model_name,
+            base_dir=base_dir,
+            market=market,
+        )
     )
 
-    model_path = artifact_dir / "model.pkl"
-    feature_list_path = artifact_dir / "feature_list.json"
-    metrics_path = artifact_dir / "metrics_summary.json"
+    model_path = resolved_artifact_dir / "model.pkl"
+    feature_list_path = resolved_artifact_dir / "feature_list.json"
+    metrics_path = resolved_artifact_dir / "metrics_summary.json"
 
     try:
         with model_path.open("rb") as handle:
@@ -289,7 +288,7 @@ def load_trained_model_bundle(
         raise ModelResultsError("Invalid feature list format in saved artifacts.")
 
     return {
-        "artifact_dir": artifact_dir,
+        "artifact_dir": resolved_artifact_dir,
         "model": model,
         "feature_names": feature_names,
         "task_type": str(metrics.get("task_type", "classification")),
