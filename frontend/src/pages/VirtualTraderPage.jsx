@@ -28,12 +28,13 @@ import NewsSentimentPanel from "../components/NewsSentimentPanel";
 import RecentRunsPanel from "../components/RecentRunsPanel";
 import RecentTradesTable from "../components/RecentTradesTable";
 import ResetTradingAccountButton from "../components/ResetTradingAccountButton";
-import TickerClassificationTags from "../components/TickerClassificationTags";
+import TickerIdentity from "../components/TickerIdentity";
 import TickerHistorySummary from "../components/TickerHistorySummary";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
 import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 import { formatModelRate } from "../utils/modelMetrics";
 import { modelUsedText } from "../utils/tradeModelProvenance";
+import { tickerDisplayName } from "../utils/tickerIdentity";
 
 const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
@@ -776,6 +777,40 @@ export default function VirtualTraderPage({
     return market === "HK" ? sortedRows : sortedRows.slice(0, 15);
   }, [activeWatchlist, liveDecisionLog, market]);
 
+  const tickerNames = useMemo(() => {
+    const names = new Map();
+    for (const item of [...liveDecisionLog, ...recentTrades, ...accountHistory, ...accountHoldings]) {
+      const ticker = String(item?.ticker || "").trim().toUpperCase();
+      const name = tickerDisplayName(item, ticker);
+      if (ticker && name && !names.has(ticker)) names.set(ticker, name);
+    }
+    return names;
+  }, [accountHistory, accountHoldings, liveDecisionLog, recentTrades]);
+
+  const holdingsWithNames = useMemo(
+    () => accountHoldings.map((item) => ({
+      ...item,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+    })),
+    [accountHoldings, tickerNames]
+  );
+
+  const recentTradesWithNames = useMemo(
+    () => recentTrades.map((item) => ({
+      ...item,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+    })),
+    [recentTrades, tickerNames]
+  );
+
+  const accountHistoryWithNames = useMemo(
+    () => accountHistory.map((item) => ({
+      ...item,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+    })),
+    [accountHistory, tickerNames]
+  );
+
   const buyPotentialCounts = useMemo(() => {
     return actionRows.reduce(
       (counts, item) => {
@@ -888,7 +923,11 @@ export default function VirtualTraderPage({
               value={selectedTicker}
               onChange={(event) => setSelectedTicker(event.target.value)}
             >
-              {hkTickers.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
+              {hkTickers.map((ticker) => (
+                <option key={ticker} value={ticker}>
+                  {ticker}{tickerNames.get(ticker) ? ` — ${tickerNames.get(ticker)}` : ""}
+                </option>
+              ))}
             </select>
             <button
               type="button"
@@ -1050,15 +1089,7 @@ export default function VirtualTraderPage({
                           `顯示 ${item.ticker} 詳情`
                         )}
                       >
-                        <span className="ticker-identity">
-                          <span className="ticker-symbol">{item.ticker}</span>
-                          <TickerClassificationTags
-                            ticker={item.ticker}
-                            classification={item}
-                            languageMode={languageMode}
-                            size="xs"
-                          />
-                        </span>
+                        <TickerIdentity ticker={item.ticker} data={item} languageMode={languageMode} />
                       </button>
                     </td>
                     <td data-label={labelByMode(languageMode, "Score", "\u5206\u6578")}>
@@ -1133,12 +1164,11 @@ export default function VirtualTraderPage({
                     <div>
                       <span>{labelByMode(languageMode, "What this means", "這代表甚麼")}</span>
                       <strong className="ticker-identity">
-                        <span>{actionText(selectedLiveTrade.action, languageMode)} {selectedLiveTrade.ticker}</span>
-                        <TickerClassificationTags
+                        <span>{actionText(selectedLiveTrade.action, languageMode)}</span>
+                        <TickerIdentity
                           ticker={selectedLiveTrade.ticker}
-                          classification={selectedLiveTrade}
+                          data={selectedLiveTrade}
                           languageMode={languageMode}
-                          size="xs"
                         />
                       </strong>
                     </div>
@@ -1375,7 +1405,7 @@ export default function VirtualTraderPage({
 
       <HoldingsTable
         languageMode={languageMode}
-        holdings={accountHoldings}
+        holdings={holdingsWithNames}
         market={market}
         currencySymbol={currencySymbol}
       />
@@ -1453,7 +1483,7 @@ export default function VirtualTraderPage({
         ) : null}
       </section>
 
-      <RecentTradesTable languageMode={languageMode} trades={recentTrades} currencySymbol={currencySymbol} />
+      <RecentTradesTable languageMode={languageMode} trades={recentTradesWithNames} currencySymbol={currencySymbol} />
 
       <section className="panel">
         <h3>{labelByMode(languageMode, "Advanced Details", ZH.advancedDetails)}</h3>
@@ -1604,7 +1634,7 @@ export default function VirtualTraderPage({
           ) : (
             <TransactionHistoryTable
               languageMode={languageMode}
-              events={accountHistory}
+              events={accountHistoryWithNames}
               isLoading={historyLoading}
               hasMore={historyHasMore}
               onLoadMore={() => loadAccountHistoryPage({ reset: false })}

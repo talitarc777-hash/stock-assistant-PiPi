@@ -95,7 +95,9 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   const topScoreSource = readFileSync(new URL("../components/TopScoredTickersTable.jsx", import.meta.url), "utf8");
   const watchlistSource = readFileSync(new URL("../components/WatchlistTable.jsx", import.meta.url), "utf8");
   const holdingsSource = readFileSync(new URL("../components/HoldingsTable.jsx", import.meta.url), "utf8");
-  assert.match(appSource, /TickerClassificationTags/);
+  const identitySource = readFileSync(new URL("../components/TickerIdentity.jsx", import.meta.url), "utf8");
+  assert.match(appSource, /TickerIdentity/);
+  assert.match(identitySource, /TickerClassificationTags/);
   assert.match(appSource, /TickerHistorySummary/);
   assert.match(historySource, /fetchLiveMarketSnapshot/);
   assert.equal(historySource.includes('"5D": { period: "5d"'), true);
@@ -114,9 +116,9 @@ test("Dashboard and Virtual Trader wire the same reusable component without remo
   assert.match(appSource, /fetchForecast\(ticker, "2y", market\)/);
   assert.match(appSource, /market=\{selectedMarket\}/);
   assert.match(appSource, /rankTopScoredTickersByMarket/);
-  assert.match(traderSource, /TickerClassificationTags/);
-  assert.match(watchlistSource, /TickerClassificationTags/);
+  assert.match(traderSource, /TickerIdentity/);
+  assert.match(watchlistSource, /TickerIdentity/);
   assert.match(watchlistSource, /onClick=\{\(\) => onSelectTicker/);
-  assert.match(holdingsSource, /TickerClassificationTags/);
+  assert.match(holdingsSource, /TickerIdentity/);
   assert.match(holdingsSource, /onClick=\{\(\) => openHoldingSummary/);
 });

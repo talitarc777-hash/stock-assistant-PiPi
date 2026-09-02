@@ -23,6 +23,9 @@ export function rankTopScoredTickers(decisions = [], watchlistRows = [], limit =
 
     const candidate = {
       ticker,
+      ticker_name: item?.ticker_name || item?.metadata?.ticker_name,
+      company_name: item?.company_name || item?.metadata?.company_name,
+      security_name: item?.security_name || item?.metadata?.security_name,
       score,
       latestPrice: finiteNumber(item?.price),
       scoredAt: item?.timestamp || null,
@@ -45,6 +48,9 @@ export function rankTopScoredTickers(decisions = [], watchlistRows = [], limit =
     if (!ticker || score === null) continue;
     latestDecisions.set(ticker, {
       ticker,
+      ticker_name: item?.ticker_name,
+      company_name: item?.company_name,
+      security_name: item?.security_name,
       score,
       latestPrice: finiteNumber(item?.latest_close),
       scoredAt: null,

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 import { resolveTickerClassification } from "../config/tickerClassification.js";
 
 function labelByMode(mode, en, zh) {
@@ -141,15 +141,7 @@ export default function TopScoredTickersTable({
                       className="ticker-dashboard-link"
                       onClick={() => onSelectTicker?.(item.ticker, activeMarket)}
                     >
-                      <span className="ticker-identity">
-                        <strong className="ticker-symbol">{item.ticker}</strong>
-                        <TickerClassificationTags
-                          ticker={item.ticker}
-                          classification={item}
-                          languageMode={languageMode}
-                          size="xs"
-                        />
-                      </span>
+                      <TickerIdentity ticker={item.ticker} data={item} languageMode={languageMode} />
                     </button>
                   </td>
                   <td data-label={scoreLabel}><strong>{item.score.toFixed(0)}/100</strong></td>

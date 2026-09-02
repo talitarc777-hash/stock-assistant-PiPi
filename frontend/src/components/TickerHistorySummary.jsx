@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import { fetchChartData, fetchLiveMarketSnapshot } from "../api";
 import LineChart from "./LineChart";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 
 const PRICE_HISTORY_RANGES = {
   "5D": { period: "5d", points: 5, en: "5 days", zh: "5 日" },
@@ -152,15 +152,11 @@ export default function TickerHistorySummary({
       <div className="ticker-nature-summary">
         <h4>{labelByMode(languageMode, "What this company does", "公司業務性質")}</h4>
         <p className="ticker-nature-identity">
-          <span className="ticker-identity">
-            <span className="ticker-symbol">{displayTickerName(profile, classification, ticker)}</span>
-            <TickerClassificationTags
-              ticker={ticker}
-              classification={profile || classification || { ticker }}
-              languageMode={languageMode}
-              size="xs"
-            />
-          </span>
+          <TickerIdentity
+            ticker={ticker}
+            data={profile || classification || { ticker }}
+            languageMode={languageMode}
+          />
         </p>
         {isLoadingProfile ? (
           <p className="helper-text">{labelByMode(languageMode, "Loading company description...", "正在載入公司描述...")}</p>

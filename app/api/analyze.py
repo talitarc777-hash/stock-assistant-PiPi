@@ -34,6 +34,7 @@ from app.services.market_config import (
     normalize_market,
     resolve_security,
 )
+from app.services.live_market_data_service import get_security_profile
 from app.services.scoring import ScoringInputError, score_from_indicators
 from app.core.translation_terms import (
     translate_action_summary_to_zh,
@@ -79,6 +80,9 @@ class AnalyzeResponse(ClassifiedTickerResponse):
     provider_symbol: str | None = None
     currency: str = "USD"
     currency_symbol: str = "$"
+    ticker_name: str | None = None
+    company_name: str | None = None
+    security_name: str | None = None
     latest_close: float
     score_breakdown: ScoreBreakdownResponse
     label: str
@@ -143,6 +147,13 @@ def _build_ticker_analysis_response(
         score.explanations
     )
     action_summary_zh = translate_action_summary_to_zh(score.action_summary)
+    # A display-name lookup is helpful but must never make the existing
+    # technical analysis endpoint unavailable when a metadata provider is
+    # temporarily down.
+    try:
+        profile = get_security_profile(identity.ticker, identity.market)
+    except Exception:
+        profile = {}
 
     return AnalyzeResponse(
         ticker=identity.ticker,
@@ -150,6 +161,9 @@ def _build_ticker_analysis_response(
         provider_symbol=identity.provider_symbol,
         currency=identity.currency,
         currency_symbol=identity.currency_symbol,
+        ticker_name=profile.get("ticker_name"),
+        company_name=profile.get("company_name"),
+        security_name=profile.get("security_name"),
         latest_close=float(latest_close),
         score_breakdown=ScoreBreakdownResponse(
             trend_score=score.trend_score,

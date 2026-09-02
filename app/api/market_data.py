@@ -112,6 +112,7 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     currency: str = "USD"
     currency_symbol: str = "$"
     board_lot: int | None = None
+    ticker_name: str | None = None
     security_name: str | None = None
     security_category: str | None = None
     security_subcategory: str | None = None

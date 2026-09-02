@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 
 import {
   addUserWatchlistTicker,
@@ -154,12 +154,10 @@ export default function WatchlistManager({
             aria-label={`Remove ${ticker} from watchlist`}
           >
             <span className="ticker-identity">
-              <span className="ticker-symbol">{ticker}</span>
-              <TickerClassificationTags
+              <TickerIdentity
                 ticker={ticker}
-                classification={classificationByTicker[ticker]}
+                data={classificationByTicker[ticker]}
                 languageMode={languageMode}
-                size="xs"
               />
               <span aria-hidden="true">&times;</span>
             </span>

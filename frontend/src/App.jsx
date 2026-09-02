@@ -10,7 +10,7 @@ import {
 } from "./api";
 import LineChart from "./components/LineChart";
 import PriceChart from "./components/PriceChart";
-import TickerClassificationTags from "./components/TickerClassificationTags";
+import TickerIdentity from "./components/TickerIdentity";
 import TopScoredTickersTable from "./components/TopScoredTickersTable";
 import TickerHistorySummary from "./components/TickerHistorySummary";
 import WatchlistManager from "./components/WatchlistManager";
@@ -31,6 +31,7 @@ import {
   setStoredProfileId,
 } from "./services/profileStorage";
 import { rankTopScoredTickersByMarket } from "./utils/topScoredTickers";
+import { tickerDisplayName } from "./utils/tickerIdentity";
 import "./styles.css";
 
 const DEFAULT_PERIOD = "5y";
@@ -389,6 +390,14 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
     [marketDecisionRows, marketScoreRows, watchlistRows]
   );
 
+  const selectedTickerData = useMemo(
+    () => analyzeData
+      || watchlistRows.find((row) => row.ticker === selectedTicker)
+      || (topScoredTickers[selectedMarket] || []).find((row) => row.ticker === selectedTicker)
+      || null,
+    [analyzeData, selectedMarket, selectedTicker, topScoredTickers, watchlistRows]
+  );
+
   function selectTopScoredTicker(ticker, market) {
     const normalizedTicker = String(ticker || "").trim().toUpperCase();
     setSelectedMarket(market === "HK" ? "HK" : "US");
@@ -429,11 +438,13 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
             onChange={(event) => selectWatchlistTicker(event.target.value)}
           >
             {selectedTicker && !watchlistRows.some((row) => row.ticker === selectedTicker) ? (
-              <option value={selectedTicker}>{selectedTicker}</option>
+              <option value={selectedTicker}>
+                {selectedTicker}{tickerDisplayName(selectedTickerData, selectedTicker) ? ` — ${tickerDisplayName(selectedTickerData, selectedTicker)}` : ""}
+              </option>
             ) : null}
             {watchlistRows.map((row) => (
               <option key={row.ticker} value={row.ticker}>
-                {row.ticker}
+                {row.ticker}{tickerDisplayName(row, row.ticker) ? ` — ${tickerDisplayName(row, row.ticker)}` : ""}
               </option>
             ))}
           </select>
@@ -548,15 +559,7 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
               <div className="detail-grid">
                 <p>
                   <strong>{formatBilingualLabel(languageMode, "Ticker", ZH.ticker)}:</strong>{" "}
-                  <span className="ticker-identity">
-                    <span className="ticker-symbol">{analyzeData.ticker}</span>
-                    <TickerClassificationTags
-                      ticker={analyzeData.ticker}
-                      classification={analyzeData}
-                      languageMode={languageMode}
-                      size="xs"
-                    />
-                  </span>
+                  <TickerIdentity ticker={analyzeData.ticker} data={analyzeData} languageMode={languageMode} />
                 </p>
                 <p>
                   <strong>{formatBilingualLabel(languageMode, "Latest Close", ZH.latestClose)}:</strong>{" "}

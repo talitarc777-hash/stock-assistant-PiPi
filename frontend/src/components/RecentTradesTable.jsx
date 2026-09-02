@@ -6,8 +6,9 @@ import {
   matchesTickerClassificationFilters,
   resolveTickerClassification,
 } from "../config/tickerClassification";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 import { modelUsedText } from "../utils/tradeModelProvenance";
+import { tickerDisplayName } from "../utils/tickerIdentity";
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -115,7 +116,11 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
             <option value="all">{labelByMode(languageMode, "All tickers", "\u5168\u90e8\u80a1\u7968")}</option>
             {tickerOptions.map((ticker) => (
               <option key={ticker} value={ticker}>
-                {ticker}
+                {ticker}{(() => {
+                  const row = trades.find((trade) => String(trade.ticker || "").trim().toUpperCase() === ticker);
+                  const name = tickerDisplayName(row, ticker);
+                  return name ? ` — ${name}` : "";
+                })()}
               </option>
             ))}
           </select>
@@ -210,15 +215,7 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
                   <td data-label={labelByMode(languageMode, "Date/Time", "\u65e5\u671f/\u6642\u9593")}>{trade.created_at}</td>
                   <td data-label={labelByMode(languageMode, "Type", "\u985e\u578b")}>{formatEventType(trade.event_type, languageMode)}</td>
                   <td data-label={labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}>
-                    <span className="ticker-identity">
-                      <span className="ticker-symbol">{trade.ticker}</span>
-                      <TickerClassificationTags
-                        ticker={trade.ticker}
-                        classification={trade}
-                        languageMode={languageMode}
-                        size="xs"
-                      />
-                    </span>
+                    <TickerIdentity ticker={trade.ticker} data={trade} languageMode={languageMode} />
                   </td>
                   <td data-label={labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}>
                     {modelUsedText(trade, languageMode)}

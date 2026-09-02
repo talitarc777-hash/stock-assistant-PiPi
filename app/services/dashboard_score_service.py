@@ -21,6 +21,7 @@ from app.core.settings import get_settings
 from app.services.indicators import add_technical_indicators
 from app.services.market_config import normalize_market, resolve_security
 from app.services.market_data import get_price_history
+from app.services.live_market_data_service import get_security_name
 from app.services.model_lifecycle_service import (
     TRADING_TARGET_NAME,
     get_model_lifecycle_service,
@@ -61,6 +62,10 @@ def _json_load(value: str | None, fallback: Any) -> Any:
 
 def _default_classification_provider(ticker: str, market: str) -> TickerClassification:
     return classify_ticker_for_market(ticker, market=market)
+
+
+def _default_name_provider(ticker: str, market: str) -> str | None:
+    return get_security_name(ticker, market)
 
 
 def _default_score_provider(ticker: str, market: str, period: str) -> dict[str, Any]:
@@ -131,6 +136,7 @@ class DashboardScoreService:
         watchlist_provider: Callable[[str, str], Any] | None = None,
         score_provider: Callable[[str, str, str], dict[str, Any]] | None = None,
         classification_provider: Callable[[str, str], TickerClassification] | None = None,
+        name_provider: Callable[[str, str], str | None] | None = None,
         model_status_provider: Callable[[str, str], dict[str, Any]] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         cache_max_age: timedelta = DEFAULT_CACHE_MAX_AGE,
@@ -139,6 +145,7 @@ class DashboardScoreService:
         self.watchlist_provider = watchlist_provider or get_user_watchlist
         self.score_provider = score_provider or _default_score_provider
         self.classification_provider = classification_provider or _default_classification_provider
+        self.name_provider = name_provider or _default_name_provider
         self.model_status_provider = model_status_provider or _default_model_status_provider
         self.now_provider = now_provider or _utc_now
         self.cache_max_age = cache_max_age
@@ -159,6 +166,7 @@ class DashboardScoreService:
                     user_id TEXT NOT NULL,
                     market TEXT NOT NULL,
                     ticker TEXT NOT NULL,
+                    ticker_name TEXT,
                     period TEXT NOT NULL,
                     latest_close REAL NOT NULL,
                     trend_score INTEGER NOT NULL,
@@ -180,6 +188,16 @@ class DashboardScoreService:
                 )
                 """
             )
+            score_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(dashboard_ticker_scores)"
+                ).fetchall()
+            }
+            if "ticker_name" not in score_columns:
+                connection.execute(
+                    "ALTER TABLE dashboard_ticker_scores ADD COLUMN ticker_name TEXT"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS dashboard_score_refresh_runs (
@@ -233,6 +251,18 @@ class DashboardScoreService:
                 for ticker in expected:
                     try:
                         classification = self.classification_provider(ticker, clean_market)
+                        try:
+                            ticker_name = self.name_provider(ticker, clean_market)
+                        except Exception as exc:
+                            # Name metadata is helpful UI context, never a reason
+                            # to suppress an otherwise valid technical score.
+                            logger.info(
+                                "Dashboard ticker name unavailable market=%s ticker=%s error=%s",
+                                clean_market,
+                                ticker,
+                                exc,
+                            )
+                            ticker_name = None
                         score_payload = self.score_provider(ticker, clean_market, period)
                         breakdown = dict(score_payload["score_breakdown"])
                         total_score = int(breakdown["total_score"])
@@ -243,14 +273,15 @@ class DashboardScoreService:
                         connection.execute(
                             """
                             INSERT INTO dashboard_ticker_scores (
-                                user_id, market, ticker, period, latest_close,
+                                user_id, market, ticker, ticker_name, period, latest_close,
                                 trend_score, momentum_score, confirmation_score,
                                 risk_penalty, total_score, label,
                                 primary_ticker_class, stock_subclass,
                                 classification_source, model_name, model_ticker,
                                 model_period, model_source, model_status, scored_at_utc
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(user_id, market, ticker, period) DO UPDATE SET
+                                ticker_name=excluded.ticker_name,
                                 latest_close=excluded.latest_close,
                                 trend_score=excluded.trend_score,
                                 momentum_score=excluded.momentum_score,
@@ -272,6 +303,7 @@ class DashboardScoreService:
                                 user_id,
                                 clean_market,
                                 ticker,
+                                ticker_name,
                                 period,
                                 float(score_payload["latest_close"]),
                                 int(breakdown.get("trend_score", 0)),
@@ -338,6 +370,7 @@ class DashboardScoreService:
     def _row_to_result(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "ticker": str(row["ticker"]),
+            "ticker_name": str(row["ticker_name"]) if row["ticker_name"] else None,
             "market": str(row["market"]),
             "period": str(row["period"]),
             "score_source": "technical_indicators",
@@ -397,6 +430,16 @@ class DashboardScoreService:
         # invalidate these rows naturally.
         if normalize_market(market) == "HK":
             for row in rows:
+                if not row["ticker_name"]:
+                    try:
+                        if self.name_provider(row["ticker"], "HK"):
+                            return True
+                    except Exception as exc:  # names must not block scores
+                        logger.debug(
+                            "Could not recheck cached HK name ticker=%s: %s",
+                            row["ticker"],
+                            exc,
+                        )
                 if row["primary_ticker_class"] != "unknown":
                     continue
                 try:

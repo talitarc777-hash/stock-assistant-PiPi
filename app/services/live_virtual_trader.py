@@ -2294,6 +2294,9 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "ticker_name": snapshot.get("company_name") or snapshot.get("security_name"),
+                            "company_name": snapshot.get("company_name"),
+                            "security_name": snapshot.get("security_name"),
                             "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
                             "model_status": decision_model_status,
                             "model_period": decision_model_period,
@@ -2320,6 +2323,9 @@ def run_live_virtual_trader_now(
                         reason=reason,
                         metadata={
                             "model_name": decision_model_name,
+                            "ticker_name": snapshot.get("company_name") or snapshot.get("security_name"),
+                            "company_name": snapshot.get("company_name"),
+                            "security_name": snapshot.get("security_name"),
                             "model_selector": AUTO_TRADING_MODEL_NAME if auto_model_selection else requested_model_name,
                             "model_status": decision_model_status,
                             "model_period": decision_model_period,
@@ -2379,6 +2385,9 @@ def run_live_virtual_trader_now(
                 "unrealized_pnl": unrealized_after,
                 "metadata": {
                     "prediction_value": prediction_value,
+                    "ticker_name": snapshot.get("company_name") or snapshot.get("security_name"),
+                    "company_name": snapshot.get("company_name"),
+                    "security_name": snapshot.get("security_name"),
                     "overall_score": overall_score_cache.get(symbol),
                     "task_type": task_type,
                     "price_date": str(latest_row.get("date")),

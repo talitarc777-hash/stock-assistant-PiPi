@@ -30,13 +30,20 @@ def _price_frame() -> pd.DataFrame:
 
 class HkTickerDetailApiTests(unittest.TestCase):
     @patch("app.models.ticker_classification.classify_ticker_for_market")
+    @patch("app.api.analyze.get_security_profile")
     @patch("app.api.analyze.get_price_history")
     def test_analyze_uses_hk_identity_and_default_benchmark(
         self,
         history_mock,
+        profile_mock,
         classification_mock,
     ) -> None:
         history_mock.return_value = _price_frame()
+        profile_mock.return_value = {
+            "ticker_name": "TENCENT",
+            "company_name": "Tencent Holdings Limited",
+            "security_name": "TENCENT",
+        }
         classification_mock.return_value = SimpleNamespace(
             ticker="0700",
             primary_ticker_class="stock",
@@ -55,6 +62,7 @@ class HkTickerDetailApiTests(unittest.TestCase):
         self.assertEqual(response.market, "HK")
         self.assertEqual(response.provider_symbol, "0700.HK")
         self.assertEqual(response.currency, "HKD")
+        self.assertEqual(response.ticker_name, "TENCENT")
         self.assertEqual(response.benchmark_relative.benchmark, "2800")
         self.assertEqual(history_mock.call_args_list[0].kwargs["ticker"], "2800")
         self.assertEqual(history_mock.call_args_list[0].kwargs["market"], "HK")

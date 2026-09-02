@@ -51,6 +51,87 @@ _METADATA_CACHE_LOCK = Lock()
 _METADATA_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
+def _get_provider_metadata(provider_symbol: str) -> dict[str, Any]:
+    """Return cached Yahoo metadata without downloading price history."""
+    now_ts = monotonic()
+    with _METADATA_CACHE_LOCK:
+        cached_metadata = _METADATA_CACHE.get(provider_symbol)
+        info = dict(cached_metadata[1]) if cached_metadata and cached_metadata[0] > now_ts else None
+    if info is not None:
+        return info
+    try:
+        info = yf.Ticker(provider_symbol).info or {}
+    except Exception as exc:  # pragma: no cover - depends on upstream provider
+        logger.info("Security metadata fetch skipped for %s: %s", provider_symbol, exc)
+        return {}
+    with _METADATA_CACHE_LOCK:
+        _METADATA_CACHE[provider_symbol] = (
+            monotonic() + _METADATA_CACHE_TTL_SECONDS,
+            dict(info),
+        )
+    return dict(info)
+
+
+def get_security_name(ticker: str, market: str = "US") -> str | None:
+    """Resolve a display name using HKEX first for HK and cached Yahoo for US."""
+    identity = resolve_security(ticker, market)
+    if identity.market == "HK":
+        metadata = get_hk_security_metadata(identity.ticker)
+        if metadata is not None and metadata.security_name:
+            return str(metadata.security_name)
+    info = _get_provider_metadata(identity.provider_symbol)
+    name = info.get("longName") or info.get("shortName")
+    return str(name) if name else None
+
+
+def get_security_profile(ticker: str, market: str = "US") -> dict[str, Any]:
+    """Resolve a ticker name and descriptive metadata from cached sources."""
+    identity = resolve_security(ticker, market)
+    hkex_metadata = (
+        get_hk_security_metadata(identity.ticker) if identity.market == "HK" else None
+    )
+    info = _get_provider_metadata(identity.provider_symbol)
+    company_name = info.get("longName") or info.get("shortName")
+    security_name = hkex_metadata.security_name if hkex_metadata is not None else None
+    if not company_name:
+        company_name = security_name
+    quote_type = info.get("quoteType")
+    sector = info.get("sector")
+    industry = info.get("industry")
+    category = info.get("category")
+    fund_family = info.get("fundFamily")
+    return {
+        "market": identity.market,
+        "ticker": identity.ticker,
+        "provider_symbol": identity.provider_symbol,
+        "ticker_name": str(company_name or security_name) if (company_name or security_name) else None,
+        "company_name": str(company_name) if company_name else None,
+        "security_name": str(security_name) if security_name else None,
+        "security_category": hkex_metadata.category if hkex_metadata is not None else None,
+        "security_subcategory": hkex_metadata.subcategory if hkex_metadata is not None else None,
+        "ccass_admitted": hkex_metadata.ccass_admitted if hkex_metadata is not None else None,
+        "hkex_source_as_of": hkex_metadata.source_as_of if hkex_metadata is not None else None,
+        "board_lot": hkex_metadata.board_lot if hkex_metadata is not None else (
+            None if identity.market == "HK" else 1
+        ),
+        "pe_ratio": info.get("trailingPE"),
+        "market_cap": info.get("marketCap"),
+        "quote_type": str(quote_type) if quote_type else None,
+        "sector": str(sector) if sector else None,
+        "industry": str(industry) if industry else None,
+        "business_summary": str(info.get("longBusinessSummary")) if info.get("longBusinessSummary") else None,
+        "business_summary_zh": _build_business_summary_zh(
+            company_name=str(company_name) if company_name else None,
+            ticker=identity.ticker,
+            quote_type=str(quote_type) if quote_type else None,
+            sector=str(sector) if sector else None,
+            industry=str(industry) if industry else None,
+            category=str(category) if category else None,
+            fund_family=str(fund_family) if fund_family else None,
+        ),
+    }
+
+
 def _build_business_summary_zh(
     *,
     company_name: str | None,
@@ -97,49 +178,19 @@ def get_live_market_snapshot(
     latest = history.iloc[-1]
     previous = history.iloc[-2] if len(history) >= 2 else latest
 
-    hkex_metadata = (
-        get_hk_security_metadata(symbol) if identity.market == "HK" else None
-    )
+    profile = get_security_profile(symbol, identity.market)
 
     latest_close = float(latest["close"])
     previous_close = float(previous["close"])
     daily_change_pct = ((latest_close / previous_close) - 1) * 100 if previous_close else 0.0
 
-    pe_ratio = None
-    market_cap = None
-    company_name = None
-    sector = None
-    industry = None
-    business_summary = None
-    quote_type = None
-    category = None
-    fund_family = None
-    now_ts = monotonic()
-    with _METADATA_CACHE_LOCK:
-        cached_metadata = _METADATA_CACHE.get(provider_symbol)
-        info = dict(cached_metadata[1]) if cached_metadata and cached_metadata[0] > now_ts else None
-    try:
-        if info is None:
-            info = yf.Ticker(provider_symbol).info or {}
-            with _METADATA_CACHE_LOCK:
-                _METADATA_CACHE[provider_symbol] = (
-                    monotonic() + _METADATA_CACHE_TTL_SECONDS,
-                    dict(info),
-                )
-        pe_ratio = info.get("trailingPE")
-        market_cap = info.get("marketCap")
-        company_name = info.get("longName") or info.get("shortName")
-        sector = info.get("sector")
-        industry = info.get("industry")
-        business_summary = info.get("longBusinessSummary")
-        quote_type = info.get("quoteType")
-        category = info.get("category")
-        fund_family = info.get("fundFamily")
-    except Exception as exc:  # pragma: no cover - depends on upstream provider
-        logger.info("Live valuation fetch skipped for %s: %s", provider_symbol, exc)
-
-    if hkex_metadata is not None and not company_name:
-        company_name = hkex_metadata.security_name
+    pe_ratio = profile.get("pe_ratio")
+    market_cap = profile.get("market_cap")
+    company_name = profile.get("company_name")
+    sector = profile.get("sector")
+    industry = profile.get("industry")
+    business_summary = profile.get("business_summary")
+    quote_type = profile.get("quote_type")
 
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     logger.info(
@@ -159,24 +210,13 @@ def get_live_market_snapshot(
         "provider_symbol": provider_symbol,
         "currency": identity.currency,
         "currency_symbol": identity.currency_symbol,
-        "board_lot": hkex_metadata.board_lot if hkex_metadata is not None else (
-            None if identity.market == "HK" else 1
-        ),
-        "security_name": (
-            hkex_metadata.security_name if hkex_metadata is not None else None
-        ),
-        "security_category": (
-            hkex_metadata.category if hkex_metadata is not None else None
-        ),
-        "security_subcategory": (
-            hkex_metadata.subcategory if hkex_metadata is not None else None
-        ),
-        "ccass_admitted": (
-            hkex_metadata.ccass_admitted if hkex_metadata is not None else None
-        ),
-        "hkex_source_as_of": (
-            hkex_metadata.source_as_of if hkex_metadata is not None else None
-        ),
+        "ticker_name": profile.get("ticker_name"),
+        "board_lot": profile.get("board_lot"),
+        "security_name": profile.get("security_name"),
+        "security_category": profile.get("security_category"),
+        "security_subcategory": profile.get("security_subcategory"),
+        "ccass_admitted": profile.get("ccass_admitted"),
+        "hkex_source_as_of": profile.get("hkex_source_as_of"),
         "fetched_at_utc": now,
         "price_timestamp": latest["date"].strftime("%Y-%m-%d"),
         "close": latest_close,
@@ -192,15 +232,7 @@ def get_live_market_snapshot(
         "sector": str(sector) if sector else None,
         "industry": str(industry) if industry else None,
         "business_summary": str(business_summary) if business_summary else None,
-        "business_summary_zh": _build_business_summary_zh(
-            company_name=str(company_name) if company_name else None,
-            ticker=symbol,
-            quote_type=str(quote_type) if quote_type else None,
-            sector=str(sector) if sector else None,
-            industry=str(industry) if industry else None,
-            category=str(category) if category else None,
-            fund_family=str(fund_family) if fund_family else None,
-        ),
+        "business_summary_zh": profile.get("business_summary_zh"),
         "data_freshness_note": (
             "Near-live polling snapshot from latest available provider data; "
             "not guaranteed tick-level real-time."

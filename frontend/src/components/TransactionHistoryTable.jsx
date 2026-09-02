@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { getLabel } from "../constants/i18n";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 
 function formatMoney(value) {
   const numeric = Number(value);
@@ -83,15 +83,7 @@ export default function TransactionHistoryTable({
                   <td>{formatEventType(event.event_type, languageMode)}</td>
                   <td>
                     {event.ticker ? (
-                      <span className="ticker-identity">
-                        <span className="ticker-symbol">{event.ticker}</span>
-                        <TickerClassificationTags
-                          ticker={event.ticker}
-                          classification={event}
-                          languageMode={languageMode}
-                          size="xs"
-                        />
-                      </span>
+                      <TickerIdentity ticker={event.ticker} data={event} languageMode={languageMode} />
                     ) : "-"}
                   </td>
                   <td>

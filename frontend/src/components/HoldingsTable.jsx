@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import { fetchChartData, fetchLiveMarketSnapshot } from "../api";
 import LineChart from "./LineChart";
-import TickerClassificationTags from "./TickerClassificationTags";
+import TickerIdentity from "./TickerIdentity";
 
 const CHART_RANGES = {
   "3D": { period: "1mo", points: 3, en: "3 days", zh: "3 \u65e5" },
@@ -174,15 +174,7 @@ export default function HoldingsTable({ languageMode, holdings = [], market = "U
                     className="holding-ticker-button"
                     onClick={() => openHoldingSummary(holding)}
                   >
-                      <span className="ticker-identity">
-                        <span className="ticker-symbol">{holding.ticker}</span>
-                        <TickerClassificationTags
-                          ticker={holding.ticker}
-                          classification={holding}
-                          languageMode={languageMode}
-                          size="xs"
-                        />
-                      </span>
+                      <TickerIdentity ticker={holding.ticker} data={holding} languageMode={languageMode} />
                     </button>
                   </td>
                   <td>{Number(holding.quantity || 0).toFixed(0)}</td>
@@ -223,12 +215,12 @@ export default function HoldingsTable({ languageMode, holdings = [], market = "U
                     || selectedHolding.security_name
                     || selectedHolding.ticker}
                 </h3>
-                <p className="ticker-identity">
-                  <span className="ticker-symbol">{selectedHolding.ticker}</span>
-                  <TickerClassificationTags
+                <p>
+                  <TickerIdentity
                     ticker={selectedHolding.ticker}
-                    classification={companyProfile || selectedHolding}
+                    data={companyProfile || selectedHolding}
                     languageMode={languageMode}
+                    size="sm"
                   />
                 </p>
               </div>

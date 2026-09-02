@@ -75,11 +75,15 @@ class DashboardScoreServiceTests(unittest.TestCase):
                 "model_status": "production",
             }
 
+        def name_provider(ticker: str, market: str):
+            return f"{market} name for {ticker}"
+
         self.service = DashboardScoreService(
             db_path=self.db_path,
             watchlist_provider=watchlist_provider,
             score_provider=score_provider,
             classification_provider=classification_provider,
+            name_provider=name_provider,
             model_status_provider=model_status_provider,
             now_provider=lambda: self.now,
             cache_max_age=timedelta(hours=1),
@@ -109,6 +113,7 @@ class DashboardScoreServiceTests(unittest.TestCase):
             ["1810", "3690", "0005", "9988", "0700"],
         )
         self.assertEqual(result["rows"][-1]["score_breakdown"]["total_score"], 0)
+        self.assertEqual(result["rows"][0]["ticker_name"], "HK name for 1810")
         self.assertEqual(result["diagnostics"]["expected_count"], 5)
         self.assertEqual(result["diagnostics"]["scored_count"], 5)
         self.assertEqual(result["diagnostics"]["skipped_count"], 0)
