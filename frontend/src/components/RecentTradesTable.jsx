@@ -7,6 +7,7 @@ import {
   resolveTickerClassification,
 } from "../config/tickerClassification";
 import TickerClassificationTags from "./TickerClassificationTags";
+import { modelUsedText } from "../utils/tradeModelProvenance";
 
 function labelByMode(mode, en, zh) {
   if (mode === "zh") return zh;
@@ -195,6 +196,7 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
               <th>{labelByMode(languageMode, "Date/Time", "\u65e5\u671f/\u6642\u9593")}</th>
               <th>{labelByMode(languageMode, "Type", "\u985e\u578b")}</th>
               <th>{labelByMode(languageMode, "Ticker", "\u80a1\u7968\u4ee3\u865f")}</th>
+              <th>{labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}</th>
               <th>{labelByMode(languageMode, "Quantity", "\u6578\u91cf")}</th>
               <th>{labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}</th>
               <th>{labelByMode(languageMode, "Price", "\u50f9\u683c")}</th>
@@ -218,6 +220,9 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
                       />
                     </span>
                   </td>
+                  <td data-label={labelByMode(languageMode, "Model used", "\u4f7f\u7528\u6a21\u578b")}>
+                    {modelUsedText(trade, languageMode)}
+                  </td>
                   <td data-label={labelByMode(languageMode, "Quantity", "\u6578\u91cf")}>{formatQuantity(trade.quantity)}</td>
                   <td data-label={labelByMode(languageMode, "Remaining Qty", "\u5269\u9918\u6578\u91cf")}>{formatQuantity(trade.remaining_quantity)}</td>
                   <td data-label={labelByMode(languageMode, "Price", "\u50f9\u683c")}>{currencySymbol}{formatMoney(trade.price)}</td>
@@ -226,7 +231,7 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
               ))
             ) : (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={8}>
                   {trades.length
                     ? labelByMode(languageMode, "No trades match these filters.", "\u6c92\u6709\u4ea4\u6613\u7b26\u5408\u9019\u4e9b\u7be9\u9078\u3002")
                     : labelByMode(languageMode, "No executed trades yet.", "\u5c1a\u672a\u6709\u5df2\u57f7\u884c\u7684\u4ea4\u6613\u3002")}

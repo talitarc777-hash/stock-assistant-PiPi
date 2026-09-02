@@ -33,6 +33,7 @@ import TickerHistorySummary from "../components/TickerHistorySummary";
 import TransactionHistoryTable from "../components/TransactionHistoryTable";
 import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 import { formatModelRate } from "../utils/modelMetrics";
+import { modelUsedText } from "../utils/tradeModelProvenance";
 
 const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
@@ -181,18 +182,7 @@ function stockScoreText(item) {
 }
 
 function decisionModelText(item, languageMode) {
-  const source = String(item?.metadata?.decision_source || "").toLowerCase();
-  const storedName = String(item?.model_name || "").toLowerCase();
-  const actualName = item?.metadata?.actual_model_name || item?.model_name;
-  if (
-    source === "fallback_rule"
-    || storedName === "backup_rules"
-    || (!item?.metadata?.actual_model_name && storedName === "auto_best")
-  ) {
-    return labelByMode(languageMode, "Backup rules", "後備規則");
-  }
-  const period = item?.metadata?.model_period || item?.model_period;
-  return `${actualName || "N/A"}${period ? ` (${period})` : ""}`;
+  return modelUsedText(item, languageMode);
 }
 
 function decisionModelStatusText(item, languageMode) {
