@@ -10,7 +10,7 @@ export default function TickerIdentity({
   size = "xs",
   showClassification = true,
 }) {
-  const name = tickerDisplayName(data, ticker);
+  const name = tickerDisplayName(data, ticker, languageMode);
   return (
     <span className="ticker-identity">
       <span className="ticker-symbol">{ticker}</span>

@@ -118,7 +118,7 @@ export default function RecentTradesTable({ languageMode, trades = [], currencyS
               <option key={ticker} value={ticker}>
                 {ticker}{(() => {
                   const row = trades.find((trade) => String(trade.ticker || "").trim().toUpperCase() === ticker);
-                  const name = tickerDisplayName(row, ticker);
+                  const name = tickerDisplayName(row, ticker, languageMode);
                   return name ? ` — ${name}` : "";
                 })()}
               </option>

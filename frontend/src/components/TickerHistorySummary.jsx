@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { fetchChartData, fetchLiveMarketSnapshot } from "../api";
 import LineChart from "./LineChart";
 import TickerIdentity from "./TickerIdentity";
+import { tickerDisplayName } from "../utils/tickerIdentity";
 
 const PRICE_HISTORY_RANGES = {
   "5D": { period: "5d", points: 5, en: "5 days", zh: "5 日" },
@@ -26,18 +27,17 @@ function firstSentence(value) {
   return (match?.[0] || text).trim();
 }
 
-function displayTickerName(profile, classification, ticker) {
-  return (
-    profile?.company_name
-    || profile?.security_name
-    || classification?.company_name
-    || classification?.security_name
-    || ticker
-  );
+function displayTickerName(profile, classification, ticker, languageMode) {
+  return tickerDisplayName({ ...classification, ...profile }, ticker, languageMode) || ticker;
 }
 
 function classificationNature(profile, classification, languageMode) {
-  const companyName = displayTickerName(profile, classification, classification?.ticker || "This asset");
+  const companyName = displayTickerName(
+    profile,
+    classification,
+    classification?.ticker || "This asset",
+    languageMode
+  );
   const englishSummary = firstSentence(profile?.business_summary);
   const chineseSummary = firstSentence(profile?.business_summary_zh);
   const sector = profile?.sector || profile?.industry;

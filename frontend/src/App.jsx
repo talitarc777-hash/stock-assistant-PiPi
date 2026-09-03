@@ -439,12 +439,12 @@ function DashboardPage({ languageMode, profileId, currentWatchlist, onProfileUpd
           >
             {selectedTicker && !watchlistRows.some((row) => row.ticker === selectedTicker) ? (
               <option value={selectedTicker}>
-                {selectedTicker}{tickerDisplayName(selectedTickerData, selectedTicker) ? ` — ${tickerDisplayName(selectedTickerData, selectedTicker)}` : ""}
+                {selectedTicker}{tickerDisplayName(selectedTickerData, selectedTicker, languageMode) ? ` — ${tickerDisplayName(selectedTickerData, selectedTicker, languageMode)}` : ""}
               </option>
             ) : null}
             {watchlistRows.map((row) => (
               <option key={row.ticker} value={row.ticker}>
-                {row.ticker}{tickerDisplayName(row, row.ticker) ? ` — ${tickerDisplayName(row, row.ticker)}` : ""}
+                {row.ticker}{tickerDisplayName(row, row.ticker, languageMode) ? ` — ${tickerDisplayName(row, row.ticker, languageMode)}` : ""}
               </option>
             ))}
           </select>

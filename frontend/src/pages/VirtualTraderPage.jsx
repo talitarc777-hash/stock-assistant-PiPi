@@ -925,7 +925,15 @@ export default function VirtualTraderPage({
             >
               {hkTickers.map((ticker) => (
                 <option key={ticker} value={ticker}>
-                  {ticker}{tickerNames.get(ticker) ? ` — ${tickerNames.get(ticker)}` : ""}
+                  {ticker}{tickerDisplayName(
+                    { ticker_name: tickerNames.get(ticker) },
+                    ticker,
+                    languageMode
+                  ) ? ` — ${tickerDisplayName(
+                    { ticker_name: tickerNames.get(ticker) },
+                    ticker,
+                    languageMode
+                  )}` : ""}
                 </option>
               ))}
             </select>
