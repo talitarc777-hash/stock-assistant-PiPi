@@ -30,8 +30,8 @@ test("missing names do not duplicate the ticker symbol", () => {
 test("ticker names follow English, Traditional Chinese, and bilingual modes", () => {
   const apple = { ticker: "AAPL", company_name: "Apple Inc." };
   assert.equal(tickerDisplayName(apple, "AAPL", "en"), "Apple Inc.");
-  assert.equal(tickerDisplayName(apple, "AAPL", "zh"), "蘋果公司");
-  assert.equal(tickerDisplayName(apple, "AAPL", "both"), "Apple Inc. / 蘋果公司");
+  assert.equal(tickerDisplayName(apple, "AAPL", "zh"), "Apple Inc.");
+  assert.equal(tickerDisplayName(apple, "AAPL", "both"), "Apple Inc.");
 
   const providerLocalized = {
     ticker: "0388",

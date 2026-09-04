@@ -16,7 +16,10 @@ from typing import Any
 import yfinance as yf
 
 from app.services.market_data import get_price_history
-from app.services.hkex_security_metadata import get_hk_security_metadata
+from app.services.hkex_security_metadata import (
+    get_hk_security_localized_names,
+    get_hk_security_metadata,
+)
 from app.services.market_config import resolve_security
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,24 @@ def get_security_name(ticker: str, market: str = "US") -> str | None:
     return str(name) if name else None
 
 
+def get_security_names(ticker: str, market: str = "US") -> dict[str, str | None]:
+    """Return language-specific names without translating US company names."""
+    identity = resolve_security(ticker, market)
+    english_name = get_security_name(identity.ticker, identity.market)
+    chinese_name = None
+    chinese_issuer_name = None
+    if identity.market == "HK":
+        localized = get_hk_security_localized_names(identity.ticker) or {}
+        chinese_name = localized.get("security_name_zh")
+        chinese_issuer_name = localized.get("issuer_name_zh")
+    return {
+        "ticker_name_en": english_name,
+        "ticker_name_zh": chinese_name or chinese_issuer_name,
+        "company_name_zh": chinese_issuer_name,
+        "security_name_zh": chinese_name,
+    }
+
+
 def get_security_profile(ticker: str, market: str = "US") -> dict[str, Any]:
     """Resolve a ticker name and descriptive metadata from cached sources."""
     identity = resolve_security(ticker, market)
@@ -100,11 +121,13 @@ def get_security_profile(ticker: str, market: str = "US") -> dict[str, Any]:
     industry = info.get("industry")
     category = info.get("category")
     fund_family = info.get("fundFamily")
+    localized_names = get_security_names(identity.ticker, identity.market)
     return {
         "market": identity.market,
         "ticker": identity.ticker,
         "provider_symbol": identity.provider_symbol,
         "ticker_name": str(company_name or security_name) if (company_name or security_name) else None,
+        **localized_names,
         "company_name": str(company_name) if company_name else None,
         "security_name": str(security_name) if security_name else None,
         "security_category": hkex_metadata.category if hkex_metadata is not None else None,
@@ -211,8 +234,11 @@ def get_live_market_snapshot(
         "currency": identity.currency,
         "currency_symbol": identity.currency_symbol,
         "ticker_name": profile.get("ticker_name"),
+        "ticker_name_en": profile.get("ticker_name_en"),
+        "ticker_name_zh": profile.get("ticker_name_zh"),
         "board_lot": profile.get("board_lot"),
         "security_name": profile.get("security_name"),
+        "security_name_zh": profile.get("security_name_zh"),
         "security_category": profile.get("security_category"),
         "security_subcategory": profile.get("security_subcategory"),
         "ccass_admitted": profile.get("ccass_admitted"),
@@ -228,6 +254,7 @@ def get_live_market_snapshot(
         "pe_ratio": float(pe_ratio) if pe_ratio is not None else None,
         "market_cap": float(market_cap) if market_cap is not None else None,
         "company_name": str(company_name) if company_name else None,
+        "company_name_zh": profile.get("company_name_zh"),
         "quote_type": str(quote_type) if quote_type else None,
         "sector": str(sector) if sector else None,
         "industry": str(industry) if industry else None,

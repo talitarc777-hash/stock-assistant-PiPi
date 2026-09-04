@@ -171,6 +171,41 @@ class HkexSecurityMetadataTests(unittest.TestCase):
         self.assertEqual(service.get_security("0700").board_lot, 100)
         self.assertEqual(len(calls), 2)
 
+    def test_localized_names_are_cached_per_ticker_and_stale_safe(self) -> None:
+        current_time = [datetime(2026, 8, 11, 8, 0, tzinfo=UTC)]
+        localized_calls: list[str] = []
+        localized_values = {
+            "0700": ("騰訊控股", "騰訊控股有限公司"),
+            "1810": ("小米集團－Ｗ", "小米集團"),
+        }
+
+        def localized_provider(code: str) -> tuple[str | None, str | None]:
+            localized_calls.append(code)
+            value = localized_values.get(code)
+            if value is None:
+                raise RuntimeError("temporary localized-name outage")
+            return value
+
+        service = HkexSecurityMetadataService(
+            db_path=self._db_path(),
+            refresh_interval=timedelta(hours=24),
+            downloader=lambda: (_fixture_workbook(), {}),
+            localized_name_provider=localized_provider,
+            now_provider=lambda: current_time[0],
+            minimum_record_count=5,
+        )
+
+        self.assertEqual(service.get_localized_names("700")["security_name_zh"], "騰訊控股")
+        self.assertEqual(service.get_localized_names("0700.HK")["issuer_name_zh"], "騰訊控股有限公司")
+        self.assertEqual(service.get_localized_names("1810")["security_name_zh"], "小米集團－Ｗ")
+        self.assertEqual(localized_calls, ["0700", "1810"])
+
+        current_time[0] += timedelta(days=2)
+        localized_values.pop("0700")
+        stale = service.get_localized_names("0700")
+        self.assertEqual(stale["security_name_zh"], "騰訊控股")
+        self.assertEqual(localized_calls, ["0700", "1810", "0700"])
+
 
 if __name__ == "__main__":
     unittest.main()

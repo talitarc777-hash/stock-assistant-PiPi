@@ -14,12 +14,14 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 import io
+import json
 import logging
 from pathlib import Path
 import re
 import sqlite3
 from threading import Lock
 from typing import Callable
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -33,6 +35,13 @@ logger = logging.getLogger(__name__)
 HKEX_FULL_SECURITIES_URL = (
     "https://www.hkex.com.hk/eng/services/trading/securities/"
     "securitieslists/ListOfSecurities.xlsx"
+)
+HKEX_EQUITY_QUOTE_PAGE_URL = (
+    "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/"
+    "Equities-Quote"
+)
+HKEX_EQUITY_QUOTE_API_URL = (
+    "https://www1.hkex.com.hk/hkexwidget/data/getequityquote"
 )
 _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _CELL_REFERENCE_PATTERN = re.compile(r"(?P<column>[A-Z]+)\d+")
@@ -54,6 +63,9 @@ class HkexSecurityMetadata:
     expiry_date: str | None
     source_as_of: str
     source_url: str
+    security_name_zh: str | None = None
+    issuer_name_zh: str | None = None
+    localized_name_refreshed_at_utc: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -224,6 +236,7 @@ class HkexSecurityMetadataService:
         refresh_interval: timedelta | None = None,
         timeout_seconds: float = 15.0,
         downloader: Callable[[], tuple[bytes, dict[str, str]]] | None = None,
+        localized_name_provider: Callable[[str], tuple[str | None, str | None]] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         minimum_record_count: int = 500,
         failure_retry_interval: timedelta = timedelta(hours=1),
@@ -235,10 +248,12 @@ class HkexSecurityMetadataService:
         )
         self.timeout_seconds = timeout_seconds
         self.downloader = downloader or self._download_official_workbook
+        self.localized_name_provider = localized_name_provider or self._download_localized_name
         self.now_provider = now_provider or (lambda: datetime.now(UTC))
         self.minimum_record_count = minimum_record_count
         self.failure_retry_interval = failure_retry_interval
         self._refresh_lock = Lock()
+        self._localized_name_lock = Lock()
         self._initialize_database()
 
     def _connect(self) -> sqlite3.Connection:
@@ -265,6 +280,20 @@ class HkexSecurityMetadataService:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(hkex_securities)")
+            }
+            for name in (
+                "security_name_zh",
+                "issuer_name_zh",
+                "localized_name_refreshed_at_utc",
+                "localized_name_last_attempt_at_utc",
+            ):
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE hkex_securities ADD COLUMN {name} TEXT"
+                    )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hkex_metadata_state (
@@ -274,6 +303,55 @@ class HkexSecurityMetadataService:
                 """
             )
             connection.commit()
+
+    def _download_localized_name(self, stock_code: str) -> tuple[str | None, str | None]:
+        """Fetch official Traditional Chinese short/full names from HKEX."""
+        symbol = str(int(normalize_hk_ticker(stock_code)))
+        page_url = f"{HKEX_EQUITY_QUOTE_PAGE_URL}?sym={symbol}&sc_lang=zh-HK"
+        headers = {
+            "User-Agent": "Mozilla/5.0 StockAssistantPiPi/1.0",
+            "Accept-Language": "zh-HK,zh-TW;q=0.9,en;q=0.7",
+        }
+        with requests.Session() as session:
+            page = session.get(page_url, timeout=self.timeout_seconds, headers=headers)
+            page.raise_for_status()
+            token_match = re.search(r'return\s+"(evLts[^"]+)"', page.text)
+            if token_match is None:
+                raise HkexMetadataError("HKEX quote page did not provide an API token.")
+            timestamp = int(self.now_provider().timestamp() * 1000)
+            callback = f"stockAssistant{timestamp}"
+            response = session.get(
+                HKEX_EQUITY_QUOTE_API_URL,
+                timeout=self.timeout_seconds,
+                headers={**headers, "Referer": page_url, "Accept": "*/*"},
+                params={
+                    "sym": symbol,
+                    "token": unquote(token_match.group(1)),
+                    "lang": "chi",
+                    "qid": str(timestamp),
+                    "callback": callback,
+                    "_": str(timestamp),
+                },
+            )
+            response.raise_for_status()
+        body = response.text.strip()
+        start = body.find("(")
+        end = body.rfind(")")
+        if start < 0 or end <= start:
+            raise HkexMetadataError("HKEX quote API returned an invalid JSONP response.")
+        try:
+            payload = json.loads(body[start + 1 : end])
+            quote = payload["data"]["quote"]
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise HkexMetadataError("HKEX quote API response is missing quote data.") from exc
+        response_code = str(payload.get("data", {}).get("responsecode", ""))
+        if response_code != "000" or str(quote.get("sym", "")) != symbol:
+            raise HkexMetadataError("HKEX quote API returned a mismatched security.")
+        short_name = str(quote.get("nm_s") or "").strip() or None
+        issuer_name = str(quote.get("nm") or quote.get("issuer_name") or "").strip() or None
+        if not short_name and not issuer_name:
+            raise HkexMetadataError("HKEX quote API returned no localized security name.")
+        return short_name, issuer_name
 
     def _download_official_workbook(self) -> tuple[bytes, dict[str, str]]:
         response = requests.get(
@@ -393,6 +471,23 @@ class HkexSecurityMetadataService:
             "last_modified": response_metadata.get("last_modified", ""),
         }
         with closing(self._connect()) as connection:
+            localized_names = {
+                str(row["stock_code"]): (
+                    row["security_name_zh"],
+                    row["issuer_name_zh"],
+                    row["localized_name_refreshed_at_utc"],
+                    row["localized_name_last_attempt_at_utc"],
+                )
+                for row in connection.execute(
+                    """
+                    SELECT stock_code, security_name_zh, issuer_name_zh,
+                           localized_name_refreshed_at_utc,
+                           localized_name_last_attempt_at_utc
+                    FROM hkex_securities
+                    WHERE security_name_zh IS NOT NULL OR issuer_name_zh IS NOT NULL
+                    """
+                )
+            }
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM hkex_securities")
             connection.executemany(
@@ -400,8 +495,10 @@ class HkexSecurityMetadataService:
                 INSERT INTO hkex_securities (
                     stock_code, security_name, board_lot, category, subcategory,
                     ccass_admitted, trading_currency, expiry_date, source_as_of,
-                    source_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_url, security_name_zh, issuer_name_zh,
+                    localized_name_refreshed_at_utc,
+                    localized_name_last_attempt_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -415,6 +512,7 @@ class HkexSecurityMetadataService:
                         record.expiry_date,
                         record.source_as_of,
                         record.source_url,
+                        *localized_names.get(record.stock_code, (None, None, None, None)),
                     )
                     for record in records
                 ],
@@ -433,6 +531,102 @@ class HkexSecurityMetadataService:
             self.db_path,
         )
         return {**state, "record_count": len(records), "board_lot_count": board_lot_count}
+
+    @staticmethod
+    def _timestamp_is_fresh(value: object, now: datetime, interval: timedelta) -> bool:
+        if not value:
+            return False
+        try:
+            timestamp = datetime.fromisoformat(str(value))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+        except ValueError:
+            return False
+        return now - timestamp < interval
+
+    def get_localized_names(self, ticker: str) -> dict[str, str | None] | None:
+        """Return cached HKEX Traditional Chinese names, refreshing conservatively."""
+        code = normalize_hk_ticker(ticker)
+        self.refresh_if_stale()
+
+        def load_row() -> sqlite3.Row | None:
+            with closing(self._connect()) as connection:
+                return connection.execute(
+                    "SELECT * FROM hkex_securities WHERE stock_code = ?",
+                    (code,),
+                ).fetchone()
+
+        row = load_row()
+        if row is None:
+            return None
+        now = self.now_provider().astimezone(UTC)
+        has_cached_name = bool(row["security_name_zh"] or row["issuer_name_zh"])
+        if has_cached_name and self._timestamp_is_fresh(
+            row["localized_name_refreshed_at_utc"], now, self.refresh_interval
+        ):
+            return {
+                "security_name_zh": str(row["security_name_zh"]) if row["security_name_zh"] else None,
+                "issuer_name_zh": str(row["issuer_name_zh"]) if row["issuer_name_zh"] else None,
+            }
+        if self._timestamp_is_fresh(
+            row["localized_name_last_attempt_at_utc"], now, self.failure_retry_interval
+        ):
+            return {
+                "security_name_zh": str(row["security_name_zh"]) if row["security_name_zh"] else None,
+                "issuer_name_zh": str(row["issuer_name_zh"]) if row["issuer_name_zh"] else None,
+            } if has_cached_name else None
+
+        with self._localized_name_lock:
+            row = load_row()
+            if row is None:
+                return None
+            now = self.now_provider().astimezone(UTC)
+            if self._timestamp_is_fresh(
+                row["localized_name_refreshed_at_utc"], now, self.refresh_interval
+            ):
+                return {
+                    "security_name_zh": str(row["security_name_zh"]) if row["security_name_zh"] else None,
+                    "issuer_name_zh": str(row["issuer_name_zh"]) if row["issuer_name_zh"] else None,
+                }
+            attempted_at = now.replace(microsecond=0).isoformat()
+            try:
+                short_name, issuer_name = self.localized_name_provider(code)
+                with closing(self._connect()) as connection:
+                    connection.execute(
+                        """
+                        UPDATE hkex_securities
+                        SET security_name_zh = ?, issuer_name_zh = ?,
+                            localized_name_refreshed_at_utc = ?,
+                            localized_name_last_attempt_at_utc = ?
+                        WHERE stock_code = ?
+                        """,
+                        (short_name, issuer_name, attempted_at, attempted_at, code),
+                    )
+                    connection.commit()
+                return {
+                    "security_name_zh": short_name,
+                    "issuer_name_zh": issuer_name,
+                }
+            except Exception as exc:
+                logger.warning(
+                    "HKEX localized name refresh failed for %s; retaining cached name: %s",
+                    code,
+                    exc,
+                )
+                with closing(self._connect()) as connection:
+                    connection.execute(
+                        """
+                        UPDATE hkex_securities
+                        SET localized_name_last_attempt_at_utc = ?
+                        WHERE stock_code = ?
+                        """,
+                        (attempted_at, code),
+                    )
+                    connection.commit()
+                return {
+                    "security_name_zh": str(row["security_name_zh"]) if row["security_name_zh"] else None,
+                    "issuer_name_zh": str(row["issuer_name_zh"]) if row["issuer_name_zh"] else None,
+                } if has_cached_name else None
 
     def get_security(
         self,
@@ -464,6 +658,16 @@ class HkexSecurityMetadataService:
             expiry_date=str(row["expiry_date"]) if row["expiry_date"] else None,
             source_as_of=str(row["source_as_of"]),
             source_url=str(row["source_url"]),
+            security_name_zh=(
+                str(row["security_name_zh"]) if row["security_name_zh"] else None
+            ),
+            issuer_name_zh=(
+                str(row["issuer_name_zh"]) if row["issuer_name_zh"] else None
+            ),
+            localized_name_refreshed_at_utc=(
+                str(row["localized_name_refreshed_at_utc"])
+                if row["localized_name_refreshed_at_utc"] else None
+            ),
         )
 
     def status(self) -> dict[str, object]:
@@ -483,6 +687,10 @@ def get_hkex_metadata_service() -> HkexSecurityMetadataService:
 
 def get_hk_security_metadata(ticker: str) -> HkexSecurityMetadata | None:
     return get_hkex_metadata_service().get_security(ticker)
+
+
+def get_hk_security_localized_names(ticker: str) -> dict[str, str | None] | None:
+    return get_hkex_metadata_service().get_localized_names(ticker)
 
 
 def get_hk_board_lot(ticker: str) -> int | None:

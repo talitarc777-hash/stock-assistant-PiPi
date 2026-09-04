@@ -34,7 +34,7 @@ import TransactionHistoryTable from "../components/TransactionHistoryTable";
 import { marketDataReasonText, marketRegimeGuide } from "../utils/decisionExplanations";
 import { formatModelRate } from "../utils/modelMetrics";
 import { modelUsedText } from "../utils/tradeModelProvenance";
-import { tickerDisplayName } from "../utils/tickerIdentity";
+import { tickerDisplayName, tickerDisplayNames } from "../utils/tickerIdentity";
 
 const DEFAULT_PERIOD = "5y";
 const AUTO_TRADING_MODEL = "auto_best";
@@ -781,8 +781,14 @@ export default function VirtualTraderPage({
     const names = new Map();
     for (const item of [...liveDecisionLog, ...recentTrades, ...accountHistory, ...accountHoldings]) {
       const ticker = String(item?.ticker || "").trim().toUpperCase();
-      const name = tickerDisplayName(item, ticker);
-      if (ticker && name && !names.has(ticker)) names.set(ticker, name);
+      if (!ticker) continue;
+      const resolved = tickerDisplayNames(item, ticker);
+      const previous = names.get(ticker) || {};
+      names.set(ticker, {
+        ticker_name: previous.ticker_name || resolved.en || null,
+        ticker_name_en: previous.ticker_name_en || resolved.en || null,
+        ticker_name_zh: previous.ticker_name_zh || resolved.zh || null,
+      });
     }
     return names;
   }, [accountHistory, accountHoldings, liveDecisionLog, recentTrades]);
@@ -790,7 +796,9 @@ export default function VirtualTraderPage({
   const holdingsWithNames = useMemo(
     () => accountHoldings.map((item) => ({
       ...item,
-      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker)?.ticker_name || null,
+      ticker_name_en: item.ticker_name_en || tickerNames.get(item.ticker)?.ticker_name_en || null,
+      ticker_name_zh: item.ticker_name_zh || tickerNames.get(item.ticker)?.ticker_name_zh || null,
     })),
     [accountHoldings, tickerNames]
   );
@@ -798,7 +806,9 @@ export default function VirtualTraderPage({
   const recentTradesWithNames = useMemo(
     () => recentTrades.map((item) => ({
       ...item,
-      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker)?.ticker_name || null,
+      ticker_name_en: item.ticker_name_en || tickerNames.get(item.ticker)?.ticker_name_en || null,
+      ticker_name_zh: item.ticker_name_zh || tickerNames.get(item.ticker)?.ticker_name_zh || null,
     })),
     [recentTrades, tickerNames]
   );
@@ -806,7 +816,9 @@ export default function VirtualTraderPage({
   const accountHistoryWithNames = useMemo(
     () => accountHistory.map((item) => ({
       ...item,
-      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker) || null,
+      ticker_name: tickerDisplayName(item, item.ticker) || tickerNames.get(item.ticker)?.ticker_name || null,
+      ticker_name_en: item.ticker_name_en || tickerNames.get(item.ticker)?.ticker_name_en || null,
+      ticker_name_zh: item.ticker_name_zh || tickerNames.get(item.ticker)?.ticker_name_zh || null,
     })),
     [accountHistory, tickerNames]
   );
@@ -926,11 +938,11 @@ export default function VirtualTraderPage({
               {hkTickers.map((ticker) => (
                 <option key={ticker} value={ticker}>
                   {ticker}{tickerDisplayName(
-                    { ticker_name: tickerNames.get(ticker) },
+                    tickerNames.get(ticker) || {},
                     ticker,
                     languageMode
                   ) ? ` — ${tickerDisplayName(
-                    { ticker_name: tickerNames.get(ticker) },
+                    tickerNames.get(ticker) || {},
                     ticker,
                     languageMode
                   )}` : ""}

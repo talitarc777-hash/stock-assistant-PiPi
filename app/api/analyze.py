@@ -81,8 +81,12 @@ class AnalyzeResponse(ClassifiedTickerResponse):
     currency: str = "USD"
     currency_symbol: str = "$"
     ticker_name: str | None = None
+    ticker_name_en: str | None = None
+    ticker_name_zh: str | None = None
     company_name: str | None = None
+    company_name_zh: str | None = None
     security_name: str | None = None
+    security_name_zh: str | None = None
     latest_close: float
     score_breakdown: ScoreBreakdownResponse
     label: str
@@ -162,8 +166,12 @@ def _build_ticker_analysis_response(
         currency=identity.currency,
         currency_symbol=identity.currency_symbol,
         ticker_name=profile.get("ticker_name"),
+        ticker_name_en=profile.get("ticker_name_en"),
+        ticker_name_zh=profile.get("ticker_name_zh"),
         company_name=profile.get("company_name"),
+        company_name_zh=profile.get("company_name_zh"),
         security_name=profile.get("security_name"),
+        security_name_zh=profile.get("security_name_zh"),
         latest_close=float(latest_close),
         score_breakdown=ScoreBreakdownResponse(
             trend_score=score.trend_score,

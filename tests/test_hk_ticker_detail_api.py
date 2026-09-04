@@ -41,8 +41,12 @@ class HkTickerDetailApiTests(unittest.TestCase):
         history_mock.return_value = _price_frame()
         profile_mock.return_value = {
             "ticker_name": "TENCENT",
+            "ticker_name_en": "TENCENT",
+            "ticker_name_zh": "騰訊控股",
             "company_name": "Tencent Holdings Limited",
+            "company_name_zh": "騰訊控股有限公司",
             "security_name": "TENCENT",
+            "security_name_zh": "騰訊控股",
         }
         classification_mock.return_value = SimpleNamespace(
             ticker="0700",
@@ -63,6 +67,7 @@ class HkTickerDetailApiTests(unittest.TestCase):
         self.assertEqual(response.provider_symbol, "0700.HK")
         self.assertEqual(response.currency, "HKD")
         self.assertEqual(response.ticker_name, "TENCENT")
+        self.assertEqual(response.ticker_name_zh, "騰訊控股")
         self.assertEqual(response.benchmark_relative.benchmark, "2800")
         self.assertEqual(history_mock.call_args_list[0].kwargs["ticker"], "2800")
         self.assertEqual(history_mock.call_args_list[0].kwargs["market"], "HK")

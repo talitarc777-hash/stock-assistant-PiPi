@@ -113,7 +113,10 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     currency_symbol: str = "$"
     board_lot: int | None = None
     ticker_name: str | None = None
+    ticker_name_en: str | None = None
+    ticker_name_zh: str | None = None
     security_name: str | None = None
+    security_name_zh: str | None = None
     security_category: str | None = None
     security_subcategory: str | None = None
     ccass_admitted: bool | None = None
@@ -128,6 +131,7 @@ class LiveMarketSnapshotResponse(ClassifiedTickerResponse):
     pe_ratio: float | None = None
     market_cap: float | None = None
     company_name: str | None = None
+    company_name_zh: str | None = None
     quote_type: str | None = None
     sector: str | None = None
     industry: str | None = None
@@ -141,6 +145,8 @@ class HkSecurityMetadataResponse(BaseModel):
 
     stock_code: str
     security_name: str
+    security_name_zh: str | None = None
+    issuer_name_zh: str | None = None
     board_lot: int | None
     category: str | None = None
     subcategory: str | None = None
