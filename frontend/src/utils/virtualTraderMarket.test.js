@@ -24,6 +24,7 @@ test("Virtual Trader exposes one shared US/HK market interface", () => {
   assert.match(pageSource, /fetchHkVirtualTraderUniverseStatus\(profileId\)/);
   assert.match(pageSource, /colSpan="2"/);
   assert.match(pageSource, /Add to marked tickers/);
+  assert.match(pageSource, /Number\(left\.ticker\) - Number\(right\.ticker\)/);
   assert.match(pageSource, /market === "HK" \? sortedRows : sortedRows\.slice\(0, 15\)/);
   assert.match(pageSource, /TickerHistorySummary/);
   assert.match(pageSource, /market=\{market\}/);

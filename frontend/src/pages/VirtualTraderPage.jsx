@@ -832,11 +832,13 @@ export default function VirtualTraderPage({
     const statusByTicker = new Map(
       (hkUniverseStatus?.tickers || []).map((item) => [item.ticker, item])
     );
-    return hkTickers.map((ticker) => ({
-      ticker,
-      ...(tickerNames.get(ticker) || {}),
-      ...(statusByTicker.get(ticker) || {}),
-    }));
+    return hkTickers
+      .map((ticker) => ({
+        ticker,
+        ...(tickerNames.get(ticker) || {}),
+        ...(statusByTicker.get(ticker) || {}),
+      }))
+      .sort((left, right) => Number(left.ticker) - Number(right.ticker));
   }, [hkTickers, hkUniverseStatus, tickerNames]);
 
   const holdingsWithNames = useMemo(
