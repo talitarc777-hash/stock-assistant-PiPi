@@ -199,35 +199,6 @@ function decisionModelStatusText(item, languageMode) {
   return labelByMode(languageMode, "Unknown", "未知");
 }
 
-function hkUniverseModelStateText(state, languageMode) {
-  const labels = {
-    training_queued: ["Queued / training", "已排程／訓練中"],
-    active: ["Active model", "使用中模型"],
-    validated: ["Validated model", "已驗證模型"],
-    saved_unvalidated: ["Saved, not currently validated", "已儲存，目前未通過驗證"],
-    validation_rejected: ["Built, validation not passed", "已建立，未通過驗證"],
-    waiting_for_training: ["Waiting for training", "等待訓練"],
-  };
-  const [en, zh] = labels[state] || ["Unknown", "未知"];
-  return labelByMode(languageMode, en, zh);
-}
-
-function hkRuntimeCoverageText(coverage, languageMode) {
-  const labels = {
-    exact_model: ["Exact ticker model", "專屬股票模型"],
-    shared_hk_model: ["Validated pooled HK model", "已驗證港股共用模型"],
-    fallback_rules: ["Fallback rules only", "僅使用後備規則"],
-  };
-  const [en, zh] = labels[coverage] || ["Unknown", "未知"];
-  return labelByMode(languageMode, en, zh);
-}
-
-function readableModelName(value) {
-  const text = String(value || "").trim();
-  if (!text) return "N/A";
-  return text.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
 function compactDateTime(value) {
   if (!value) return "N/A";
   const parsed = new Date(value);
@@ -857,6 +828,17 @@ export default function VirtualTraderPage({
     return names;
   }, [accountHistory, accountHoldings, liveDecisionLog, recentTrades]);
 
+  const markedHkTickerRows = useMemo(() => {
+    const statusByTicker = new Map(
+      (hkUniverseStatus?.tickers || []).map((item) => [item.ticker, item])
+    );
+    return hkTickers.map((ticker) => ({
+      ticker,
+      ...(tickerNames.get(ticker) || {}),
+      ...(statusByTicker.get(ticker) || {}),
+    }));
+  }, [hkTickers, hkUniverseStatus, tickerNames]);
+
   const holdingsWithNames = useMemo(
     () => accountHoldings.map((item) => ({
       ...item,
@@ -992,14 +974,14 @@ export default function VirtualTraderPage({
               <p className="helper-text">
                 {labelByMode(
                   languageMode,
-                  "Every ticker in this table is considered by your HK Virtual Trader. Add or remove marked tickers here. Saved does not mean trade-ready: a model must also pass validation.",
-                  "此表內每隻股票都會由你的港股虛擬交易員考慮。你可在此新增或移除已標記股票。已儲存不代表可用於交易；模型仍須通過驗證。"
+                  "Every ticker in this list is considered by your HK Virtual Trader. Add or remove marked tickers here.",
+                  "此清單內每隻股票都會由你的港股虛擬交易員考慮。你可在此新增或移除已標記股票。"
                 )}
               </p>
             </div>
-            <button type="button" className="secondary-button" onClick={loadHkUniverseStatus}>
-              {labelByMode(languageMode, "Refresh model status", "更新模型狀態")}
-            </button>
+            <span className="hk-marked-ticker-count">
+              {labelByMode(languageMode, "Marked", "已標記")}: {markedHkTickerRows.length}
+            </span>
           </div>
 
           <div className="hk-marked-ticker-control">
@@ -1021,44 +1003,19 @@ export default function VirtualTraderPage({
             </button>
           </div>
 
-          {hkUniverseStatus ? (
-            <div className="hk-universe-summary" aria-label={labelByMode(languageMode, "HK universe summary", "港股範圍摘要")}>
-              <span>
-                {labelByMode(languageMode, "Considered", "納入考慮")}: <strong>{hkUniverseStatus.count || 0}</strong>
-              </span>
-              <span>
-                {labelByMode(languageMode, "Exact model ready", "專屬模型可用")}: <strong>{hkUniverseStatus.summary?.exact_model_ready || 0}</strong>
-              </span>
-              <span>
-                {labelByMode(languageMode, "Shared model", "共用模型")}: <strong>{hkUniverseStatus.summary?.shared_model_covered || 0}</strong>
-              </span>
-              <span>
-                {labelByMode(languageMode, "Fallback only", "僅後備規則")}: <strong>{hkUniverseStatus.summary?.fallback_only || 0}</strong>
-              </span>
-              <span>
-                {labelByMode(languageMode, "Training", "訓練中")}: <strong>{hkUniverseStatus.summary?.training_queued || 0}</strong>
-              </span>
-            </div>
-          ) : null}
-
           {hkUniverseError ? <p className="inline-error">{hkUniverseError}</p> : null}
 
-          <div className="table-wrap responsive-card-table hk-universe-table">
+          <div className="table-wrap hk-universe-table" tabIndex="0" aria-label={labelByMode(languageMode, "Scrollable marked HK tickers", "可捲動的已標記港股清單")}>
             <table>
               <thead>
                 <tr>
                   <th>{labelByMode(languageMode, "Ticker", "股票代號")}</th>
-                  <th>{labelByMode(languageMode, "Model preparation", "模型準備狀態")}</th>
-                  <th>{labelByMode(languageMode, "Trading coverage", "交易模型覆蓋")}</th>
-                  <th>{labelByMode(languageMode, "Saved / validated", "已儲存／已驗證")}</th>
-                  <th>{labelByMode(languageMode, "Best available model", "最佳可用模型")}</th>
-                  <th>{labelByMode(languageMode, "Last trained", "最近訓練")}</th>
                   <th>{labelByMode(languageMode, "Manage", "管理")}</th>
                 </tr>
               </thead>
               <tbody>
-                {hkUniverseStatus?.tickers?.length ? (
-                  hkUniverseStatus.tickers.map((item) => (
+                {markedHkTickerRows.length ? (
+                  markedHkTickerRows.map((item) => (
                     <tr
                       key={item.ticker}
                       className={selectedTicker === item.ticker ? "selected-row" : ""}
@@ -1071,25 +1028,6 @@ export default function VirtualTraderPage({
                         >
                           <TickerIdentity ticker={item.ticker} data={item} languageMode={languageMode} />
                         </button>
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Model preparation", "模型準備狀態")}>
-                        <span className={`universe-status-pill ${item.model_state || "unknown"}`}>
-                          {hkUniverseModelStateText(item.model_state, languageMode)}
-                        </span>
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Trading coverage", "交易模型覆蓋")}>
-                        {hkRuntimeCoverageText(item.runtime_coverage, languageMode)}
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Saved / validated", "已儲存／已驗證")}>
-                        {item.saved_model_count || 0} / {item.validated_model_count || 0}
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Best available model", "最佳可用模型")}>
-                        {item.best_model_name
-                          ? `${readableModelName(item.best_model_name)} (${item.best_model_period || "N/A"})`
-                          : "N/A"}
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Last trained", "最近訓練")}>
-                        {compactDateTime(item.last_trained_at_utc)}
                       </td>
                       <td data-label={labelByMode(languageMode, "Manage", "管理")}>
                         <button
@@ -1104,7 +1042,7 @@ export default function VirtualTraderPage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="7">
+                    <td colSpan="2">
                       {labelByMode(
                         languageMode,
                         "Loading marked HK tickers...",

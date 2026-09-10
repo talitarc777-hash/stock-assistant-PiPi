@@ -2039,58 +2039,46 @@ button:disabled {
   width: 100%;
 }
 
-.hk-universe-summary {
-  display: flex;
-  gap: 8px;
-  margin: 14px 0;
-  flex-wrap: wrap;
-}
-
-.hk-universe-summary > span,
-.universe-status-pill {
+.hk-marked-ticker-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
   border: 1px solid #cbd5e1;
   border-radius: 999px;
   background: #f8fafc;
   color: #334155;
-  font-size: 0.78rem;
-  line-height: 1.25;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
-.hk-universe-summary > span {
-  padding: 6px 10px;
+.hk-universe-table {
+  max-height: 300px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
-.universe-status-pill {
-  display: inline-flex;
-  padding: 4px 8px;
-  white-space: normal;
+.hk-universe-table table {
+  min-width: 0;
+  table-layout: fixed;
 }
 
-.universe-status-pill.included,
-.universe-status-pill.active,
-.universe-status-pill.validated {
-  border-color: #86efac;
-  background: #f0fdf4;
-  color: #166534;
+.hk-universe-table thead th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: #f8fafc;
 }
 
-.universe-status-pill.training_queued {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
+.hk-universe-table th:last-child,
+.hk-universe-table td:last-child {
+  width: 120px;
+  text-align: right;
 }
 
-.universe-status-pill.saved_unvalidated,
-.universe-status-pill.waiting_for_training {
-  border-color: #fcd34d;
-  background: #fffbeb;
-  color: #92400e;
-}
-
-.universe-status-pill.validation_rejected {
-  border-color: #fca5a5;
-  background: #fef2f2;
-  color: #991b1b;
+.hk-universe-table tbody tr {
+  cursor: default;
 }
 
 .hk-universe-table .ticker-dashboard-link {
@@ -2126,8 +2114,7 @@ button:disabled {
     width: 100%;
   }
 
-  .hk-trading-universe-heading > *,
-  .hk-trading-universe-heading button {
+  .hk-trading-universe-heading > div {
     width: 100%;
   }
 
@@ -2137,6 +2124,10 @@ button:disabled {
 
   .hk-marked-ticker-control button {
     width: 100%;
+  }
+
+  .hk-universe-table {
+    max-height: 260px;
   }
 }
 
@@ -2155,38 +2146,18 @@ button:disabled {
     color: #cbd5e1;
   }
 
-  .hk-universe-summary > span,
-  .universe-status-pill {
+  .hk-marked-ticker-count {
     border-color: #475569;
     background: #1e293b;
     color: #e2e8f0;
   }
 
-  .universe-status-pill.included,
-  .universe-status-pill.active,
-  .universe-status-pill.validated {
-    border-color: #22c55e;
-    background: #052e16;
-    color: #bbf7d0;
+  .hk-universe-table {
+    border-color: #475569;
   }
 
-  .universe-status-pill.training_queued {
-    border-color: #3b82f6;
-    background: #172554;
-    color: #bfdbfe;
-  }
-
-  .universe-status-pill.saved_unvalidated,
-  .universe-status-pill.waiting_for_training {
-    border-color: #d97706;
-    background: #451a03;
-    color: #fde68a;
-  }
-
-  .universe-status-pill.validation_rejected {
-    border-color: #ef4444;
-    background: #450a0a;
-    color: #fecaca;
+  .hk-universe-table thead th {
+    background: #1e293b;
   }
 
   .inline-error {

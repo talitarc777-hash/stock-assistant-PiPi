@@ -22,7 +22,8 @@ test("Virtual Trader exposes one shared US/HK market interface", () => {
   assert.match(pageSource, /hk-marked-ticker-control/);
   assert.doesNotMatch(pageSource, /className="hk-ticker-control"/);
   assert.match(pageSource, /fetchHkVirtualTraderUniverseStatus\(profileId\)/);
-  assert.match(pageSource, /Saved, not currently validated/);
+  assert.match(pageSource, /colSpan="2"/);
+  assert.match(pageSource, /Add to marked tickers/);
   assert.match(pageSource, /market === "HK" \? sortedRows : sortedRows\.slice\(0, 15\)/);
   assert.match(pageSource, /TickerHistorySummary/);
   assert.match(pageSource, /market=\{market\}/);
@@ -38,6 +39,6 @@ test("market-aware API calls and narrow-screen controls remain wired", () => {
   assert.match(styleSource, /\.hk-ticker-control/);
   assert.match(styleSource, /\.hk-trading-universe-heading/);
   assert.match(styleSource, /\.hk-marked-ticker-control/);
-  assert.match(styleSource, /\.universe-status-pill\.training_queued/);
+  assert.match(styleSource, /\.hk-universe-table \{[\s\S]*max-height: 300px;[\s\S]*overflow: auto;/);
   assert.match(styleSource, /@media \(max-width: 600px\)/);
 });
