@@ -417,7 +417,7 @@ export default function VirtualTraderPage({
       const watchlist = Array.isArray(payload?.watchlist) ? payload.watchlist : [];
       setHkTickers(watchlist);
       setSelectedTicker(ticker);
-      setHkTickerInput(ticker);
+      setHkTickerInput("");
       setError("");
       await loadHkUniverseStatus();
     } catch (requestError) {
@@ -425,18 +425,22 @@ export default function VirtualTraderPage({
     }
   }
 
-  async function deactivateSelectedHkTicker() {
-    if (!profileId || !selectedTicker) return;
+  async function deactivateHkTicker(ticker) {
+    if (!profileId || !ticker) return;
     try {
       const payload = await removeUserWatchlistTicker({
         user_id: profileId,
-        ticker: selectedTicker,
+        ticker,
         market: "HK",
         last_active_source: "dashboard",
       });
       const watchlist = Array.isArray(payload?.watchlist) ? payload.watchlist : [];
       setHkTickers(watchlist);
-      setSelectedTicker(watchlist[0] || "0700");
+      setSelectedTicker((current) => (
+        current === ticker || !watchlist.includes(current)
+          ? (watchlist[0] || "0700")
+          : current
+      ));
       setError("");
       await loadHkUniverseStatus();
     } catch (requestError) {
@@ -972,10 +976,35 @@ export default function VirtualTraderPage({
           <strong>{market === "HK" ? "HK Virtual Trader" : "US Virtual Trader"}</strong>
           <span>{market === "HK" ? "HKD (HK$) · Asia/Hong_Kong" : "USD ($) · America/New_York"}</span>
         </div>
-        {market === "HK" ? (
-          <div className="hk-ticker-control">
+      </section>
+
+      {market === "HK" ? (
+        <section className="panel hk-trading-universe-panel">
+          <div className="hk-trading-universe-heading">
+            <div>
+              <h3>
+                {labelByMode(
+                  languageMode,
+                  "Marked HK tickers",
+                  "已標記港股"
+                )}
+              </h3>
+              <p className="helper-text">
+                {labelByMode(
+                  languageMode,
+                  "Every ticker in this table is considered by your HK Virtual Trader. Add or remove marked tickers here. Saved does not mean trade-ready: a model must also pass validation.",
+                  "此表內每隻股票都會由你的港股虛擬交易員考慮。你可在此新增或移除已標記股票。已儲存不代表可用於交易；模型仍須通過驗證。"
+                )}
+              </p>
+            </div>
+            <button type="button" className="secondary-button" onClick={loadHkUniverseStatus}>
+              {labelByMode(languageMode, "Refresh model status", "更新模型狀態")}
+            </button>
+          </div>
+
+          <div className="hk-marked-ticker-control">
             <label htmlFor="hk-ticker-input">
-              {labelByMode(languageMode, "HK ticker", "港股代號")}
+              {labelByMode(languageMode, "Add HK ticker", "新增港股代號")}
             </label>
             <input
               id="hk-ticker-input"
@@ -988,66 +1017,7 @@ export default function VirtualTraderPage({
               }}
             />
             <button type="button" onClick={activateHkTicker}>
-              {labelByMode(languageMode, "Use ticker", "使用此代號")}
-            </button>
-            <select
-              aria-label={labelByMode(languageMode, "Active HK ticker", "目前港股")}
-              value={selectedTicker}
-              onChange={(event) => setSelectedTicker(event.target.value)}
-            >
-              {hkTickers.map((ticker) => (
-                <option key={ticker} value={ticker}>
-                  {ticker}{tickerDisplayName(
-                    tickerNames.get(ticker) || {},
-                    ticker,
-                    languageMode
-                  ) ? ` — ${tickerDisplayName(
-                    tickerNames.get(ticker) || {},
-                    ticker,
-                    languageMode
-                  )}` : ""}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={deactivateSelectedHkTicker}
-            >
-              {labelByMode(languageMode, "Deactivate selected", "停用所選股票")}
-            </button>
-            <span className="helper-text">
-              {labelByMode(
-                languageMode,
-                `${selectedTicker} is fetched from Yahoo as ${selectedTicker}.HK. Missing models train once in the background and are then reused.`,
-                `${selectedTicker} 會以 ${selectedTicker}.HK 向 Yahoo 取數；如無模型，會在背景訓練一次後重用。`
-              )}
-            </span>
-          </div>
-        ) : null}
-      </section>
-
-      {market === "HK" ? (
-        <section className="panel hk-trading-universe-panel">
-          <div className="hk-trading-universe-heading">
-            <div>
-              <h3>
-                {labelByMode(
-                  languageMode,
-                  "HK tickers considered by Virtual Trader",
-                  "港股虛擬交易員考慮的股票"
-                )}
-              </h3>
-              <p className="helper-text">
-                {labelByMode(
-                  languageMode,
-                  "This is the complete HK universe for your account. Saved does not mean trade-ready: a model must also pass validation.",
-                  "這是你帳戶目前完整的港股交易範圍。已儲存不代表可用於交易；模型仍須通過驗證。"
-                )}
-              </p>
-            </div>
-            <button type="button" className="secondary-button" onClick={loadHkUniverseStatus}>
-              {labelByMode(languageMode, "Refresh model status", "更新模型狀態")}
+              {labelByMode(languageMode, "Add to marked tickers", "加入已標記股票")}
             </button>
           </div>
 
@@ -1078,18 +1048,21 @@ export default function VirtualTraderPage({
               <thead>
                 <tr>
                   <th>{labelByMode(languageMode, "Ticker", "股票代號")}</th>
-                  <th>{labelByMode(languageMode, "Included", "已納入")}</th>
                   <th>{labelByMode(languageMode, "Model preparation", "模型準備狀態")}</th>
                   <th>{labelByMode(languageMode, "Trading coverage", "交易模型覆蓋")}</th>
                   <th>{labelByMode(languageMode, "Saved / validated", "已儲存／已驗證")}</th>
                   <th>{labelByMode(languageMode, "Best available model", "最佳可用模型")}</th>
                   <th>{labelByMode(languageMode, "Last trained", "最近訓練")}</th>
+                  <th>{labelByMode(languageMode, "Manage", "管理")}</th>
                 </tr>
               </thead>
               <tbody>
                 {hkUniverseStatus?.tickers?.length ? (
                   hkUniverseStatus.tickers.map((item) => (
-                    <tr key={item.ticker}>
+                    <tr
+                      key={item.ticker}
+                      className={selectedTicker === item.ticker ? "selected-row" : ""}
+                    >
                       <td data-label={labelByMode(languageMode, "Ticker", "股票代號")}>
                         <button
                           type="button"
@@ -1098,11 +1071,6 @@ export default function VirtualTraderPage({
                         >
                           <TickerIdentity ticker={item.ticker} data={item} languageMode={languageMode} />
                         </button>
-                      </td>
-                      <td data-label={labelByMode(languageMode, "Included", "已納入")}>
-                        <span className="universe-status-pill included">
-                          {labelByMode(languageMode, "Yes", "是")}
-                        </span>
                       </td>
                       <td data-label={labelByMode(languageMode, "Model preparation", "模型準備狀態")}>
                         <span className={`universe-status-pill ${item.model_state || "unknown"}`}>
@@ -1123,6 +1091,15 @@ export default function VirtualTraderPage({
                       <td data-label={labelByMode(languageMode, "Last trained", "最近訓練")}>
                         {compactDateTime(item.last_trained_at_utc)}
                       </td>
+                      <td data-label={labelByMode(languageMode, "Manage", "管理")}>
+                        <button
+                          type="button"
+                          className="secondary-button hk-remove-ticker-button"
+                          onClick={() => deactivateHkTicker(item.ticker)}
+                        >
+                          {labelByMode(languageMode, "Remove", "移除")}
+                        </button>
+                      </td>
                     </tr>
                   ))
                 ) : (
@@ -1130,8 +1107,8 @@ export default function VirtualTraderPage({
                     <td colSpan="7">
                       {labelByMode(
                         languageMode,
-                        "Loading the HK trading universe...",
-                        "正在載入港股交易範圍……"
+                        "Loading marked HK tickers...",
+                        "正在載入已標記港股……"
                       )}
                     </td>
                   </tr>

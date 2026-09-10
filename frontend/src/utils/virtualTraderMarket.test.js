@@ -14,11 +14,13 @@ test("Virtual Trader exposes one shared US/HK market interface", () => {
   assert.match(pageSource, /runLiveVirtualTraderNow\(\s*profileId,\s*null,\s*AUTO_TRADING_MODEL,\s*market/s);
   assert.doesNotMatch(pageSource, /market === "HK" \? \[selectedTicker\] : null/);
   assert.match(pageSource, /fetchUserWatchlist\(profileId, "HK"\)/);
-  assert.match(pageSource, /deactivateSelectedHkTicker/);
+  assert.match(pageSource, /deactivateHkTicker\(item\.ticker\)/);
   assert.match(pageSource, /decisionModelText/);
   assert.match(pageSource, /Training pending/);
-  assert.match(pageSource, /HK tickers considered by Virtual Trader/);
+  assert.match(pageSource, /Marked HK tickers/);
   assert.match(pageSource, /hk-trading-universe-panel/);
+  assert.match(pageSource, /hk-marked-ticker-control/);
+  assert.doesNotMatch(pageSource, /className="hk-ticker-control"/);
   assert.match(pageSource, /fetchHkVirtualTraderUniverseStatus\(profileId\)/);
   assert.match(pageSource, /Saved, not currently validated/);
   assert.match(pageSource, /market === "HK" \? sortedRows : sortedRows\.slice\(0, 15\)/);
@@ -35,6 +37,7 @@ test("market-aware API calls and narrow-screen controls remain wired", () => {
   assert.match(apiSource, /\/virtual-trader\/hk-universe-status\?user_id=/);
   assert.match(styleSource, /\.hk-ticker-control/);
   assert.match(styleSource, /\.hk-trading-universe-heading/);
+  assert.match(styleSource, /\.hk-marked-ticker-control/);
   assert.match(styleSource, /\.universe-status-pill\.training_queued/);
   assert.match(styleSource, /@media \(max-width: 600px\)/);
 });

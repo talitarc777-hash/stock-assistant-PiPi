@@ -2026,6 +2026,19 @@ button:disabled {
   margin-top: 0;
 }
 
+.hk-marked-ticker-control {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.hk-marked-ticker-control input {
+  min-width: 0;
+  width: 100%;
+}
+
 .hk-universe-summary {
   display: flex;
   gap: 8px;
@@ -2085,6 +2098,11 @@ button:disabled {
   text-align: left;
 }
 
+.hk-remove-ticker-button {
+  min-height: 36px;
+  padding: 6px 10px;
+}
+
 .inline-error {
   color: #b91c1c;
 }
@@ -2110,6 +2128,14 @@ button:disabled {
 
   .hk-trading-universe-heading > *,
   .hk-trading-universe-heading button {
+    width: 100%;
+  }
+
+  .hk-marked-ticker-control {
+    grid-template-columns: 1fr;
+  }
+
+  .hk-marked-ticker-control button {
     width: 100%;
   }
 }
