@@ -131,6 +131,13 @@ export async function fetchLiveVirtualTraderTrades(userId, ticker = null, limit 
   );
 }
 
+export async function fetchHkVirtualTraderUniverseStatus(userId) {
+  return fetchJson(
+    `/virtual-trader/hk-universe-status?user_id=${encodeURIComponent(userId)}`,
+    { timeoutMs: 15000, retries: 1 }
+  );
+}
+
 export async function fetchTraderSchedulerStatus(recentHours = 24) {
   return fetchJson(
     `/virtual-trader/scheduler-status?recent_hours=${encodeURIComponent(recentHours)}`,

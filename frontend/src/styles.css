@@ -2013,6 +2013,82 @@ button:disabled {
   margin: 0;
 }
 
+.hk-trading-universe-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.hk-trading-universe-heading h3,
+.hk-trading-universe-heading .helper-text {
+  margin-top: 0;
+}
+
+.hk-universe-summary {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0;
+  flex-wrap: wrap;
+}
+
+.hk-universe-summary > span,
+.universe-status-pill {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.hk-universe-summary > span {
+  padding: 6px 10px;
+}
+
+.universe-status-pill {
+  display: inline-flex;
+  padding: 4px 8px;
+  white-space: normal;
+}
+
+.universe-status-pill.included,
+.universe-status-pill.active,
+.universe-status-pill.validated {
+  border-color: #86efac;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.universe-status-pill.training_queued {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.universe-status-pill.saved_unvalidated,
+.universe-status-pill.waiting_for_training {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.universe-status-pill.validation_rejected {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.hk-universe-table .ticker-dashboard-link {
+  max-width: 100%;
+  text-align: left;
+}
+
+.inline-error {
+  color: #b91c1c;
+}
+
 @media (max-width: 600px) {
   .virtual-market-controls,
   .hk-ticker-control {
@@ -2031,6 +2107,11 @@ button:disabled {
   .hk-ticker-control button {
     width: 100%;
   }
+
+  .hk-trading-universe-heading > *,
+  .hk-trading-universe-heading button {
+    width: 100%;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -2046,6 +2127,44 @@ button:disabled {
 
   .market-context span {
     color: #cbd5e1;
+  }
+
+  .hk-universe-summary > span,
+  .universe-status-pill {
+    border-color: #475569;
+    background: #1e293b;
+    color: #e2e8f0;
+  }
+
+  .universe-status-pill.included,
+  .universe-status-pill.active,
+  .universe-status-pill.validated {
+    border-color: #22c55e;
+    background: #052e16;
+    color: #bbf7d0;
+  }
+
+  .universe-status-pill.training_queued {
+    border-color: #3b82f6;
+    background: #172554;
+    color: #bfdbfe;
+  }
+
+  .universe-status-pill.saved_unvalidated,
+  .universe-status-pill.waiting_for_training {
+    border-color: #d97706;
+    background: #451a03;
+    color: #fde68a;
+  }
+
+  .universe-status-pill.validation_rejected {
+    border-color: #ef4444;
+    background: #450a0a;
+    color: #fecaca;
+  }
+
+  .inline-error {
+    color: #fca5a5;
   }
 
   .model-health-grid article {

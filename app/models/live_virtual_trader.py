@@ -135,3 +135,47 @@ class LiveTraderSyncResponse(BaseModel):
     status: LiveTraderStatusResponse
     recent_trades: list[dict] = Field(default_factory=list)
     decisions: list[LiveTraderDecisionResponse] = Field(default_factory=list)
+
+
+class LiveTraderUniverseTickerResponse(ClassifiedTickerResponse):
+    """One ticker included in a user's current Virtual Trader universe."""
+
+    market: Literal["HK"] = "HK"
+    ticker_name: str | None = None
+    ticker_name_en: str | None = None
+    ticker_name_zh: str | None = None
+    considered: bool = True
+    universe_source: Literal["system_default", "user_watchlist"]
+    model_state: Literal[
+        "training_queued",
+        "active",
+        "validated",
+        "saved_unvalidated",
+        "validation_rejected",
+        "waiting_for_training",
+    ]
+    runtime_coverage: Literal[
+        "exact_model",
+        "shared_hk_model",
+        "fallback_rules",
+    ]
+    training_queued: bool = False
+    saved_model_count: int = 0
+    registry_model_count: int = 0
+    validated_model_count: int = 0
+    active_model_count: int = 0
+    best_model_name: str | None = None
+    best_model_period: str | None = None
+    best_validation_score: float | None = None
+    last_trained_at_utc: str | None = None
+
+
+class LiveTraderUniverseStatusResponse(BaseModel):
+    """Model-readiness summary for all HK tickers considered by the trader."""
+
+    user_id: str
+    market: Literal["HK"] = "HK"
+    using_system_default_watchlist: bool = False
+    count: int
+    summary: dict[str, int] = Field(default_factory=dict)
+    tickers: list[LiveTraderUniverseTickerResponse] = Field(default_factory=list)

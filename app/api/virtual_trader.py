@@ -14,11 +14,13 @@ from app.models.live_virtual_trader import (
     LiveTraderStatusResponse,
     LiveTraderSyncResponse,
     LiveTraderTradesResponse,
+    LiveTraderUniverseStatusResponse,
 )
 from app.services.account_ledger_service import AccountLedgerError, get_account_ledger_service
 from app.services.live_virtual_trader import (
     AUTO_TRADING_MODEL_NAME,
     LiveVirtualTraderError,
+    get_hk_virtual_trader_universe_status,
     get_live_virtual_trader_status,
     list_live_virtual_trader_trades,
 )
@@ -32,6 +34,25 @@ from app.services.watchlist_service import get_user_watchlist
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["virtual-trader-live"])
+
+
+@router.get(
+    "/virtual-trader/hk-universe-status",
+    response_model=LiveTraderUniverseStatusResponse,
+)
+def get_virtual_trader_hk_universe_status(
+    user_id: str = Query(..., min_length=1, max_length=120),
+) -> LiveTraderUniverseStatusResponse:
+    """List every HK ticker considered for this user and its model readiness."""
+    try:
+        return LiveTraderUniverseStatusResponse(
+            **get_hk_virtual_trader_universe_status(user_id)
+        )
+    except LiveVirtualTraderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Unexpected HK Virtual Trader universe-status error")
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
 
 
 @router.get("/virtual-trader/live-sync", response_model=LiveTraderSyncResponse)

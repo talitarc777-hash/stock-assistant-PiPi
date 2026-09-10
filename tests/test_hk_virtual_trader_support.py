@@ -22,6 +22,7 @@ from app.services.live_virtual_trader import (
     _resolve_user_tickers,
     _schedule_background_training_if_enabled,
     ensure_active_ticker_model_training,
+    get_hk_virtual_trader_universe_status,
 )
 from app.services.model_feedback_service import ModelFeedbackService, _horizon_prices
 from app.services.model_lifecycle_service import (
@@ -370,6 +371,98 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
             user_id="u1",
             market="HK",
         )
+
+    @patch(
+        "app.services.live_virtual_trader._queued_training_tickers",
+        return_value={"1810"},
+    )
+    @patch("app.services.live_virtual_trader.get_hk_security_metadata")
+    @patch("app.services.live_virtual_trader.list_compatible_saved_model_candidates")
+    @patch("app.services.live_virtual_trader.get_model_lifecycle_service")
+    @patch("app.services.live_virtual_trader.get_user_profile_store")
+    def test_hk_universe_status_distinguishes_saved_training_and_ready_models(
+        self,
+        profile_store_mock,
+        lifecycle_factory,
+        saved_candidates_mock,
+        metadata_mock,
+        _queued_mock,
+    ) -> None:
+        tickers = ["0700", "1810", "9988", "0005"]
+        profile_store_mock.return_value.get_effective_watchlist.return_value = (
+            tickers,
+            False,
+            None,
+        )
+
+        active_row = {
+            "ticker": "0700",
+            "period": "2y",
+            "model_name": "random_forest",
+            "status": "production",
+            "is_validated": True,
+            "is_stale": False,
+            "validation_score": 0.72,
+            "last_trained_at_utc": "2026-09-01T00:00:00+00:00",
+        }
+        saved_only_row = {
+            "ticker": "9988",
+            "period": "2y",
+            "model_name": "ridge_regression",
+            "status": "candidate",
+            "is_validated": False,
+            "is_stale": False,
+            "validation_score": 0.48,
+            "last_trained_at_utc": "2026-09-02T00:00:00+00:00",
+        }
+        shared_row = {
+            "ticker": "GLOBAL",
+            "period": "2y",
+            "model_name": "linear_regression",
+            "status": "production",
+            "is_validated": True,
+            "is_stale": False,
+            "validation_score": 0.65,
+            "last_trained_at_utc": "2026-09-03T00:00:00+00:00",
+        }
+
+        def registry_rows(**kwargs):
+            return {
+                "GLOBAL": [shared_row],
+                "0700": [active_row],
+                "9988": [saved_only_row],
+            }.get(kwargs.get("ticker"), [])
+
+        lifecycle_factory.return_value.list_registry.side_effect = registry_rows
+
+        def saved_candidates(**kwargs):
+            if kwargs["ticker"] in {"0700", "9988"} and kwargs["period"] == "2y":
+                return [{
+                    "ticker": kwargs["ticker"],
+                    "model_name": (
+                        "random_forest" if kwargs["ticker"] == "0700"
+                        else "ridge_regression"
+                    ),
+                }]
+            return []
+
+        saved_candidates_mock.side_effect = saved_candidates
+        metadata_mock.return_value = None
+
+        payload = get_hk_virtual_trader_universe_status("u1")
+        by_ticker = {item["ticker"]: item for item in payload["tickers"]}
+
+        self.assertEqual(payload["count"], 4)
+        self.assertEqual(by_ticker["0700"]["model_state"], "active")
+        self.assertEqual(by_ticker["0700"]["runtime_coverage"], "exact_model")
+        self.assertEqual(by_ticker["1810"]["model_state"], "training_queued")
+        self.assertEqual(by_ticker["1810"]["runtime_coverage"], "shared_hk_model")
+        self.assertEqual(by_ticker["9988"]["model_state"], "saved_unvalidated")
+        self.assertEqual(by_ticker["9988"]["saved_model_count"], 1)
+        self.assertEqual(by_ticker["0005"]["model_state"], "waiting_for_training")
+        self.assertEqual(payload["summary"]["exact_model_ready"], 1)
+        self.assertEqual(payload["summary"]["shared_model_covered"], 3)
+        self.assertEqual(payload["summary"]["training_queued"], 1)
 
     @patch("app.services.user_profile_service.get_user_profile_store")
     @patch("app.services.model_lifecycle_service.train_pooled_baseline_models")

@@ -33,7 +33,7 @@ from app.services.equity_curve_service import build_live_equity_curve
 from app.services.external_market_context_service import build_external_market_context
 from app.services.live_market_data_service import get_live_market_snapshot
 from app.services.market_data import get_price_history
-from app.services.hkex_security_metadata import get_hk_board_lot
+from app.services.hkex_security_metadata import get_hk_board_lot, get_hk_security_metadata
 from app.services.market_config import MARKET_CONFIGS, normalize_market, resolve_security
 from app.services.market_regime import assess_market_regime
 from app.services.model_feedback_service import get_model_feedback_service
@@ -666,6 +666,175 @@ def _resolve_user_tickers(
     if not values:
         raise LiveVirtualTraderError("No tickers available for live virtual trader.")
     return values
+
+
+def _queued_training_tickers(market: str = "HK") -> set[str]:
+    """Return exact tickers currently queued or running in lazy training."""
+    clean_market = normalize_market(market)
+    prefix = f"{clean_market}:"
+    with _TRAINING_LOCK:
+        return {
+            str(job_key[0])[len(prefix):]
+            for job_key in _TRAINING_QUEUE
+            if str(job_key[0]).startswith(prefix)
+        }
+
+
+def get_hk_virtual_trader_universe_status(user_id: str) -> dict[str, Any]:
+    """Describe the exact HK universe and its model readiness for one user.
+
+    This is deliberately read-only. A missing ticker is queued for lazy model
+    training by the normal Virtual Trader decision run, not by this status
+    lookup.
+    """
+    clean_user_id = str(user_id or "").strip()
+    if not clean_user_id:
+        raise LiveVirtualTraderError("user_id is required.")
+
+    watchlist, using_system_default, _profile = (
+        get_user_profile_store().get_effective_watchlist(
+            user_id=clean_user_id,
+            market="HK",
+        )
+    )
+    symbols = _normalize_tickers(watchlist, "HK")
+    if not symbols:
+        raise LiveVirtualTraderError("No active HK tickers are configured.")
+
+    lifecycle = get_model_lifecycle_service()
+    queued_tickers = _queued_training_tickers("HK")
+    global_rows = lifecycle.list_registry(
+        ticker="GLOBAL",
+        market="HK",
+        target_name=TRADING_TARGET_NAME,
+        limit=100,
+    )
+
+    def runtime_ready(row: dict[str, Any]) -> bool:
+        return (
+            str(row.get("status") or "") in {"production", "candidate"}
+            and bool(row.get("is_validated"))
+            and not bool(row.get("is_stale"))
+        )
+
+    ready_global_rows = [row for row in global_rows if runtime_ready(row)]
+    items: list[dict[str, Any]] = []
+    for symbol in symbols:
+        registry_rows = lifecycle.list_registry(
+            ticker=symbol,
+            market="HK",
+            target_name=TRADING_TARGET_NAME,
+            limit=100,
+        )
+        current_validated = [row for row in registry_rows if runtime_ready(row)]
+        active_rows = [
+            row for row in current_validated
+            if str(row.get("status") or "") == "production"
+        ]
+
+        saved_keys: set[tuple[str, str]] = set()
+        for model_period in TRADING_MODEL_PERIODS:
+            for candidate in list_compatible_saved_model_candidates(
+                ticker=symbol,
+                market="HK",
+                period=model_period,
+                target_name=TRADING_TARGET_NAME,
+                limit=12,
+            ):
+                if str(candidate.get("ticker") or "") == symbol:
+                    saved_keys.add(
+                        (model_period, str(candidate.get("model_name") or ""))
+                    )
+
+        best_rows = active_rows or current_validated or ready_global_rows
+        best_row = max(
+            best_rows,
+            key=lambda row: float(row.get("validation_score") or 0.0),
+            default=None,
+        )
+        has_exact_runtime_model = bool(current_validated)
+        has_shared_runtime_model = bool(ready_global_rows)
+        training_queued = symbol in queued_tickers
+
+        if training_queued:
+            model_state = "training_queued"
+        elif active_rows:
+            model_state = "active"
+        elif current_validated:
+            model_state = "validated"
+        elif saved_keys:
+            model_state = "saved_unvalidated"
+        elif registry_rows:
+            model_state = "validation_rejected"
+        else:
+            model_state = "waiting_for_training"
+
+        runtime_coverage = (
+            "exact_model"
+            if has_exact_runtime_model
+            else "shared_hk_model"
+            if has_shared_runtime_model
+            else "fallback_rules"
+        )
+        last_trained = max(
+            (
+                str(row.get("last_trained_at_utc"))
+                for row in registry_rows
+                if row.get("last_trained_at_utc")
+            ),
+            default=None,
+        )
+        metadata = get_hk_security_metadata(symbol)
+        items.append(
+            {
+                "ticker": symbol,
+                "market": "HK",
+                "ticker_name": metadata.security_name if metadata else None,
+                "ticker_name_en": metadata.security_name if metadata else None,
+                "ticker_name_zh": (
+                    metadata.security_name_zh or metadata.issuer_name_zh
+                    if metadata
+                    else None
+                ),
+                "considered": True,
+                "universe_source": (
+                    "system_default" if using_system_default else "user_watchlist"
+                ),
+                "model_state": model_state,
+                "runtime_coverage": runtime_coverage,
+                "training_queued": training_queued,
+                "saved_model_count": len(saved_keys),
+                "registry_model_count": len(registry_rows),
+                "validated_model_count": len(current_validated),
+                "active_model_count": len(active_rows),
+                "best_model_name": best_row.get("model_name") if best_row else None,
+                "best_model_period": best_row.get("period") if best_row else None,
+                "best_validation_score": (
+                    best_row.get("validation_score") if best_row else None
+                ),
+                "last_trained_at_utc": last_trained,
+            }
+        )
+
+    return {
+        "user_id": clean_user_id,
+        "market": "HK",
+        "using_system_default_watchlist": using_system_default,
+        "count": len(items),
+        "summary": {
+            "exact_model_ready": sum(
+                item["runtime_coverage"] == "exact_model" for item in items
+            ),
+            "shared_model_covered": sum(
+                item["runtime_coverage"] == "shared_hk_model" for item in items
+            ),
+            "fallback_only": sum(
+                item["runtime_coverage"] == "fallback_rules" for item in items
+            ),
+            "training_queued": sum(item["training_queued"] for item in items),
+        },
+        "tickers": items,
+    }
 
 
 def _confidence_ok(confidence_score: float | None, threshold: float) -> bool:

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchTraderSchedulerStatus,
+  fetchHkVirtualTraderUniverseStatus,
   fetchLiveVirtualTraderStatus,
   fetchLiveVirtualTraderSync,
   fetchLiveVirtualTraderTrades,
@@ -198,6 +199,35 @@ function decisionModelStatusText(item, languageMode) {
   return labelByMode(languageMode, "Unknown", "未知");
 }
 
+function hkUniverseModelStateText(state, languageMode) {
+  const labels = {
+    training_queued: ["Queued / training", "已排程／訓練中"],
+    active: ["Active model", "使用中模型"],
+    validated: ["Validated model", "已驗證模型"],
+    saved_unvalidated: ["Saved, not currently validated", "已儲存，目前未通過驗證"],
+    validation_rejected: ["Built, validation not passed", "已建立，未通過驗證"],
+    waiting_for_training: ["Waiting for training", "等待訓練"],
+  };
+  const [en, zh] = labels[state] || ["Unknown", "未知"];
+  return labelByMode(languageMode, en, zh);
+}
+
+function hkRuntimeCoverageText(coverage, languageMode) {
+  const labels = {
+    exact_model: ["Exact ticker model", "專屬股票模型"],
+    shared_hk_model: ["Validated pooled HK model", "已驗證港股共用模型"],
+    fallback_rules: ["Fallback rules only", "僅使用後備規則"],
+  };
+  const [en, zh] = labels[coverage] || ["Unknown", "未知"];
+  return labelByMode(languageMode, en, zh);
+}
+
+function readableModelName(value) {
+  const text = String(value || "").trim();
+  if (!text) return "N/A";
+  return text.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function compactDateTime(value) {
   if (!value) return "N/A";
   const parsed = new Date(value);
@@ -326,6 +356,8 @@ export default function VirtualTraderPage({
   const [liveSyncError, setLiveSyncError] = useState("");
   const [modelRegistry, setModelRegistry] = useState([]);
   const [modelRegistryError, setModelRegistryError] = useState("");
+  const [hkUniverseStatus, setHkUniverseStatus] = useState(null);
+  const [hkUniverseError, setHkUniverseError] = useState("");
   const liveSyncInFlight = useRef(false);
   const tickerDetailRef = useRef(null);
   const activeWatchlist = useMemo(
@@ -355,6 +387,8 @@ export default function VirtualTraderPage({
     setLiveDecisionLog([]);
     setSelectedLiveTrade(null);
     setAccountHistory([]);
+    setHkUniverseStatus(null);
+    setHkUniverseError("");
     setHistoricalEnabled(false);
     setHistoryEnabled(false);
     setError("");
@@ -385,6 +419,7 @@ export default function VirtualTraderPage({
       setSelectedTicker(ticker);
       setHkTickerInput(ticker);
       setError("");
+      await loadHkUniverseStatus();
     } catch (requestError) {
       setError(requestError.message || "Could not add this HK ticker.");
     }
@@ -403,6 +438,7 @@ export default function VirtualTraderPage({
       setHkTickers(watchlist);
       setSelectedTicker(watchlist[0] || "0700");
       setError("");
+      await loadHkUniverseStatus();
     } catch (requestError) {
       setError(requestError.message || "Could not deactivate this HK ticker.");
     }
@@ -462,13 +498,14 @@ export default function VirtualTraderPage({
     setIsLoading(true);
     setError("");
     try {
-      const [liveStatusResult, schedulerStatusResult, recentTradesResult, decisionHistoryResult, hkWatchlistResult] =
+      const [liveStatusResult, schedulerStatusResult, recentTradesResult, decisionHistoryResult, hkWatchlistResult, hkUniverseResult] =
         await Promise.allSettled([
           fetchLiveVirtualTraderStatus(profileId, null, AUTO_TRADING_MODEL, false, market),
           fetchTraderSchedulerStatus(24),
           fetchVirtualAccountRecentTrades(profileId, 20, market),
           fetchLiveVirtualTraderTrades(profileId, null, DECISION_HISTORY_LIMIT, market),
           market === "HK" ? fetchUserWatchlist(profileId, "HK") : Promise.resolve(null),
+          market === "HK" ? fetchHkVirtualTraderUniverseStatus(profileId) : Promise.resolve(null),
         ]);
 
       if (schedulerStatusResult.status === "fulfilled") setSchedulerStatus(schedulerStatusResult.value);
@@ -482,6 +519,14 @@ export default function VirtualTraderPage({
       if (market === "HK" && hkWatchlistResult.status === "fulfilled") {
         const watchlist = hkWatchlistResult.value?.watchlist || [];
         if (watchlist.length) setHkTickers(watchlist);
+      }
+      if (market === "HK" && hkUniverseResult.status === "fulfilled") {
+        setHkUniverseStatus(hkUniverseResult.value);
+        setHkUniverseError("");
+      } else if (market === "HK" && hkUniverseResult.status === "rejected") {
+        setHkUniverseError(
+          hkUniverseResult.reason?.message || "HK trading-universe status could not be loaded."
+        );
       }
       if ([liveStatusResult, recentTradesResult, decisionHistoryResult].some(
         (result) => result.status === "fulfilled"
@@ -539,6 +584,18 @@ export default function VirtualTraderPage({
       setSchedulerStatus(await fetchTraderSchedulerStatus(24));
     } catch {
       setSchedulerStatus(null);
+    }
+  }
+
+  async function loadHkUniverseStatus() {
+    if (!profileId || market !== "HK") return;
+    try {
+      setHkUniverseStatus(await fetchHkVirtualTraderUniverseStatus(profileId));
+      setHkUniverseError("");
+    } catch (requestError) {
+      setHkUniverseError(
+        requestError.message || "HK trading-universe status could not be loaded."
+      );
     }
   }
 
@@ -636,10 +693,13 @@ export default function VirtualTraderPage({
   useEffect(() => {
     if (!profileId) return undefined;
     const timer = window.setInterval(() => {
-      if (!document.hidden) loadSchedulerStatusOnly();
+      if (!document.hidden) {
+        loadSchedulerStatusOnly();
+        if (market === "HK") loadHkUniverseStatus();
+      }
     }, SCHEDULER_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [profileId]);
+  }, [profileId, market]);
 
   useEffect(() => {
     if (!advancedEnabled) return;
@@ -966,6 +1026,121 @@ export default function VirtualTraderPage({
           </div>
         ) : null}
       </section>
+
+      {market === "HK" ? (
+        <section className="panel hk-trading-universe-panel">
+          <div className="hk-trading-universe-heading">
+            <div>
+              <h3>
+                {labelByMode(
+                  languageMode,
+                  "HK tickers considered by Virtual Trader",
+                  "港股虛擬交易員考慮的股票"
+                )}
+              </h3>
+              <p className="helper-text">
+                {labelByMode(
+                  languageMode,
+                  "This is the complete HK universe for your account. Saved does not mean trade-ready: a model must also pass validation.",
+                  "這是你帳戶目前完整的港股交易範圍。已儲存不代表可用於交易；模型仍須通過驗證。"
+                )}
+              </p>
+            </div>
+            <button type="button" className="secondary-button" onClick={loadHkUniverseStatus}>
+              {labelByMode(languageMode, "Refresh model status", "更新模型狀態")}
+            </button>
+          </div>
+
+          {hkUniverseStatus ? (
+            <div className="hk-universe-summary" aria-label={labelByMode(languageMode, "HK universe summary", "港股範圍摘要")}>
+              <span>
+                {labelByMode(languageMode, "Considered", "納入考慮")}: <strong>{hkUniverseStatus.count || 0}</strong>
+              </span>
+              <span>
+                {labelByMode(languageMode, "Exact model ready", "專屬模型可用")}: <strong>{hkUniverseStatus.summary?.exact_model_ready || 0}</strong>
+              </span>
+              <span>
+                {labelByMode(languageMode, "Shared model", "共用模型")}: <strong>{hkUniverseStatus.summary?.shared_model_covered || 0}</strong>
+              </span>
+              <span>
+                {labelByMode(languageMode, "Fallback only", "僅後備規則")}: <strong>{hkUniverseStatus.summary?.fallback_only || 0}</strong>
+              </span>
+              <span>
+                {labelByMode(languageMode, "Training", "訓練中")}: <strong>{hkUniverseStatus.summary?.training_queued || 0}</strong>
+              </span>
+            </div>
+          ) : null}
+
+          {hkUniverseError ? <p className="inline-error">{hkUniverseError}</p> : null}
+
+          <div className="table-wrap responsive-card-table hk-universe-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>{labelByMode(languageMode, "Ticker", "股票代號")}</th>
+                  <th>{labelByMode(languageMode, "Included", "已納入")}</th>
+                  <th>{labelByMode(languageMode, "Model preparation", "模型準備狀態")}</th>
+                  <th>{labelByMode(languageMode, "Trading coverage", "交易模型覆蓋")}</th>
+                  <th>{labelByMode(languageMode, "Saved / validated", "已儲存／已驗證")}</th>
+                  <th>{labelByMode(languageMode, "Best available model", "最佳可用模型")}</th>
+                  <th>{labelByMode(languageMode, "Last trained", "最近訓練")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hkUniverseStatus?.tickers?.length ? (
+                  hkUniverseStatus.tickers.map((item) => (
+                    <tr key={item.ticker}>
+                      <td data-label={labelByMode(languageMode, "Ticker", "股票代號")}>
+                        <button
+                          type="button"
+                          className="ticker-dashboard-link"
+                          onClick={() => setSelectedTicker(item.ticker)}
+                        >
+                          <TickerIdentity ticker={item.ticker} data={item} languageMode={languageMode} />
+                        </button>
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Included", "已納入")}>
+                        <span className="universe-status-pill included">
+                          {labelByMode(languageMode, "Yes", "是")}
+                        </span>
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Model preparation", "模型準備狀態")}>
+                        <span className={`universe-status-pill ${item.model_state || "unknown"}`}>
+                          {hkUniverseModelStateText(item.model_state, languageMode)}
+                        </span>
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Trading coverage", "交易模型覆蓋")}>
+                        {hkRuntimeCoverageText(item.runtime_coverage, languageMode)}
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Saved / validated", "已儲存／已驗證")}>
+                        {item.saved_model_count || 0} / {item.validated_model_count || 0}
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Best available model", "最佳可用模型")}>
+                        {item.best_model_name
+                          ? `${readableModelName(item.best_model_name)} (${item.best_model_period || "N/A"})`
+                          : "N/A"}
+                      </td>
+                      <td data-label={labelByMode(languageMode, "Last trained", "最近訓練")}>
+                        {compactDateTime(item.last_trained_at_utc)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="7">
+                      {labelByMode(
+                        languageMode,
+                        "Loading the HK trading universe...",
+                        "正在載入港股交易範圍……"
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       {showBeginnerGuide ? (
         <section className="panel beginner-guide">
