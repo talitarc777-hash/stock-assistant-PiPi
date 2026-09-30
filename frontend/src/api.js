@@ -247,6 +247,10 @@ export async function fetchModelHealth(market = "US") {
   return fetchJson(`/model-lifecycle/model-health?market=${encodeURIComponent(market)}`);
 }
 
+export async function fetchLearningHealth() {
+  return fetchJson("/model-lifecycle/learning-health");
+}
+
 export async function runModelLifecycleNow(
   workflowType = "daily_incremental",
   triggerReason = "manual_trigger",

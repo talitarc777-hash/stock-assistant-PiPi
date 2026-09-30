@@ -265,7 +265,7 @@ class ModelLifecycleSchedulerService:
         if not last:
             return True
         parsed = _to_utc(datetime.fromisoformat(last))
-        return (now_utc - parsed).total_seconds() >= 8 * 3600
+        return (now_utc - parsed).total_seconds() >= 24 * 3600
 
     def _collect_benchmark_shadows(
         self,
@@ -355,7 +355,17 @@ class ModelLifecycleSchedulerService:
             self._running = True
 
         try:
-            lifecycle.sync_registry_from_saved_artifacts(limit=400)
+            from app.services.context_collection_service import collect_due_context
+            try:
+                collect_due_context()
+            except Exception:
+                logger.exception("Context collection pass failed")
+            # Training registers immediately. Discover externally saved artifacts
+            # once/day rather than re-reading hundreds every 15 minutes.
+            sync_day = datetime.now(UTC).date().isoformat()
+            if lifecycle.get_state('artifact_discovery_day') != sync_day:
+                lifecycle.sync_registry_from_saved_artifacts(limit=400)
+                lifecycle.set_state('artifact_discovery_day', sync_day)
             now_utc = datetime.now(UTC)
             now_et = now_utc.astimezone(_EASTERN)
             shadow_collection = self._collect_benchmark_shadows(
@@ -365,6 +375,11 @@ class ModelLifecycleSchedulerService:
             feedback_result = (
                 get_model_feedback_service().evaluate_pending(limit=300)
             )
+            try:
+                from app.services.prospective_model_research import run_prospective_research_cycle
+                run_prospective_research_cycle()
+            except Exception:
+                logger.exception('Prospective research failed; production lifecycle continues')
             if (
                 int(feedback_result.get("evaluated") or 0) > 0
                 or int(feedback_result.get("shadow_evaluated") or 0) > 0
@@ -444,16 +459,26 @@ class ModelLifecycleSchedulerService:
                                 )
                             )
                             try:
-                                lifecycle.run_training_workflow(
+                                training_run = lifecycle.run_training_workflow(
                                     workflow_type="trigger_based",
                                     trigger_reason=f"{source}:{market}:trigger_based:{';'.join(active_triggers[:3])}",
                                     tickers=affected_tickers or None,
                                     market=market,
                                 )
+                                if training_run.get("status") == "failed":
+                                    raise ModelLifecycleError("Triggered training produced no successful models")
                                 lifecycle.set_state(
                                     _state_key("last_trigger_workflow_utc", market),
                                     _utc_now_iso(),
                                 )
+                                consumed_key = _state_key("last_consumed_triggers_json", market)
+                                try:
+                                    consumed = json.loads(lifecycle.get_state(consumed_key) or "[]")
+                                except (TypeError, ValueError):
+                                    consumed = []
+                                lifecycle.set_state(consumed_key, json.dumps(
+                                    list(dict.fromkeys((consumed if isinstance(consumed, list) else []) + active_triggers))[-500:]
+                                ))
                             except Exception as exc:  # keep the other market independent
                                 logger.exception(
                                     "Triggered model workflow failed market=%s error=%s",

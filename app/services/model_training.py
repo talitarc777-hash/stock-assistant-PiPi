@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
 import logging
 from pathlib import Path
 import pickle
@@ -647,9 +648,12 @@ def train_baseline_model(
     output_dir: str | Path | None = None,
     market: str = "US",
     publish_canonical: bool = True,
+    research_contract: dict | None = None,
 ) -> TrainingRunResult:
     """Train one baseline model with expanding-window validation only."""
     identity = resolve_model_identity(ticker, market)
+    if research_contract and publish_canonical:
+        raise ModelTrainingError("Experimental models cannot publish canonical artifacts")
     uses_stationary_features = task_type == "regression"
     if uses_stationary_features and "close" in dataset_df.columns:
         dataset_df = prepare_stationary_feature_dataset(dataset_df)
@@ -816,6 +820,12 @@ def train_baseline_model(
         metrics["feature_schema_version"] = 2
         metrics["stationary_features"] = True
 
+    if research_contract:
+        metrics.update(experimental_only=True, research_contract=research_contract,
+                       target_price_source=research_contract.get('target_price_source', metrics['target_price_source']),
+                       pooled_training=True, pooled_stationary_features=True,
+                       training_tickers=research_contract.get('training_tickers', []))
+
     artifact = _save_training_artifacts(
         ticker=ticker,
         period=period,
@@ -854,6 +864,61 @@ def train_baseline_model(
     )
 
 
+def train_new_baseline_model(*, evidence_gated=False, **kwargs):
+    """The same trainer, with a durable new-label admission check for lifecycle jobs."""
+    if not evidence_gated:
+        return train_baseline_model(**kwargs)
+    from app.services.training_evidence import TrainingEvidenceStore, frame_fingerprint
+    data = kwargs['dataset_df']
+    if kwargs['task_type'] == 'regression' and 'close' in data:
+        data = prepare_stationary_feature_dataset(data)
+    x, y, dates, tickers, _ = _build_feature_frame(data, kwargs['target_name'])
+    frame = x.copy()
+    frame['date'] = dates
+    frame['ticker'] = tickers
+    frame[kwargs['target_name']] = y
+    frame = frame.sort_values(['date', 'ticker']).reset_index(drop=True)
+    contract = {k: v for k, v in kwargs.items() if k != 'dataset_df'}
+    contract['output_dir'] = str(kwargs.get('output_dir') or get_settings().research_models_dir)
+    contract['training_code_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    import sklearn
+    contract['sklearn_version'] = sklearn.__version__
+    contract['pandas_version'] = pd.__version__
+    contract['numpy_version'] = np.__version__
+    key = hashlib.sha256(json.dumps(contract, sort_keys=True, default=str).encode()).hexdigest()
+    fingerprint = frame_fingerprint(frame, contract)
+    date_values = sorted(set(pd.to_datetime(dates).dt.strftime('%Y-%m-%d')))
+    store = TrainingEvidenceStore(get_settings().profile_db_path)
+    admitted, reason = store.claim(key, fingerprint, date_values)
+    if not admitted:
+        logger.info('Training skipped ticker=%s model=%s reason=%s', kwargs['ticker'], kwargs['model_name'], reason)
+        pending = store.unregistered_artifact(key) if reason in ('identical_labeled_dataset', 'insufficient_new_matured_dates') else None
+        if pending:
+            directory = pending.parent
+            metrics = json.loads((directory / 'metrics_summary.json').read_text(encoding='utf-8'))
+            artifact = TrainingArtifact(ticker=metrics['ticker'], period=metrics['period'],
+                target_name=metrics['target_name'], model_name=metrics['model_name'], model_path=pending,
+                feature_list_path=directory / 'feature_list.json', metrics_path=directory / 'metrics_summary.json',
+                predictions_path=directory / 'predictions.csv', evaluation_table_path=directory / 'evaluation_table.csv',
+                model_version=metrics['model_version'])
+            return TrainingRunResult(ticker=metrics['ticker'], period=metrics['period'],
+                target_name=metrics['target_name'], model_name=metrics['model_name'], task_type=metrics['task_type'],
+                feature_names=json.loads(artifact.feature_list_path.read_text(encoding='utf-8')), metrics=metrics,
+                predictions=pd.read_csv(artifact.predictions_path), evaluation_table=pd.read_csv(artifact.evaluation_table_path),
+                artifact=artifact)
+        return None
+    try:
+        result = train_baseline_model(**kwargs)
+        result.metrics['training_dataset_fingerprint'] = fingerprint
+        result.metrics['training_input_contract'] = contract
+        result.artifact.metrics_path.write_text(json.dumps(result.metrics, indent=2, default=str), encoding='utf-8')
+        store.complete(key, fingerprint, date_values, result.artifact.model_path)
+        return result
+    except Exception:
+        store.fail(key, fingerprint)
+        raise
+
+
 def train_baseline_models_for_ticker(
     ticker: str,
     period: str = "5y",
@@ -865,6 +930,7 @@ def train_baseline_models_for_ticker(
     target_names: tuple[str, ...] | list[str] | None = None,
     market: str = "US",
     publish_canonical: bool = True,
+    evidence_gated: bool = False,
 ) -> list[TrainingRunResult]:
     """Train baseline classification and regression models for one ticker."""
     identity = resolve_security(ticker, market)
@@ -890,7 +956,8 @@ def train_baseline_models_for_ticker(
     if "target_5d_updown" in selected_targets:
         for model_name in classification_models:
             run_results.append(
-                train_baseline_model(
+                train_new_baseline_model(
+                    evidence_gated=evidence_gated,
                     dataset_df=dataset_df,
                     ticker=ticker_symbol,
                     period=period,
@@ -912,7 +979,8 @@ def train_baseline_models_for_ticker(
         else:
             stationary_dataset_df = prepare_stationary_feature_dataset(dataset_df)
             for model_name in classification_models:
-                result = train_baseline_model(
+                result = train_new_baseline_model(
+                    evidence_gated=evidence_gated,
                     dataset_df=stationary_dataset_df,
                     ticker=ticker_symbol,
                     period=period,
@@ -923,6 +991,8 @@ def train_baseline_models_for_ticker(
                     market=identity.market,
                     publish_canonical=publish_canonical,
                 )
+                if result is None:
+                    continue
                 result.metrics["feature_schema_version"] = 2
                 result.metrics["stationary_features"] = True
                 result.metrics["benchmark_relative_target"] = True
@@ -942,7 +1012,8 @@ def train_baseline_models_for_ticker(
     if "target_5d_return" in selected_targets:
         stationary_dataset_df = prepare_stationary_feature_dataset(dataset_df)
         for model_name in regression_models:
-            result = train_baseline_model(
+            result = train_new_baseline_model(
+                evidence_gated=evidence_gated,
                 dataset_df=stationary_dataset_df,
                 ticker=ticker_symbol,
                 period=period,
@@ -953,6 +1024,8 @@ def train_baseline_models_for_ticker(
                 market=identity.market,
                 publish_canonical=publish_canonical,
             )
+            if result is None:
+                continue
             result.metrics["feature_schema_version"] = 2
             result.metrics["stationary_features"] = True
             result.artifact.metrics_path.write_text(
@@ -961,7 +1034,7 @@ def train_baseline_models_for_ticker(
             )
             run_results.append(result)
 
-    return run_results
+    return [result for result in run_results if result is not None]
 
 
 def train_baseline_models_for_watchlist(
@@ -1027,6 +1100,7 @@ def train_pooled_baseline_models(
     model_names: tuple[str, ...] | list[str] | None = None,
     market: str = "US",
     publish_canonical: bool = True,
+    evidence_gated: bool = False,
 ) -> list[TrainingRunResult]:
     """Train experimental cross-ticker models with date-grouped validation."""
     benchmark_identity = resolve_security(benchmark, market)
@@ -1088,7 +1162,8 @@ def train_pooled_baseline_models(
                 != pooled["benchmark"].astype(str).str.upper()
             ].copy()
         for model_name in selected_classifiers:
-            result = train_baseline_model(
+            result = train_new_baseline_model(
+                evidence_gated=evidence_gated,
                 dataset_df=classification_dataset,
                 ticker="GLOBAL",
                 period=period,
@@ -1099,6 +1174,8 @@ def train_pooled_baseline_models(
                 market=benchmark_identity.market,
                 publish_canonical=publish_canonical,
             )
+            if result is None:
+                continue
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols
             result.metrics["feature_schema_version"] = 2
@@ -1114,7 +1191,8 @@ def train_pooled_baseline_models(
         if not selected_regressors:
             raise ModelTrainingError("No compatible pooled regression models were selected.")
         for model_name in selected_regressors:
-            result = train_baseline_model(
+            result = train_new_baseline_model(
+                evidence_gated=evidence_gated,
                 dataset_df=pooled,
                 ticker="GLOBAL",
                 period=period,
@@ -1125,6 +1203,8 @@ def train_pooled_baseline_models(
                 market=benchmark_identity.market,
                 publish_canonical=publish_canonical,
             )
+            if result is None:
+                continue
             result.metrics["pooled_training"] = True
             result.metrics["training_tickers"] = symbols
             result.metrics["feature_schema_version"] = 2

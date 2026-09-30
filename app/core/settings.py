@@ -109,6 +109,10 @@ class Settings(BaseModel):
     cors_allow_origin_regex: str | None = None
     default_watchlist: list[str] = ["VOO", "SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
     external_context_enabled: bool = True
+    context_archive_enabled: bool = True
+    prospective_research_enabled: bool = True
+    context_collection_batch_max: int = 8
+    alpha_vantage_daily_budget: int = 20
     external_context_timeout_seconds: float = 2.5
     alpha_vantage_api_key: str | None = None
     reddit_context_enabled: bool = True
@@ -190,6 +194,10 @@ def get_settings() -> Settings:
             os.getenv("WATCHLIST_TICKERS", "VOO,SPY,QQQ,AAPL,MSFT,NVDA")
         ),
         external_context_enabled=_parse_bool_env(os.getenv("EXTERNAL_CONTEXT_ENABLED"), True),
+        context_archive_enabled=_parse_bool_env(os.getenv("CONTEXT_ARCHIVE_ENABLED"), app_env != "test"),
+        prospective_research_enabled=_parse_bool_env(os.getenv("PROSPECTIVE_RESEARCH_ENABLED"), app_env != "test"),
+        context_collection_batch_max=max(2, min(24, int(os.getenv("CONTEXT_COLLECTION_BATCH_MAX", "8")))),
+        alpha_vantage_daily_budget=max(0, int(os.getenv("ALPHA_VANTAGE_DAILY_BUDGET", "20"))),
         external_context_timeout_seconds=float(os.getenv("EXTERNAL_CONTEXT_TIMEOUT_SECONDS", "2.5")),
         alpha_vantage_api_key=(os.getenv("ALPHA_VANTAGE_API_KEY") or "").strip() or None,
         reddit_context_enabled=_parse_bool_env(os.getenv("REDDIT_CONTEXT_ENABLED"), True),

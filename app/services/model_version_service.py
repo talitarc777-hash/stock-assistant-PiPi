@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.settings import get_settings
+from app.core.sqlite_store import model_store_connection
 from app.services.market_config import model_security_root, resolve_model_identity
 from app.services.model_results import clear_saved_model_artifact_cache
 
@@ -32,6 +33,7 @@ MODEL_VERSION_STATUSES = {
     "quarantined",
     "retired",
     "rolled_back",
+    "research_shadow",
 }
 
 
@@ -53,11 +55,8 @@ class ModelVersionService:
         self.db_path = Path(db_path or get_settings().profile_db_path)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return model_store_connection(self.db_path)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -162,9 +161,10 @@ class ModelVersionService:
         rejection_reasons: list[str],
         retrain_type: str,
         parent_model_version: str | None,
+        validated_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         identity = resolve_model_identity(result.ticker, market)
-        metrics = dict(result.metrics or {})
+        metrics = dict(validated_metrics if validated_metrics is not None else result.metrics or {})
         model_version = str(
             getattr(result.artifact, "model_version", None)
             or metrics.get("model_version")
@@ -173,6 +173,8 @@ class ModelVersionService:
         now = _utc_now_iso()
         status = "shadow" if is_validated else "rejected"
         role = "challenger" if is_validated else "none"
+        if metrics.get('experimental_only'):
+            status, role = 'research_shadow', 'research'
         with self._connect() as conn:
             conn.execute(
                 """
@@ -243,8 +245,12 @@ class ModelVersionService:
                 FROM active_model_deployments d
                 JOIN model_versions v
                   ON v.model_version = d.active_model_version
+                 AND v.market = d.market AND v.ticker = d.ticker
+                 AND v.period = d.period AND v.target_name = d.target_name
                 WHERE d.market = ? AND d.ticker = ? AND d.period = ?
                   AND d.target_name = ?
+                  AND v.is_validated = 1 AND v.lifecycle_status = 'active'
+                  AND COALESCE(json_extract(v.metrics_json,'$.experimental_only'),0)=0
                 """,
                 (identity.market, identity.ticker, str(period), str(target_name)),
             ).fetchone()
@@ -259,6 +265,7 @@ class ModelVersionService:
         target_name: str | None = None,
         statuses: tuple[str, ...] | None = None,
         limit: int = 500,
+        oldest_first: bool = False,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -286,7 +293,7 @@ class ModelVersionService:
                 f"""
                 SELECT * FROM model_versions
                 {where}
-                ORDER BY updated_at_utc DESC
+                ORDER BY updated_at_utc {"ASC" if oldest_first else "DESC"}, model_version ASC
                 LIMIT ?
                 """,
                 tuple(params),
@@ -301,6 +308,7 @@ class ModelVersionService:
         target_name: str,
         market: str = "US",
         limit: int = 1,
+        observation_date: str | None = None,
     ) -> list[dict[str, Any]]:
         identity = resolve_model_identity(ticker, market)
         if not periods:
@@ -309,9 +317,14 @@ class ModelVersionService:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT v.*,
+                WITH candidates AS (SELECT v.*,
                        CASE WHEN d.previous_model_version = v.model_version
-                            THEN 1 ELSE 0 END AS rollback_candidate
+                            THEN 1 ELSE 0 END AS rollback_candidate,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY v.ticker,v.period,v.model_name,
+                               CASE WHEN d.previous_model_version=v.model_version THEN 1 ELSE 0 END
+                           ORDER BY v.created_at_utc ASC,v.model_version ASC
+                       ) AS family_rank
                 FROM model_versions v
                 LEFT JOIN active_model_deployments d
                   ON d.market = v.market AND d.ticker = v.ticker
@@ -322,10 +335,13 @@ class ModelVersionService:
                   AND v.target_name = ?
                   AND v.is_validated = 1
                   AND v.lifecycle_status IN ('shadow', 'eligible')
+                  AND COALESCE(json_extract(v.metrics_json,'$.experimental_only'),0)=0
+                ) SELECT * FROM candidates WHERE (? = 0 OR family_rank = 1)
                 ORDER BY rollback_candidate DESC,
-                         CASE WHEN v.ticker = ? THEN 0 ELSE 1 END,
-                         v.validation_score DESC,
-                         v.created_at_utc ASC
+                         CASE WHEN ticker = ? THEN 0 ELSE 1 END,
+                         CASE WHEN ? = 1 THEN created_at_utc END ASC,
+                         validation_score DESC,
+                         created_at_utc ASC,model_version ASC
                 LIMIT ?
                 """,
                 (
@@ -333,11 +349,24 @@ class ModelVersionService:
                     identity.ticker,
                     *periods,
                     str(target_name),
+                    int(bool(observation_date)),
                     identity.ticker,
-                    max(1, int(limit)),
+                    int(bool(observation_date)),
+                    4 if observation_date else max(1, int(limit)),
                 ),
             ).fetchall()
-        return [self._row_to_dict(row) or {} for row in rows]
+        candidates = [self._row_to_dict(row) or {} for row in rows]
+        if not observation_date or not candidates:
+            return candidates
+        # At most four distinct model families/windows, one selected per market
+        # date. Repeated intraday cycles retain the same allocation and dedupe.
+        # Oldest unresolved member of each family stays in the cohort; daily
+        # training must not replace it before its forward evidence matures.
+        cohort = candidates
+        day = datetime.fromisoformat(observation_date).date().toordinal()
+        offset = int(hashlib.sha256(f"{identity.market}:{identity.ticker}".encode()).hexdigest()[:8], 16)
+        start = (day + offset) % len(cohort)
+        return [cohort[(start + index) % len(cohort)] for index in range(min(max(1, limit), len(cohort)))]
 
     def bootstrap_active_from_registry(self, row: dict[str, Any]) -> dict[str, Any] | None:
         configured_db = Path(get_settings().profile_db_path)
@@ -555,6 +584,8 @@ class ModelVersionService:
         version = self.get_version(model_version)
         if version is None:
             raise ValueError(f"Unknown model version: {model_version}")
+        if (version.get('metrics_summary') or {}).get('experimental_only'):
+            raise ValueError('Research-only models cannot activate; a separately reviewed deployment contract is required')
         if not version["is_validated"]:
             raise ValueError("An unvalidated model version cannot become active.")
         self._publish_artifact(version)
@@ -656,6 +687,8 @@ class ModelVersionService:
         previous = self.get_version(previous_model_version)
         if failed is None or previous is None:
             raise ValueError("Rollback versions are unavailable.")
+        if any((v.get('metrics_summary') or {}).get('experimental_only') for v in (failed, previous)):
+            raise ValueError('Research-only versions cannot participate in production rollback')
         self._publish_artifact(previous)
         now = _utc_now_iso()
         with self._connect() as conn:
@@ -816,6 +849,7 @@ class ModelVersionService:
         eligible = int(counts.get("eligible", 0)) + promoted
         return {
             "trained": sum(counts.values()),
+            "research_shadow": counts.get('research_shadow', 0),
             "validated": sum(
                 counts.get(status, 0)
                 for status in (

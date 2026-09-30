@@ -526,13 +526,19 @@ class HkVirtualTraderSupportTests(unittest.TestCase):
             market="HK",
         )
 
-        candidates = service.resolve_runtime_model_candidates(
-            ticker="1810",
-            market="HK",
-            period="2y",
-            periods=("2y",),
-            target_name="target_5d_return",
-        )
+        def active(**kwargs):
+            if kwargs["ticker"] != "GLOBAL":
+                return None
+            return {
+                "ticker": "GLOBAL", "period": "2y", "model_name": "ridge_regression",
+                "validation_score": 0.68, "model_version": "hk-global-active",
+                "artifact_dir": "immutable/hk-global-active",
+            }
+        with patch.object(service, "_ensure_versioned_active", side_effect=active):
+            candidates = service.resolve_runtime_model_candidates(
+                ticker="1810", market="HK", period="2y", periods=("2y",),
+                target_name="target_5d_return",
+            )
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["ticker"], "GLOBAL")

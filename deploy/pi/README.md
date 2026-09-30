@@ -264,3 +264,46 @@ If the frontend loads but API calls fail, check:
 - `CORS_ALLOW_ORIGINS` and `CORS_ALLOW_ORIGIN_REGEX` in Pi `.env`
 - Tailscale status and the `cowbox.dpdns.org` route
 - API logs with `journalctl -u stock-assistant-api -f`
+# Continuous learning operational check
+
+The API service now starts context collection and prospective research through its
+existing lifecycle scheduler. It needs no separate cron task. Keep one API worker,
+persistent `PROFILE_DB_PATH` / model storage, network access and the system clock
+correct. See `docs/model_feedback_and_promotion.md` for the frozen study contract.
+
+Production defaults enable research, but existing `.env` overrides are respected:
+
+```env
+EXTERNAL_CONTEXT_ENABLED=true
+CONTEXT_ARCHIVE_ENABLED=true
+PROSPECTIVE_RESEARCH_ENABLED=true
+MODEL_FEEDBACK_ENABLED=true
+MODEL_FEEDBACK_HORIZON_DAYS=5
+CONTEXT_COLLECTION_BATCH_MAX=8
+ALPHA_VANTAGE_DAILY_BUDGET=20
+```
+
+Use the environment file actually loaded by systemd, not `~/.env`:
+
+```bash
+sudo systemctl show stock-assistant-api -p WorkingDirectory -p EnvironmentFiles --no-pager
+```
+
+After a separately approved deployment and restart, open Trading Models →
+Continuous learning operations. Check the heartbeat, each market's usable sources,
+research dates, waiting reasons, fingerprints and retry counts. A growing archive
+is not itself proof of improved predictions. The 120 training + 120 forward dates
+remain; interim results are descriptive and never promote context models.
+
+Read-only NanoPi checks (run the script from the service working directory):
+
+```bash
+curl -sS http://127.0.0.1:8000/model-lifecycle/learning-health
+.venv/bin/python scripts/check_learning_operations.py
+.venv/bin/python scripts/check_learning_operations.py --probe
+```
+
+Yahoo needs no configured key. Reddit may be unavailable. Alpha Vantage enrichment
+needs its optional API key and suitable entitlement; SEC needs a real contact in
+`SEC_USER_AGENT`. The example contact is rejected. No HK regulatory/transcript
+coverage is claimed. Never post private `.env` contents to Discord or an issue.

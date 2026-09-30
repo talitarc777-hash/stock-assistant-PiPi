@@ -40,7 +40,9 @@ class LiveVirtualTraderDecisionEdgeTests(unittest.TestCase):
 
     def test_only_lifecycle_validated_sources_can_enter_runtime(self) -> None:
         self.assertTrue(_is_runtime_model_source_eligible("production_model"))
-        self.assertTrue(_is_runtime_model_source_eligible("validated_candidate"))
+        self.assertFalse(_is_runtime_model_source_eligible("validated_candidate"))
+        self.assertFalse(_is_runtime_model_source_eligible("shared_global_candidate"))
+        self.assertTrue(_is_runtime_model_source_eligible("shared_global_production"))
         self.assertFalse(_is_runtime_model_source_eligible("requested_model"))
         self.assertFalse(_is_runtime_model_source_eligible("saved_model"))
         self.assertFalse(_is_runtime_model_source_eligible("trained_model"))

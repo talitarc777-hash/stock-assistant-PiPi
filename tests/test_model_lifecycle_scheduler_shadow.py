@@ -114,6 +114,17 @@ class ModelLifecycleShadowSchedulerTests(unittest.TestCase):
         self.assertEqual(lifecycle.state["daily_done_key"], "2026-07-14")
         self.assertEqual(lifecycle.state["daily_done_key:HK"], "2026-07-14")
 
+    @patch("app.services.model_lifecycle_scheduler.get_model_lifecycle_service")
+    def test_repair_training_has_one_day_cooldown_per_market(self, lifecycle_factory):
+        from datetime import UTC, timedelta
+        lifecycle = _LifecycleStub([])
+        lifecycle_factory.return_value = lifecycle
+        now = datetime(2026, 9, 12, tzinfo=UTC)
+        lifecycle.state['last_trigger_workflow_utc'] = (now - timedelta(hours=23)).isoformat()
+        self.assertFalse(self.scheduler._should_fire_trigger_workflow(now, 'US'))
+        self.assertTrue(self.scheduler._should_fire_trigger_workflow(now, 'HK'))
+        self.assertTrue(self.scheduler._should_fire_trigger_workflow(now + timedelta(hours=1), 'US'))
+
 
 if __name__ == "__main__":
     unittest.main()

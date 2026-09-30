@@ -33,6 +33,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["model-lifecycle"])
 
 
+@router.get("/model-lifecycle/context-coverage")
+def get_context_coverage() -> dict:
+    """Report accumulated prospective evidence without exposing raw content."""
+    from app.services.context_observation_store import get_context_observation_store
+    return get_context_observation_store().status()
+
+
+@router.get('/model-lifecycle/research-status')
+def get_prospective_research_status() -> dict:
+    from app.services.prospective_model_research import ProspectiveModelResearch
+    from app.core.settings import get_settings
+    return {'enabled': get_settings().prospective_research_enabled, **ProspectiveModelResearch().status()}
+
+
+@router.get('/model-lifecycle/learning-health')
+def get_learning_health() -> dict:
+    from app.services.learning_operations import learning_health
+    return learning_health()
+
+
 class ModelLifecycleHealthResponse(BaseModel):
     """Simple lifecycle scheduler health response."""
 

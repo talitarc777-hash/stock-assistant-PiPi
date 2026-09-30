@@ -1,6 +1,7 @@
 """FastAPI entrypoint for the stock-assistant backend."""
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 import logging
 
 from fastapi import FastAPI
@@ -63,6 +64,7 @@ async def lifespan(_: FastAPI):
 
     try:
         synced = get_model_lifecycle_service().sync_registry_from_saved_artifacts(limit=800)
+        get_model_lifecycle_service().set_state('artifact_discovery_day', datetime.now(UTC).date().isoformat())
         logger.info("Model lifecycle startup sync completed discovered=%d", synced)
     except Exception as exc:  # pragma: no cover - defensive startup hardening
         logger.exception("Model lifecycle startup sync failed error=%s", exc)

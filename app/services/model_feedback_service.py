@@ -13,6 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from app.core.settings import get_settings
+from app.core.sqlite_store import model_store_connection
 from app.services.account_ledger_service import TRADE_ADMIN_FEE_HKD, get_trade_admin_fee_usd
 from app.services.market_data import get_price_history
 from app.services.market_config import normalize_market, resolve_model_identity, resolve_security
@@ -30,7 +31,9 @@ MODEL_FEEDBACK_RUNTIME_SOURCES = (
 MODEL_FEEDBACK_EVALUATION_SOURCES = (
     *MODEL_FEEDBACK_RUNTIME_SOURCES,
     "shadow_challenger",
+    "shadow_incumbent",
 )
+MODEL_FEEDBACK_SETTLEMENT_SOURCES = (*MODEL_FEEDBACK_EVALUATION_SOURCES, 'research_shadow')
 # Backwards-compatible export used by older callers/tests.
 MODEL_FEEDBACK_ELIGIBLE_SOURCES = MODEL_FEEDBACK_RUNTIME_SOURCES
 
@@ -146,11 +149,8 @@ class ModelFeedbackService:
         self.db_path = Path(db_path or get_settings().profile_db_path)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return model_store_connection(self.db_path)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -194,6 +194,9 @@ class ModelFeedbackService:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_decision_feedback)")}
+            if "last_evaluation_attempt_utc" not in columns:
+                conn.execute("ALTER TABLE model_decision_feedback ADD COLUMN last_evaluation_attempt_utc TEXT")
             feedback_columns = {
                 str(row["name"])
                 for row in conn.execute(
@@ -507,7 +510,7 @@ class ModelFeedbackService:
         model_period = str(metadata.get("model_period") or "unknown")
         model_version = str(metadata.get("model_version") or "legacy")
         source = str(metadata.get("decision_source") or "unknown")
-        if source not in MODEL_FEEDBACK_EVALUATION_SOURCES:
+        if source not in MODEL_FEEDBACK_SETTLEMENT_SOURCES:
             return False
         model_ticker = str(metadata.get("model_ticker") or ticker).strip().upper()
         model_ticker = resolve_model_identity(model_ticker, market).ticker
@@ -537,6 +540,10 @@ class ModelFeedbackService:
             "sector": metadata.get("sector"),
             "industry": metadata.get("industry"),
             "volatility": metadata.get("volatility"),
+            "external_observation_id": (metadata.get("external_context") or {}).get("observation_id"),
+            "comparison_cost_pct": max(0.10, float(
+                (metadata.get("decision_reason_metadata") or {}).get("estimated_transaction_cost_pct") or 0.0
+            )),
         }
         prediction = _safe_float(metadata.get("prediction_value"))
         price = _safe_float(payload.get("price"))
@@ -578,7 +585,7 @@ class ModelFeedbackService:
                     market,
                 ),
             )
-            for horizon_days in (1, 5, 10, 20):
+            for horizon_days in (() if source == 'research_shadow' else (1, 5, 10, 20)):
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO model_prediction_horizon_outcomes(
@@ -614,7 +621,7 @@ class ModelFeedbackService:
                 "model_period": shadow.get("model_period"),
                 "model_version": shadow.get("model_version"),
                 "model_ticker": shadow.get("model_ticker"),
-                "decision_source": "shadow_challenger",
+                "decision_source": "shadow_incumbent" if shadow.get("model_role") == "incumbent" else "shadow_challenger",
                 "model_role": shadow.get("model_role", "challenger"),
                 "execution_enabled": False,
             },
@@ -631,7 +638,8 @@ class ModelFeedbackService:
         market: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
+        # Locked prospective experiments have a dedicated release endpoint.
+        clauses: list[str] = ["decision_source != 'research_shadow'"]
         params: list[Any] = []
         clean_market = normalize_market(market) if market else None
         if clean_market:
@@ -677,8 +685,8 @@ class ModelFeedbackService:
         *,
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Return oldest eligible rows so mature work cannot be starved."""
-        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
+        """Retry least-recently-attempted eligible rows, oldest dates first."""
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_SETTLEMENT_SOURCES)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -686,15 +694,15 @@ class ModelFeedbackService:
                 FROM model_decision_feedback
                 WHERE status = 'pending'
                   AND decision_source IN ({placeholders})
-                ORDER BY decision_date ASC, id ASC
+                ORDER BY COALESCE(last_evaluation_attempt_utc, '') ASC, decision_date ASC, id ASC
                 LIMIT ?
                 """,
-                (*MODEL_FEEDBACK_EVALUATION_SOURCES, max(1, int(limit))),
+                (*MODEL_FEEDBACK_SETTLEMENT_SOURCES, max(1, int(limit))),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def _pending_feedback_count(self) -> int:
-        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_EVALUATION_SOURCES)
+        placeholders = ", ".join("?" for _ in MODEL_FEEDBACK_SETTLEMENT_SOURCES)
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -703,7 +711,7 @@ class ModelFeedbackService:
                 WHERE status = 'pending'
                   AND decision_source IN ({placeholders})
                 """,
-                MODEL_FEEDBACK_EVALUATION_SOURCES,
+                MODEL_FEEDBACK_SETTLEMENT_SOURCES,
             ).fetchone()
         return int(row["count"] or 0)
 
@@ -807,6 +815,9 @@ class ModelFeedbackService:
             ticker = str(row["ticker"])
             benchmark = str(row["benchmark"])
             market = normalize_market(row.get("market") or "US")
+            with self._connect() as conn:
+                conn.execute("UPDATE model_decision_feedback SET last_evaluation_attempt_utc=? WHERE id=?",
+                             (_utc_now_iso(), row["id"]))
             try:
                 ticker_key = f"{market}:{ticker}"
                 benchmark_key = f"{market}:{benchmark}"
@@ -1298,6 +1309,55 @@ class ModelFeedbackService:
             for row in rows
         }
 
+    def get_paired_model_evidence(self, *, challenger_version: str, incumbent_version: str, market: str,
+                                 since: str | None = None) -> dict:
+        """Same ticker/date/horizon/prices, deduplicated and grouped by market dates."""
+        from app.services.paired_model_evidence import compare_paired_rows
+        with self._connect() as conn:
+            samples = []
+            for version in (challenger_version, incumbent_version):
+                rows = conn.execute("""SELECT * FROM model_decision_feedback
+                    WHERE market=? AND model_version=? AND status='evaluated'
+                    AND (? IS NULL OR recorded_at_utc>=?)
+                    ORDER BY decision_date DESC,id ASC LIMIT 2000""",
+                    (normalize_market(market), version, since, since)).fetchall()
+                samples.append([dict(row) for row in rows])
+        return compare_paired_rows(*samples)
+
+    def get_live_monitor(self, *, model_version: str, market: str) -> dict:
+        """A retraining alarm from new outcomes, never a model promotion gate."""
+        with self._connect() as conn:
+            rows = conn.execute("""SELECT decision_date,outcome_date,prediction_value,actual_return_pct,direction_correct
+                FROM model_decision_feedback WHERE market=? AND model_version=?
+                AND status='evaluated' AND task_type='regression'
+                AND substr(recorded_at_utc,1,10) < outcome_date
+                ORDER BY decision_date DESC LIMIT 2000""", (normalize_market(market), model_version)).fetchall()
+        dates = {}
+        for row in rows:
+            if row["actual_return_pct"] is None or row["direction_correct"] is None:
+                continue
+            dates.setdefault(row["decision_date"], []).append(row)
+        ordered = sorted(dates, reverse=True)[:90]
+        result = {"status": "waiting_for_evidence", "drift_detected": False,
+                  "market_dates": len(ordered), "latest_outcome_date": max((r["outcome_date"] or "" for r in rows), default=None)}
+        if len(ordered) < 60:
+            return result
+        def window(days):
+            accuracy = []
+            errors = []
+            for day in days:
+                group = dates[day]
+                accuracy.append(sum(float(r["direction_correct"]) for r in group) / len(group))
+                errors.append(sum(abs(float(r["prediction_value"]) - float(r["actual_return_pct"])) for r in group) / len(group))
+            return {"direction_accuracy": sum(accuracy) / len(accuracy), "mae_pct": sum(errors) / len(errors), "dates": len(days)}
+        recent, reference = window(ordered[:30]), window(ordered[30:])
+        deteriorated = (
+            recent["direction_accuracy"] < reference["direction_accuracy"] - 0.10
+            and recent["mae_pct"] > max(0.5, reference["mae_pct"] * 1.5)
+        )
+        return {**result, "status": "deteriorating" if deteriorated else "stable",
+                "drift_detected": deteriorated, "recent": recent, "reference": reference}
+
     def get_model_summary(
         self,
         *,
@@ -1445,6 +1505,7 @@ class ModelFeedbackService:
         recency_feedback_score = 0.5 + (weighted_score - 0.5) * reliability
         return {
             "sample_count": sample_count,
+            "latest_outcome_date": max((row["outcome_date"] or "" for row in rows), default=None),
             "direction_accuracy": average("direction_correct"),
             "profitable_rate": average("profitable_after_cost"),
             "average_actual_return_pct": average("actual_return_pct"),

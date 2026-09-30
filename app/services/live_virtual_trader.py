@@ -166,12 +166,10 @@ def _decision_source_category(source: str) -> str:
 
 
 def _is_runtime_model_source_eligible(source: str) -> bool:
-    """Reject requested/legacy disk artifacts that did not pass lifecycle gates."""
+    """Only deployed incumbents may control execution, never shadow candidates."""
     return str(source or "").strip().lower() in {
         "production_model",
-        "validated_candidate",
         "shared_global_production",
-        "shared_global_candidate",
     }
 
 
@@ -1003,6 +1001,7 @@ def _schedule_background_training_if_enabled(
                     include_gradient_boosting=True,
                     market=job["market"],
                     publish_canonical=False,
+                    evidence_gated=True,
                 )
                 lifecycle = get_model_lifecycle_service()
                 for result in results:
@@ -1565,6 +1564,7 @@ def _build_challenger_shadow_prediction(
         periods=periods,
         market=market,
         limit=1,
+        observation_date=str(pd.Timestamp(latest_row["date"]).date()),
     )
     if not candidates:
         return {
@@ -1573,6 +1573,23 @@ def _build_challenger_shadow_prediction(
             "execution_enabled": False,
         }
     candidate = candidates[0]
+    shadow = _predict_shadow_candidate(candidate, ticker, market, target_name, latest_row, stationary_latest_row)
+    try:
+        active = lifecycle_service.version_service.get_active(
+            ticker=str(candidate["ticker"]), market=market, period=str(candidate["period"]), target_name=target_name,
+        )
+    except Exception:
+        logger.exception("Paired incumbent lookup failed market=%s ticker=%s", market, ticker)
+        active = None
+    if shadow.get("status") == "available" and isinstance(active, dict) and active.get("model_version"):
+        shadow["paired_incumbent"] = _predict_shadow_candidate(
+            active, ticker, market, target_name, latest_row, stationary_latest_row,
+        )
+    return shadow
+
+
+def _predict_shadow_candidate(candidate, ticker, market, target_name, latest_row, stationary_latest_row) -> dict:
+    """Shared inference for an observed challenger and its matching incumbent."""
     try:
         bundle = load_trained_model_bundle(
             ticker=str(candidate["ticker"]),
@@ -1595,6 +1612,8 @@ def _build_challenger_shadow_prediction(
             ),
         )
         prediction_value = float(model.predict(x_latest)[0])
+        if not math.isfinite(prediction_value):
+            raise ModelResultsError("Non-finite shadow prediction")
         confidence_score: float | None = None
         uncertainty: dict[str, Any]
         if task_type == "regression":
@@ -1954,6 +1973,8 @@ def run_live_virtual_trader_now(
                         ),
                     )
                     prediction_value = float(model.predict(x_latest)[0])
+                    if not math.isfinite(prediction_value):
+                        raise ModelResultsError("Model returned a non-finite prediction")
                     if hasattr(model, "predict_proba"):
                         try:
                             probs = model.predict_proba(x_latest)
@@ -2010,12 +2031,23 @@ def run_live_virtual_trader_now(
                         decision_source,
                     )
                     break
-                except ModelResultsError as exc:
+                except (ModelResultsError, ValueError, TypeError) as exc:
                     model_load_errors.append(
                         f"{candidate_ticker}/{candidate_period}/{candidate_model_name}:{exc}"
                     )
 
             if not model_loaded:
+                # A candidate may fail after prediction while deriving confidence.
+                # Do not retain its provenance on the fallback decision.
+                decision_source = "fallback_rule"
+                decision_model_version = "fallback"
+                decision_model_ticker = symbol
+                decision_model_role = "fallback"
+                decision_lifecycle_status = "fallback"
+                decision_training_end_date = None
+                decision_validation_score = None
+                decision_runtime_score = None
+                decision_feedback_summary = {}
                 prediction_value, confidence_score, task_type, model_fallback_reason = _build_rule_based_fallback(
                     latest_row,
                     min_predicted_return_pct=min_predicted_return_pct,
@@ -2584,6 +2616,12 @@ def run_live_virtual_trader_now(
                     "model_resolution_status": (
                         "MODEL_READY" if model_loaded else "NO_VALID_MODEL"
                     ),
+                    "model_resolution_reason": (
+                        "active_model_loaded" if model_loaded
+                        else "eligible_models_failed_inference" if runtime_candidates
+                        else "no_eligible_active_model"
+                    ),
+                    "eligible_active_candidates": len(runtime_candidates),
                     "fallback_reason": (
                         model_fallback_reason
                         if decision_source == "fallback_rule"
@@ -2691,6 +2729,10 @@ def run_live_virtual_trader_now(
                     challenger_shadow,
                     benchmark=benchmark,
                 )
+                if challenger_shadow.get("paired_incumbent"):
+                    feedback_service.record_challenger_shadow(
+                        trade_payload, challenger_shadow["paired_incumbent"], benchmark=benchmark,
+                    )
                 feedback_service.record_benchmark_shadow(trade_payload)
             except Exception as exc:  # pragma: no cover - feedback guard
                 logger.warning(

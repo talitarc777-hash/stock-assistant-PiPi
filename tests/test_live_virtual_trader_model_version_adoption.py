@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from app.services.live_virtual_trader import run_live_virtual_trader_now
+from app.services.live_virtual_trader import run_live_virtual_trader_now, _is_runtime_model_source_eligible
 
 
 class _ZeroRegressor:
@@ -18,6 +18,19 @@ class _ZeroRegressor:
 
 class LiveVirtualTraderModelVersionAdoptionTests(unittest.TestCase):
     def test_active_pointer_version_is_loaded_and_persisted(self) -> None:
+        self.assertFalse(_is_runtime_model_source_eligible("validated_candidate"))
+        self.assertFalse(_is_runtime_model_source_eligible("shared_global_candidate"))
+        self._check_adoption()
+
+    def test_nonfinite_or_broken_predictions_fall_back_with_reason(self) -> None:
+        for error in (None, ValueError("feature mismatch"), TypeError("bad dtype")):
+            with self.subTest(error=error):
+                model = MagicMock()
+                model.predict.return_value = [float("nan")]
+                model.predict.side_effect = error
+                self._check_adoption(model=model, fails=True)
+
+    def _check_adoption(self, model=None, fails=False) -> None:
         market_date = pd.Timestamp.now(tz="UTC").normalize()
         features = pd.DataFrame(
             [
@@ -112,7 +125,7 @@ class LiveVirtualTraderModelVersionAdoptionTests(unittest.TestCase):
             patch("app.services.live_virtual_trader.get_live_virtual_trader_store", return_value=store),
             patch("app.services.live_virtual_trader.get_model_feedback_service", return_value=feedback),
             patch("app.services.live_virtual_trader.load_trained_model_bundle", return_value={
-                "model": _ZeroRegressor(),
+                "model": model if model is not None else _ZeroRegressor(),
                 "feature_names": ["close"],
                 "task_type": "regression",
                 "model_name": "linear_regression",
@@ -125,6 +138,7 @@ class LiveVirtualTraderModelVersionAdoptionTests(unittest.TestCase):
             patch("app.services.live_virtual_trader._score_virtual_trader_context", return_value={"score": 50.0, "label": "cautious", "factors": [], "summary": "neutral", "missing_context": []}),
             patch("app.services.live_virtual_trader._build_benchmark_shadow_prediction", return_value={"status": "unavailable", "execution_enabled": False}),
             patch("app.services.live_virtual_trader.build_live_equity_curve", return_value=equity_curve),
+            patch("app.services.live_virtual_trader.ensure_active_ticker_model_training", return_value=False),
         ):
             status = run_live_virtual_trader_now(
                 user_id="demo",
@@ -133,6 +147,11 @@ class LiveVirtualTraderModelVersionAdoptionTests(unittest.TestCase):
             )
 
         decision = status.latest_decisions[0]
+        if fails:
+            self.assertEqual(decision["metadata"]["model_version"], "fallback")
+            self.assertEqual(decision["metadata"]["model_resolution_reason"], "eligible_models_failed_inference")
+            self.assertTrue(decision["metadata"]["model_load_errors"])
+            return
         self.assertEqual(decision["metadata"]["model_version"], "active-v2")
         self.assertEqual(decision["metadata"]["model_role"], "incumbent")
         self.assertTrue(decision["metadata"]["active_model_used"])

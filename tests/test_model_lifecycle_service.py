@@ -28,6 +28,32 @@ class ModelLifecycleServiceTests(unittest.TestCase):
             except PermissionError:
                 pass
 
+    def test_feedback_batch_rotates_across_markets_and_skips_archives(self) -> None:
+        for market, ticker, status, date in (
+            ("US", "OLD", "archived", "1999-01-01"),
+            ("US", "AAPL", "candidate", "2001-01-01"),
+            ("US", "MSFT", "candidate", "2002-01-01"),
+            ("HK", "0700", "candidate", "2000-01-01"),
+        ):
+            self.service._upsert_registry(
+                ticker=ticker, period="2y", target_name="target_5d_return",
+                model_name="ridge_regression", status=status, is_validated=False,
+                validation_score=0.4, stale_after_days=30, retrain_type="test",
+                metrics_summary={}, notes=None, last_trained_at_utc=date,
+                last_evaluated_at_utc=date, market=market,
+            )
+            with self.service._connect() as conn:
+                conn.execute("UPDATE market_model_registry SET updated_at=? WHERE market=? AND ticker=?",
+                             (date, market, ticker))
+        with patch.object(self.service, "_refresh_versioned_challengers", return_value={}):
+            self.service.refresh_feedback_scores(limit=1)
+            hk = self.service.list_registry(market="HK", ticker="0700")[0]
+            self.assertIn("live_feedback", hk["metrics_summary"])
+            self.assertNotIn("live_feedback", self.service.list_registry(ticker="AAPL")[0]["metrics_summary"])
+            self.service.refresh_feedback_scores(limit=1)
+            self.assertIn("live_feedback", self.service.list_registry(ticker="AAPL")[0]["metrics_summary"])
+            self.assertNotIn("live_feedback", self.service.list_registry(ticker="OLD")[0]["metrics_summary"])
+
     def test_resolve_runtime_model_candidates_uses_expected_priority(self) -> None:
         self.service._upsert_registry(  # pylint: disable=protected-access
             ticker="AAPL",
@@ -77,19 +103,27 @@ class ModelLifecycleServiceTests(unittest.TestCase):
             last_promoted_at_utc="2026-04-08T00:00:00+00:00",
         )
 
-        candidates = self.service.resolve_runtime_model_candidates(
-            ticker="AAPL",
-            period="5y",
-            target_name="target_5d_updown",
-            requested_model_name="linear_regression",
-        )
+        def active(**kwargs):
+            ticker = kwargs["ticker"]
+            return {
+                "ticker": ticker, "period": "5y",
+                "model_name": "logistic_regression" if ticker == "AAPL" else "gradient_boosting",
+                "validation_score": 0.51, "model_version": ticker + "-active",
+                "artifact_dir": "immutable/" + ticker,
+            }
+        with patch.object(self.service, "_ensure_versioned_active", side_effect=active):
+            candidates = self.service.resolve_runtime_model_candidates(
+                ticker="AAPL", period="5y", target_name="target_5d_updown",
+                requested_model_name="linear_regression",
+            )
 
-        self.assertGreaterEqual(len(candidates), 4)
+        self.assertEqual(len(candidates), 2)
         self.assertEqual(candidates[0]["source"], "production_model")
         self.assertEqual(candidates[0]["model_name"], "logistic_regression")
-        self.assertEqual(candidates[1]["source"], "validated_candidate")
-        self.assertEqual(candidates[2]["source"], "shared_global_production")
-        self.assertEqual(candidates[-1]["source"], "requested_model")
+        self.assertEqual(candidates[1]["source"], "shared_global_production")
+        self.assertTrue(all(item["artifact_dir"].startswith("immutable/") for item in candidates))
+        # Higher-scored family candidates and explicit requests cannot bypass promotion.
+        self.assertNotIn("random_forest", [item["model_name"] for item in candidates])
 
     def test_promote_candidate_archives_previous_production(self) -> None:
         self.service._upsert_registry(  # pylint: disable=protected-access
@@ -261,12 +295,16 @@ class ModelLifecycleServiceTests(unittest.TestCase):
                 last_promoted_at_utc="2026-06-01T00:00:00+00:00",
             )
 
-        candidates = self.service.resolve_runtime_model_candidates(
-            ticker="AAPL",
-            period="2y",
-            periods=("2y", "5y", "10y"),
-            target_name="target_5d_return",
-        )
+        def active(**kwargs):
+            if kwargs["ticker"] == "GLOBAL":
+                return None
+            row = self.service.list_registry(ticker="AAPL", period=kwargs["period"], limit=10)[0]
+            return {**row, "model_version": kwargs["period"] + "-active", "artifact_dir": "immutable"}
+        with patch.object(self.service, "_ensure_versioned_active", side_effect=active):
+            candidates = self.service.resolve_runtime_model_candidates(
+                ticker="AAPL", period="2y", periods=("2y", "5y", "10y"),
+                target_name="target_5d_return",
+            )
 
         self.assertEqual(
             [(item["period"], item["model_name"]) for item in candidates],

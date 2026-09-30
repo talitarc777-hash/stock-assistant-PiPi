@@ -20,11 +20,10 @@ from typing import Any
 import pandas as pd
 
 from app.core.settings import get_settings
+from app.core.sqlite_store import model_store_connection
 from app.models.model_lifecycle import MODEL_REGISTRY_STATUSES, MODEL_WORKFLOW_TYPES
 from app.services.model_results import (
     ModelResultsError,
-    load_model_accuracy_summary,
-    load_virtual_trader_summary,
 )
 from app.services.model_feedback_service import ModelFeedbackService
 from app.services.model_training import (
@@ -129,11 +128,8 @@ class ModelLifecycleService:
         self.version_service = ModelVersionService(db_path=str(self.db_path))
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return model_store_connection(self.db_path)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -785,6 +781,8 @@ class ModelLifecycleService:
         target_name: str | None = None,
         market: str = "US",
         limit: int = 200,
+        oldest_first: bool = False,
+        statuses: tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         clean_market = normalize_market(market)
         sql = "SELECT * FROM market_model_registry WHERE market = ?"
@@ -798,7 +796,10 @@ class ModelLifecycleService:
         if target_name:
             sql += " AND target_name = ?"
             params.append(str(target_name).strip())
-        sql += " ORDER BY updated_at DESC LIMIT ?"
+        if statuses:
+            sql += " AND status IN (" + ",".join("?" for _ in statuses) + ")"
+            params.extend(statuses)
+        sql += " ORDER BY updated_at " + ("ASC" if oldest_first else "DESC") + ", id ASC LIMIT ?"
         params.append(max(1, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
@@ -1139,6 +1140,15 @@ class ModelLifecycleService:
             and bool(trading_gate["passed"])
         )
 
+        if metrics_summary.get('experimental_only'):
+            version = self.version_service.register_training_result(
+                result=result, market=market, is_validated=validated, validation_score=score,
+                rejection_reasons=list(quality_gate.get('reasons') or []) + list(trading_gate.get('reasons') or []),
+                retrain_type=retrain_type, parent_model_version=None, validated_metrics=metrics_summary,
+            )
+            return {'model_version': version['model_version'], 'validated': validated, 'promoted': False,
+                    'experimental_only': True, 'quality_gate': quality_gate, 'trading_quality_gate': trading_gate}
+
         active_before = self._ensure_versioned_active(
             ticker=result.ticker,
             period=result.period,
@@ -1155,6 +1165,7 @@ class ModelLifecycleService:
         )
         version_record = self.version_service.register_training_result(
             result=result,
+            validated_metrics=metrics_summary,
             market=market,
             is_validated=validated,
             validation_score=score,
@@ -1580,6 +1591,7 @@ class ModelLifecycleService:
         promotion_count = 0
         validated_count = 0
         rejected_count = 0
+        skipped_jobs = 0
         rejection_reasons: Counter[str] = Counter()
 
         def record_outcome(outcome: dict[str, Any]) -> None:
@@ -1609,7 +1621,10 @@ class ModelLifecycleService:
                         target_names=(TRADING_TARGET_NAME,),
                         market=clean_market,
                         publish_canonical=False,
+                        evidence_gated=True,
                     )
+                    if not results:
+                        skipped_jobs += 1
                     for result in results:
                         outcome = self.register_training_result(result=result, retrain_type=workflow_type)
                         record_outcome(outcome)
@@ -1638,7 +1653,10 @@ class ModelLifecycleService:
                         target_names=(TRADING_TARGET_NAME,),
                         market=clean_market,
                         publish_canonical=False,
+                        evidence_gated=True,
                     )
+                    if not pooled_results:
+                        skipped_jobs += 1
                     for result in pooled_results:
                         record_outcome(
                             self.register_training_result(
@@ -1661,10 +1679,13 @@ class ModelLifecycleService:
         workflow_status = "success"
         if failed_models > 0 and successful_models > 0:
             workflow_status = "partial_success"
-        elif successful_models == 0:
+        elif successful_models == 0 and (failed_models > 0 or skipped_jobs == 0):
             workflow_status = "failed"
+        elif successful_models == 0 and skipped_jobs:
+            workflow_status = 'skipped_no_new_evidence'
 
         details = {
+            "evidence_gated_skipped_jobs": skipped_jobs,
             "market": clean_market,
             "periods": list(periods),
             "include_gradient": bool(config["include_gradient"]),
@@ -1684,7 +1705,8 @@ class ModelLifecycleService:
             details=details,
             error_message=None if workflow_status != "failed" else "No models trained successfully.",
         )
-        self.set_state(_state_key_for_market("last_retrain_time_utc", clean_market), _utc_now_iso())
+        if successful_models:
+            self.set_state(_state_key_for_market("last_retrain_time_utc", clean_market), _utc_now_iso())
         self.set_state(_state_key_for_market("last_workflow_type", clean_market), workflow_type)
         self.set_state(_state_key_for_market("last_workflow_status", clean_market), workflow_status)
 
@@ -1785,14 +1807,16 @@ class ModelLifecycleService:
     def _refresh_versioned_challengers(self, limit: int = 500) -> dict[str, int]:
         """Advance shadow versions using version-specific forward evidence."""
         versions = self.version_service.list_versions(
-            statuses=("shadow", "eligible", "active"),
+            statuses=("shadow", "eligible"),
             limit=max(1, int(limit)),
+            oldest_first=True,
         )
         shadow_versions = [
             row
             for row in versions
             if row["lifecycle_status"] in {"shadow", "eligible"}
             and row["target_name"] == TRADING_TARGET_NAME
+            and not (row.get('metrics_summary') or {}).get('experimental_only')
         ]
         updated = eligible_count = promoted = rolled_back = retired = 0
 
@@ -1883,7 +1907,13 @@ class ModelLifecycleService:
                 "direction_clearly_better": direction_clearly_better,
                 "composite_better": composite_better,
             }
-            if validation_noninferior and calibration_noninferior and challenger_net > 0 and (
+            paired = self.feedback_service.get_paired_model_evidence(
+                challenger_version=challenger["model_version"],
+                incumbent_version=active["model_version"], market=challenger["market"],
+            )
+            evidence["paired_forward_evidence"] = paired
+            self.version_service.update_feedback(challenger["model_version"], {**summary, "paired_forward_evidence": paired})
+            if paired["passed"] and validation_noninferior and calibration_noninferior and challenger_net > 0 and (
                 direction_clearly_better or composite_better
             ):
                 activated = self.version_service.activate_version(
@@ -1898,6 +1928,10 @@ class ModelLifecycleService:
                 and challenger_interval.get("high") is not None
                 and active_interval.get("low") is not None
                 and float(challenger_interval["high"]) < float(active_interval["low"])
+                and self.feedback_service.get_paired_model_evidence(
+                    challenger_version=active["model_version"],
+                    incumbent_version=challenger["model_version"], market=challenger["market"],
+                )["passed"]
             ):
                 self.version_service.set_status(
                     challenger["model_version"],
@@ -1954,12 +1988,17 @@ class ModelLifecycleService:
                 and float(active_summary.get("average_strategy_net_return_pct") or 0.0)
                 < float(previous_summary.get("average_strategy_net_return_pct") or 0.0)
             )
-            if clearly_worse and materially_worse:
+            paired_rollback = self.feedback_service.get_paired_model_evidence(
+                challenger_version=previous["model_version"],
+                incumbent_version=active["model_version"], market=active["market"],
+                since=(deployed or {}).get("probation_started_at_utc"),
+            )
+            if paired_rollback["passed"] and clearly_worse and materially_worse:
                 restored = self.version_service.rollback(
                     active_model_version=active["model_version"],
                     previous_model_version=previous["model_version"],
                     reason="probation_forward_performance_degraded",
-                    evidence={"active": active_summary, "previous": previous_summary},
+                    evidence={"active": active_summary, "previous": previous_summary, "paired_forward_evidence": paired_rollback},
                 )
                 self._sync_registry_to_active_version(restored, "automatic_rollback")
                 rolled_back += 1
@@ -1974,7 +2013,7 @@ class ModelLifecycleService:
 
     def refresh_feedback_scores(self, limit: int = 300) -> dict[str, int]:
         """Refresh registry scores and promote reliable challengers."""
-        rows = [
+        rows = sorted([
             row
             for market in ("US", "HK")
             for target in (TRADING_TARGET_NAME, OUTPERFORMANCE_TARGET_NAME)
@@ -1982,9 +2021,11 @@ class ModelLifecycleService:
                 target_name=target,
                 market=market,
                 limit=max(1, int(limit)),
+                oldest_first=True,
+                statuses=("candidate", "production"),
             )
             if row["status"] in {"candidate", "production"}
-        ][: max(1, int(limit))]
+        ], key=lambda row: (row.get("updated_at") or "", row["market"], row["ticker"]))[: max(1, int(limit))]
         updated = 0
         promoted = 0
         for row in rows:
@@ -2149,102 +2190,31 @@ class ModelLifecycleService:
     ) -> list[str]:
         """Evaluate rolling-performance and drift triggers."""
         clean_market = normalize_market(market)
-        production_rows = [
-            row
-            for row in self.list_registry(
-                target_name=TRADING_TARGET_NAME,
-                market=clean_market,
-                limit=300,
-            )
-            if row["status"] == "production"
-        ][: max(1, int(max_models))]
+        # The deployment pointer owns live monitoring. Static backtest files
+        # cannot be evidence of a newly deteriorating deployed model.
+        active_rows = self.version_service.list_versions(
+            market=clean_market, statuses=("active",), limit=max(1, int(max_models)),
+        )
         triggers: list[str] = []
-
-        for row in production_rows:
-            ticker = row["ticker"]
-            period = row["period"]
-            model_name = row["model_name"]
-            target_name = row["target_name"]
-
-            feedback_summary = self.feedback_service.get_model_summary(
-                ticker=ticker,
-                model_period=period,
-                model_name=model_name,
-                market=clean_market,
-            )
-            if (
-                int(feedback_summary.get("sample_count") or 0)
-                >= get_settings().model_feedback_min_samples
-                and float(feedback_summary.get("feedback_score") or 0.5) < 0.45
-            ):
-                triggers.append(
-                    "live_feedback_weakened:"
-                    f"{ticker}:{model_name}:"
-                    f"{float(feedback_summary['feedback_score']):.3f}"
-                )
-
-            try:
-                accuracy_payload = load_model_accuracy_summary(
-                    ticker=ticker,
-                    period=period,
-                    target_name=target_name,
-                    model_name=model_name,
-                    window=20,
-                    market=clean_market,
-                )
-                latest_rolling = accuracy_payload.get("latest_rolling_accuracy")
-                if isinstance(latest_rolling, (int, float)) and float(latest_rolling) < 0.48:
-                    triggers.append(
-                        f"rolling_accuracy_drop:{ticker}:{model_name}:{float(latest_rolling):.3f}"
-                    )
-            except ModelResultsError:
+        for row in active_rows:
+            if row["target_name"] != TRADING_TARGET_NAME:
                 continue
-            except Exception as exc:  # pragma: no cover - defensive guard
-                logger.debug("Trigger check accuracy skipped ticker=%s error=%s", ticker, exc)
-
-            try:
-                summary_payload = load_virtual_trader_summary(
-                    ticker=ticker,
-                    period=period,
-                    model_name=model_name,
-                    equity_limit=120,
-                    market=clean_market,
-                )
-                summary = summary_payload.get("summary", {})
-                outperformance = summary.get("outperformance_vs_benchmark_pct_points")
-                if isinstance(outperformance, (int, float)) and float(outperformance) < -10.0:
-                    triggers.append(
-                        f"trading_performance_weakened:{ticker}:{model_name}:{float(outperformance):.2f}"
-                    )
-                observation_count = int(summary.get("risk_observation_count") or 0)
-                max_drawdown = summary.get("max_drawdown_pct")
-                if (
-                    observation_count >= 60
-                    and isinstance(max_drawdown, (int, float))
-                    and float(max_drawdown) < -25.0
-                ):
-                    triggers.append(
-                        f"trading_drawdown_exceeded:{ticker}:{model_name}:{float(max_drawdown):.2f}"
-                    )
-                sharpe_ratio = summary.get("sharpe_ratio")
-                if (
-                    observation_count >= 60
-                    and isinstance(sharpe_ratio, (int, float))
-                    and float(sharpe_ratio) < -0.25
-                ):
-                    triggers.append(
-                        f"risk_adjusted_performance_weakened:{ticker}:{model_name}:{float(sharpe_ratio):.2f}"
-                    )
-            except Exception:
-                # Historical virtual-trader artifacts may not always exist; keep trigger scan resilient.
-                pass
-
-            drift_detected, drift_score = self._detect_data_drift(
-                ticker,
-                market=clean_market,
+            deployed = self.version_service.get_active(
+                ticker=row["ticker"], period=row["period"], target_name=row["target_name"], market=clean_market,
             )
-            if drift_detected:
-                triggers.append(f"feature_drift_detected:{ticker}:z={drift_score:.2f}")
+            if not deployed or deployed["model_version"] != row["model_version"]:
+                continue
+            monitor = self.feedback_service.get_live_monitor(model_version=row["model_version"], market=clean_market)
+            if monitor["drift_detected"]:
+                triggers.append(
+                    f"live_outcome_drift:{row['ticker']}:{row['model_name']}:{row['model_version']}:{monitor['latest_outcome_date']}"
+                )
+            elif monitor["status"] != "waiting_for_evidence" and row["ticker"] != "GLOBAL":
+                drift_detected, drift_score = self._detect_data_drift(row["ticker"], market=clean_market)
+                if drift_detected:
+                    triggers.append(f"feature_drift_detected:{row['ticker']}:{row['model_version']}:{monitor['latest_outcome_date']}")
+        previous = _safe_json_load(self.get_state(_state_key_for_market("last_consumed_triggers_json", clean_market)), [])
+        triggers = [trigger for trigger in triggers if trigger not in previous]
 
         deduped = list(dict.fromkeys(triggers))
         self.set_state(
@@ -2341,120 +2311,10 @@ class ModelLifecycleService:
                 }
             )
 
-        registry_rows = self.list_registry(
-            target_name=clean_target,
-            market=clean_market,
-            limit=1000,
-        )
-        eligible_rows = [
-            row
-            for row in registry_rows
-            if row["period"] in requested_periods
-            and row["ticker"] in {clean_ticker, "GLOBAL"}
-            and row["status"] in {"production", "candidate"}
-            and bool(row["is_validated"])
-            and (clean_market != "HK" or not bool(row.get("is_stale")))
-            and int(
-                (row.get("metrics_summary") or {}).get("validation_gate_version") or 0
-            ) >= VALIDATION_GATE_VERSION
-        ]
-        for row in eligible_rows:
-            feedback_summary = self.feedback_service.get_model_summary(
-                ticker=row["ticker"],
-                model_period=row["period"],
-                model_name=row["model_name"],
-                market=clean_market,
-            )
-            metrics_summary = dict(row.get("metrics_summary") or {})
-            base_score = float(
-                metrics_summary.get("walk_forward_validation_score")
-                or row.get("validation_score")
-                or 0.0
-            )
-            row["feedback_summary"] = feedback_summary
-            row["runtime_score"] = (
-                self.feedback_service.blend_validation_with_feedback(
-                    validation_score=base_score,
-                    feedback_summary=feedback_summary,
-                )
-            )
-        eligible_rows.sort(
-            key=lambda row: (
-                0 if row["ticker"] == clean_ticker else 1,
-                bool(row.get("is_stale")),
-                -(float(row.get("runtime_score") or 0.0)),
-                0 if row["status"] == "production" else 1,
-                requested_periods.index(row["period"]),
-            )
-        )
-        for row in eligible_rows:
-            key = (
-                str(row["ticker"]).upper(),
-                str(row["period"]),
-                str(row["model_name"]).lower(),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            attempts.append(
-                {
-                    "market": clean_market,
-                    "ticker": key[0],
-                    "period": key[1],
-                    "model_name": key[2],
-                    "source": (
-                        "production_model"
-                        if row["ticker"] == clean_ticker and row["status"] == "production"
-                        else "validated_candidate"
-                        if row["ticker"] == clean_ticker
-                        else "shared_global_production"
-                        if row["status"] == "production"
-                        else "shared_global_candidate"
-                    ),
-                    "status": row["status"],
-                    "is_stale": bool(row.get("is_stale", False)),
-                    "validation_score": row.get("validation_score"),
-                    "runtime_score": row.get("runtime_score"),
-                    "feedback_summary": row.get("feedback_summary") or {},
-                    "model_version": row.get("last_trained_at_utc") or "legacy",
-                }
-            )
+        # Only deployment pointers may drive trades. Family-level candidates
+        # remain research/shadow evidence, even if their score is higher.
+        # Legacy production is snapshotted by _ensure_versioned_active above.
 
-        if requested_model_name:
-            for requested_period in requested_periods:
-                key = (
-                    clean_ticker,
-                    requested_period,
-                    str(requested_model_name).strip().lower(),
-                )
-                if key not in seen:
-                    attempts.append(
-                        {
-                            "market": clean_market,
-                            "ticker": key[0],
-                            "period": key[1],
-                            "model_name": key[2],
-                            "source": "requested_model",
-                            "status": "requested",
-                            "is_stale": False,
-                            "validation_score": None,
-                        }
-                    )
-
-        attempts.sort(
-            key=lambda row: (
-                1 if row.get("status") == "requested" else 0,
-                0 if row["ticker"] == clean_ticker else 1,
-                -float(
-                    row.get("runtime_score")
-                    if row.get("runtime_score") is not None
-                    else row.get("validation_score")
-                    if row.get("validation_score") is not None
-                    else -1.0
-                ),
-                requested_periods.index(str(row["period"])),
-            )
-        )
         return attempts
 
     def resolve_shadow_model_candidates(
@@ -2465,6 +2325,7 @@ class ModelLifecycleService:
         periods: tuple[str, ...] | list[str],
         market: str = "US",
         limit: int = 1,
+        observation_date: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return a bounded challenger set that never controls execution."""
         clean_periods = tuple(
@@ -2476,6 +2337,7 @@ class ModelLifecycleService:
             target_name=target_name,
             market=market,
             limit=limit,
+            observation_date=observation_date,
         )
 
     def get_lifecycle_funnel(self, market: str | None = None) -> dict[str, Any]:

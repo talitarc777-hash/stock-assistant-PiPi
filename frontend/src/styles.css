@@ -2221,3 +2221,6 @@ button:disabled {
     align-items: flex-end;
   }
 }
+.learning-fingerprint { overflow-wrap: anywhere; }
+.learning-attempts { max-height: 300px; overflow: auto; }
+.learning-panel th, .learning-panel td { overflow-wrap: anywhere; }

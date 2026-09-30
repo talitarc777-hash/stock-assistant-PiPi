@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import LearningHealthPanel from "../components/LearningHealthPanel";
 
 import {
   fetchModelLifecycleRegistry,
@@ -272,6 +273,7 @@ export default function ModelLifecyclePage({ languageMode }) {
       </header>
 
       {error ? <div className="error-box"><p>{error}</p></div> : null}
+      <LearningHealthPanel languageMode={languageMode} />
 
       {showTrustExplanation ? (
       <section className={`panel ${currentValidationCount ? "" : "model-evidence-warning"}`}>

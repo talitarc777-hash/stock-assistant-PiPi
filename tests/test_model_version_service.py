@@ -45,6 +45,56 @@ def _training_result(root: Path, version: str, marker: str) -> SimpleNamespace:
 
 
 class ModelVersionServiceTests(unittest.TestCase):
+    def test_dated_shadow_cohort_rotates_without_new_versions_displacing_it(self) -> None:
+        service = ModelVersionService(db_path=str(self.db_path))
+        for version, family, date in (
+            ('old-linear', 'linear_regression', '2026-01-01'),
+            ('old-forest', 'random_forest', '2026-01-02'),
+            ('new-linear', 'linear_regression', '2026-01-03'),
+        ):
+            result = _training_result(self.root, version, 'model')
+            result.model_name = family
+            service.register_training_result(result=result, market='US', is_validated=True,
+                validation_score=0.8 if version == 'new-linear' else 0.6,
+                rejection_reasons=[], retrain_type='test', parent_model_version=None)
+            with service._connect() as conn:
+                conn.execute("UPDATE model_versions SET created_at_utc=? WHERE model_version=?", (date, version))
+        args = dict(ticker='AAPL', market='US', periods=('2y',), target_name='target_5d_return')
+        selected = set()
+        for day in ('2026-09-10', '2026-09-11'):
+            first = service.list_shadow_challengers(**args, observation_date=day)
+            second = service.list_shadow_challengers(**args, observation_date=day)
+            self.assertEqual(first[0]['model_version'], second[0]['model_version'])
+            selected.add(first[0]['model_version'])
+        self.assertEqual(selected, {'old-linear', 'old-forest'})
+
+    def test_active_pointer_rejects_mismatched_or_unvalidated_version(self) -> None:
+        service = ModelVersionService(db_path=str(self.db_path))
+        result = _training_result(self.root, "safe-v1", "model")
+        service.register_training_result(
+            result=result, market="US", is_validated=True, validation_score=0.6,
+            rejection_reasons=[], retrain_type="test", parent_model_version=None,
+            validated_metrics={"validation_gate_version": 9, "walk_forward_quality_gate": {"passed": True}},
+        )
+        self.assertEqual(service.get_version("safe-v1")["metrics_summary"]["validation_gate_version"], 9)
+        with patch.object(service, "_publish_canonical", create=True):
+            # Insert the pointer directly to exercise corrupt persisted states.
+            with service._connect() as conn:
+                conn.execute("UPDATE model_versions SET lifecycle_status='active' WHERE model_version='safe-v1'")
+                conn.execute("""INSERT INTO active_model_deployments
+                    (market,ticker,period,target_name,active_model_version,activated_at_utc,probation_started_at_utc,activation_reason,updated_at_utc)
+                    VALUES ('US','AAPL','2y','target_5d_return','safe-v1','2026-01-01','2026-01-01','test','2026-01-01')""")
+            args = dict(ticker="AAPL", period="2y", target_name="target_5d_return")
+            self.assertIsNotNone(service.get_active(**args))
+            for statement in (
+                "UPDATE model_versions SET ticker='MSFT'",
+                "UPDATE model_versions SET ticker='AAPL', is_validated=0",
+                "UPDATE model_versions SET is_validated=1, lifecycle_status='retired'",
+            ):
+                with service._connect() as conn:
+                    conn.execute(statement)
+                self.assertIsNone(service.get_active(**args))
+
     def setUp(self) -> None:
         token = uuid.uuid4().hex
         self.root = Path("data") / f"test_model_version_assets_{token}"
@@ -157,6 +207,13 @@ class ModelVersionServiceTests(unittest.TestCase):
                 "get_model_summary",
                 side_effect=lambda **kwargs: promotion_summaries[kwargs["model_version"]],
             ):
+                # Higher aggregate scores on their own are not matched evidence.
+                result = lifecycle.refresh_feedback_scores()
+            self.assertEqual(result["versioned_promoted"], 0)
+            with patch.object(
+                lifecycle.feedback_service, "get_model_summary",
+                side_effect=lambda **kwargs: promotion_summaries[kwargs["model_version"]],
+            ), patch.object(lifecycle.feedback_service, "get_paired_model_evidence", return_value={"passed": True}):
                 result = lifecycle.refresh_feedback_scores()
             self.assertEqual(result["versioned_promoted"], 1)
             active = lifecycle.version_service.get_active(
@@ -196,7 +253,7 @@ class ModelVersionServiceTests(unittest.TestCase):
                 side_effect=lambda **kwargs: rollback_summaries[
                     kwargs.get("model_version", "v2")
                 ],
-            ):
+            ), patch.object(lifecycle.feedback_service, "get_paired_model_evidence", return_value={"passed": True}):
                 result = lifecycle.refresh_feedback_scores()
             self.assertEqual(result["versioned_rolled_back"], 1)
             restored = lifecycle.version_service.get_active(
