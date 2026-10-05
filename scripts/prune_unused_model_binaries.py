@@ -95,12 +95,21 @@ def plan_cleanup(db_path, models_root, *, minimum_age_days=7, keep_rejected=2, n
         group.sort(key=lambda r: timestamp(r['created_at_utc']), reverse=True)
         protected.update(r['model_version'] for r in group[:keep_rejected])
     candidates = []
+    eligible_directories = []
     for row in rows:
         version = row['model_version']
         if version in protected or timestamp(row['created_at_utc']) >= cutoff:
             continue
         directory = Path(row['artifact_dir'])
         directory = directory if directory.is_absolute() else Path.cwd() / directory
+        if (not directory.is_dir() or directory.is_symlink()
+                or not directory.resolve().is_relative_to(root)
+                or directory.resolve() != directory.absolute()
+                or directory.parent.name != 'versions' or directory.name != version):
+            continue
+        if directory.resolve() in protected_paths or directory.resolve() / 'model.pkl' in protected_paths:
+            continue
+        eligible_directories.append(str(directory.resolve()))
         binary = directory / 'model.pkl'
         # Refuse links or alternate layouts, including an alias to a canonical fit.
         if not binary.exists() or binary.is_symlink() or directory.is_symlink():
@@ -118,7 +127,8 @@ def plan_cleanup(db_path, models_root, *, minimum_age_days=7, keep_rejected=2, n
                            'bytes': stat.st_size, 'inode': stat.st_ino,
                            'device': stat.st_dev, 'mtime_ns': stat.st_mtime_ns})
     return {'candidate_files': len(candidates), 'candidate_bytes': sum(c['bytes'] for c in candidates),
-            'protected_versions': len(protected), 'candidates': candidates}
+            'protected_versions': len(protected), 'candidates': candidates,
+            'eligible_directories': eligible_directories}
 
 
 def apply_cleanup(plan):

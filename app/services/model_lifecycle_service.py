@@ -20,6 +20,7 @@ from typing import Any
 import pandas as pd
 
 from app.core.settings import get_settings
+from app.core.artifact_csv import resolve_csv_artifact
 from app.core.sqlite_store import model_store_connection
 from app.models.model_lifecycle import MODEL_REGISTRY_STATUSES, MODEL_WORKFLOW_TYPES
 from app.services.model_results import (
@@ -1294,7 +1295,7 @@ class ModelLifecycleService:
                 metrics_summary["walk_forward_validation_score"] = base_score
                 metrics_summary["live_feedback"] = feedback_summary
                 metrics_summary["promotion_score"] = score
-                evaluation_path = metrics_path.parent / "evaluation_table.csv"
+                evaluation_path = resolve_csv_artifact(metrics_path.parent / "evaluation_table.csv")
                 evaluation_table = (
                     pd.read_csv(evaluation_path)
                     if evaluation_path.exists()

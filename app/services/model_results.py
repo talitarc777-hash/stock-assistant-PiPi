@@ -12,6 +12,7 @@ from functools import lru_cache
 import pandas as pd
 
 from app.core.settings import get_settings
+from app.core.artifact_csv import resolve_csv_artifact
 from app.services.market_config import (
     model_security_root,
     normalize_market,
@@ -234,7 +235,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 def _read_csv_file(path: Path) -> pd.DataFrame:
     """Read a CSV file into a DataFrame."""
     try:
-        return pd.read_csv(path)
+        return pd.read_csv(resolve_csv_artifact(path))
     except FileNotFoundError as exc:
         raise ModelResultsError(f"Missing artifact file: {path}") from exc
     except Exception as exc:

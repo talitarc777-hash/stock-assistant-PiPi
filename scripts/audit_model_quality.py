@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.core.artifact_csv import resolve_csv_artifact
 from app.services.model_lifecycle_service import (
     MAX_PROMOTION_PROXY_DRAWDOWN_PCT,
     MIN_ACTIVE_SIGNALS_PER_PATH,
@@ -434,7 +435,7 @@ def audit_saved_models(
             task_type,
             artifact_target,
         )
-        evaluation_path = metrics_path.parent / "evaluation_table.csv"
+        evaluation_path = resolve_csv_artifact(metrics_path.parent / "evaluation_table.csv")
         evaluation_readable = False
         try:
             evaluation = pd.read_csv(evaluation_path) if evaluation_path.exists() else None
