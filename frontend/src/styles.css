@@ -44,6 +44,13 @@
   --ticker-tag-fuchsia-fg: #86198f;
 }
 
+.model-run-errors {
+  max-width: 32rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.model-run-errors p { margin: 0.35rem 0; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --ticker-tag-blue-bg: #1e3a8a;

@@ -60,6 +60,11 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
 _US_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,14}$")
 _HK_TICKER_PATTERN = re.compile(r"^(?P<code>\d{1,4})(?:\.HK)?$", re.IGNORECASE)
 
+# Issuer notice, effective 2025-10-31: SPLG renamed to SPYM. Keep stored
+# identities/holdings/model provenance intact; resolve only provider requests.
+# https://www.ssga.com/library-content/products/fund-docs/etfs/us/information-schedules/ap-notice/notice-to-aps-ticker-fund-name-and-benchmark-index-name-changes-10-31-25.pdf
+US_PROVIDER_SYMBOL_ALIASES = {"SPLG": "SPYM"}
+
 
 def normalize_market(market: str | None = None) -> str:
     value = str(market or "US").strip().upper()
@@ -92,7 +97,7 @@ def resolve_security(ticker: str, market: str | None = None) -> SecurityIdentity
         if not raw or _US_TICKER_PATTERN.fullmatch(raw) is None:
             raise MarketValidationError("Invalid US ticker format.")
         clean_ticker = raw
-        provider_symbol = raw
+        provider_symbol = US_PROVIDER_SYMBOL_ALIASES.get(raw, raw)
     config = MARKET_CONFIGS[clean_market]
     return SecurityIdentity(
         market=clean_market,

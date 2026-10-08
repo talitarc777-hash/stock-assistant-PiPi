@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 import uuid
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -438,6 +439,33 @@ class ModelLifecycleServiceTests(unittest.TestCase):
         config = self.service._workflow_config("trigger_based")  # pylint: disable=protected-access
         self.assertEqual(tuple(config["periods"]), ("2y", "5y", "10y"))
         self.assertTrue(config["include_gradient"])
+
+    def test_mixed_skipped_and_error_is_not_total_failure(self):
+        def train(**kwargs):
+            if kwargs['ticker'] == 'SPLG':
+                raise ValueError('No rows remain after cleaning')
+            return []
+
+        with patch('app.services.model_lifecycle_service.get_settings', return_value=SimpleNamespace(default_watchlist=[])), \
+             patch('app.services.model_lifecycle_service.train_baseline_models_for_ticker', side_effect=train):
+            run = self.service.run_training_workflow(workflow_type='daily_incremental',
+                trigger_reason='test', tickers=['AAPL', 'SPLG'])
+        self.assertEqual(run['status'], 'skipped_with_errors')
+        self.assertEqual(run['details']['evidence_gated_skipped_jobs'], 1)
+        self.assertEqual(run['failed_models'], 1)
+        self.assertIn('SPLG/2y', run['details']['errors'][0])
+        self.assertIn('1 training jobs skipped', run['error_message'])
+
+    def test_all_skipped_and_all_failed_remain_distinct(self):
+        for results, status in (([], 'skipped_no_new_evidence'), (ValueError('provider failed'), 'failed')):
+            with self.subTest(status=status), \
+                 patch('app.services.model_lifecycle_service.get_settings', return_value=SimpleNamespace(default_watchlist=[])), \
+                 patch('app.services.model_lifecycle_service.train_baseline_models_for_ticker',
+                       **({'side_effect': results} if isinstance(results, Exception) else {'return_value': results})):
+                run = self.service.run_training_workflow(workflow_type='daily_incremental',
+                    trigger_reason='test', tickers=['AAPL'])
+            self.assertEqual(run['status'], status)
+
 
     def test_improvement_status_reports_both_markets_and_rejection_reasons(self) -> None:
         self.service._upsert_registry(  # pylint: disable=protected-access

@@ -1680,6 +1680,8 @@ class ModelLifecycleService:
         workflow_status = "success"
         if failed_models > 0 and successful_models > 0:
             workflow_status = "partial_success"
+        elif successful_models == 0 and skipped_jobs > 0 and failed_models > 0:
+            workflow_status = "skipped_with_errors"
         elif successful_models == 0 and (failed_models > 0 or skipped_jobs == 0):
             workflow_status = "failed"
         elif successful_models == 0 and skipped_jobs:
@@ -1704,7 +1706,12 @@ class ModelLifecycleService:
             successful_models=successful_models,
             failed_models=failed_models,
             details=details,
-            error_message=None if workflow_status != "failed" else "No models trained successfully.",
+            error_message=(
+                f"{skipped_jobs} training jobs skipped; {failed_models} ticker/pooled job errors."
+                if workflow_status == "skipped_with_errors"
+                else "No models trained successfully." if workflow_status == "failed"
+                else None
+            ),
         )
         if successful_models:
             self.set_state(_state_key_for_market("last_retrain_time_utc", clean_market), _utc_now_iso())

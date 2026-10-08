@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import LearningHealthPanel from "../components/LearningHealthPanel";
+import { modelRunErrors, modelRunStatus } from "../utils/modelRunStatus";
 
 import {
   fetchModelLifecycleRegistry,
@@ -61,13 +62,6 @@ function workflowText(value, languageMode) {
   };
   const [en, zh] = labels[value] || [value || "Unknown", value || "\u672a\u77e5"];
   return labelByMode(languageMode, en, zh);
-}
-
-function statusText(value, languageMode) {
-  if (value === "success") return labelByMode(languageMode, "Completed", "\u5df2\u5b8c\u6210");
-  if (value === "partial_success") return labelByMode(languageMode, "Partly completed", "\u90e8\u5206\u5b8c\u6210");
-  if (value === "failed") return labelByMode(languageMode, "Failed", "\u5931\u6557");
-  return value || "N/A";
 }
 
 export default function ModelLifecyclePage({ languageMode }) {
@@ -609,7 +603,23 @@ export default function ModelLifecyclePage({ languageMode }) {
                   <td data-label={labelByMode(languageMode, "Time", "時間")}>{dateText(item.started_at_utc)}</td>
                   <td data-label={labelByMode(languageMode, "Market", "市場")}>{item.details?.market || "US"}</td>
                   <td data-label={labelByMode(languageMode, "Update type", "更新類型")}>{workflowText(item.run_type, languageMode)}</td>
-                  <td data-label={labelByMode(languageMode, "Result", "結果")}>{statusText(item.status, languageMode)}</td>
+                  <td data-label={labelByMode(languageMode, "Result", "結果")}>
+                    <span>{modelRunStatus(item, languageMode)}</span>
+                    {Number(item.details?.evidence_gated_skipped_jobs || 0) > 0 && (
+                      <p className="helper-text">{labelByMode(languageMode,
+                        `${item.details.evidence_gated_skipped_jobs} jobs skipped`,
+                        `已略過 ${item.details.evidence_gated_skipped_jobs} 個工作`)}</p>
+                    )}
+                    {modelRunErrors(item).length > 0 && (
+                      <div className="model-run-errors">
+                        <p>{modelRunErrors(item)[0]}</p>
+                        {modelRunErrors(item).length > 1 && <details>
+                          <summary>{labelByMode(languageMode, "More errors", "其他錯誤")}</summary>
+                          <ul>{modelRunErrors(item).slice(1).map((message, index) => <li key={index}>{message}</li>)}</ul>
+                        </details>}
+                      </div>
+                    )}
+                  </td>
                   <td data-label={labelByMode(languageMode, "Tickers", "股票數量")}>{item.processed_tickers}</td>
                   <td data-label={labelByMode(languageMode, "Validated / rejected", "通過／拒絕")}>{`${item.details?.validated_models ?? 0} / ${item.details?.rejected_models ?? 0}`}</td>
                 </tr>

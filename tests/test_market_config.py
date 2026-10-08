@@ -16,6 +16,24 @@ from app.services.market_data import get_price_history
 
 
 class MarketConfigTests(unittest.TestCase):
+    def test_splg_uses_current_provider_symbol_without_changing_identity(self):
+        identity = resolve_security(" splg ", "US")
+        self.assertEqual(identity.ticker, "SPLG")
+        self.assertEqual(identity.provider_symbol, "SPYM")
+        self.assertEqual(resolve_security("SPYM", "US").provider_symbol, "SPYM")
+        requested = []
+
+        def download(symbol, period):
+            requested.append(symbol)
+            return pd.DataFrame({"Open": [90.], "High": [91.], "Low": [89.],
+                                 "Close": [90.5], "Adj Close": [90.5], "Volume": [1000]},
+                                index=pd.DatetimeIndex(["2026-10-07"], name="Date"))
+
+        frame = get_price_history("SPLG", period="2y", download_fn=download)
+        self.assertEqual(requested, ["SPYM"])
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]['close'], 90.5)
+
     def test_hk_ticker_normalization(self) -> None:
         for raw, expected in (
             ("700", "0700.HK"),
